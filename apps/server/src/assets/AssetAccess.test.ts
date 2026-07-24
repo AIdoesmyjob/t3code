@@ -70,6 +70,72 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues exact workspace download URLs for any file type", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-download-workspace-",
+      });
+      const archivePath = path.join(root, "deliverable.zip");
+      const siblingPath = path.join(root, "other.zip");
+      yield* fileSystem.writeFile(archivePath, new Uint8Array([80, 75, 3, 4]));
+      yield* fileSystem.writeFile(siblingPath, new Uint8Array([80, 75, 3, 4]));
+      const canonicalArchivePath = yield* fileSystem.realPath(archivePath);
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-download",
+          threadId: ThreadId.make("thread-1"),
+          path: archivePath,
+        },
+        workspaceRoot: root,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(yield* resolveAsset(token, "deliverable.zip")).toEqual({
+        kind: "download",
+        path: canonicalArchivePath,
+        fileName: "deliverable.zip",
+      });
+      expect(yield* resolveAsset(token, "other.zip")).toBeNull();
+      expect(yield* resolveAsset(token, "../deliverable.zip")).toBeNull();
+      expect(yield* resolveAsset(`${token}tampered`, "deliverable.zip")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("keeps non-preview files out of workspace preview URLs", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-preview-workspace-",
+      });
+      const archivePath = path.join(root, "deliverable.zip");
+      yield* fileSystem.writeFile(archivePath, new Uint8Array([80, 75, 3, 4]));
+
+      const error = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file",
+          threadId: ThreadId.make("thread-1"),
+          path: archivePath,
+        },
+        workspaceRoot: root,
+      }).pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "AssetPreviewTypeValidationError",
+        resource: {
+          _tag: "workspace-file",
+          threadId: "thread-1",
+          path: archivePath,
+        },
+      });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("rejects workspace files outside the authorized root", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

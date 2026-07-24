@@ -4,12 +4,14 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
+  DownloadIcon,
   GlobeIcon,
   Maximize2Icon,
   Minimize2Icon,
   WrapTextIcon,
 } from "lucide-react";
 import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import { isWorkspaceDownloadPreferredPath } from "@t3tools/shared/filePreview";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -88,6 +90,7 @@ import {
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
+import { downloadWorkspaceFile } from "../browser/downloadWorkspaceFile";
 
 class CodeHighlightErrorBoundary extends React.Component<
   { fallback: ReactNode; children: ReactNode },
@@ -748,7 +751,9 @@ interface MarkdownFileLinkProps {
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef | undefined;
   onOpen: (targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>;
+  onDownload?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
+  downloadPreferred: boolean;
   className?: string | undefined;
 }
 
@@ -1016,7 +1021,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   theme,
   threadRef,
   onOpen,
+  onDownload,
   onOpenInBrowser,
+  downloadPreferred,
   className,
 }: MarkdownFileLinkProps) {
   const handleOpenInEditor = useCallback(() => {
@@ -1100,6 +1107,44 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     })();
   }, [onOpenInBrowser, targetPath]);
 
+  const handleDownload = useCallback(() => {
+    if (!onDownload) {
+      return;
+    }
+    void (async () => {
+      try {
+        const result = await onDownload();
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
+          return;
+        }
+        reportMarkdownActionFailure(
+          { operation: "download-workspace-file", target: targetPath },
+          result.cause,
+        );
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to download file",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      } catch (cause) {
+        reportMarkdownActionFailure(
+          { operation: "download-workspace-file", target: targetPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to download file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      }
+    })();
+  }, [onDownload, targetPath]);
+
   const handleCopy = useCallback(
     (value: string, title: string) => {
       if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -1150,6 +1195,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       try {
         const clicked = await api.contextMenu.show(
           [
+            ...(onDownload ? ([{ id: "download", label: "Download file" }] as const) : []),
             { id: "open", label: "Open in editor" },
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
@@ -1160,6 +1206,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           { x: event.clientX, y: event.clientY },
         );
 
+        if (clicked === "download") {
+          handleDownload();
+          return;
+        }
         if (clicked === "open") {
           handleOpenInEditor();
           return;
@@ -1182,7 +1232,16 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         );
       }
     },
-    [displayPath, handleCopy, handleOpenInBrowser, handleOpenInEditor, onOpenInBrowser, targetPath],
+    [
+      displayPath,
+      handleCopy,
+      handleDownload,
+      handleOpenInBrowser,
+      handleOpenInEditor,
+      onDownload,
+      onOpenInBrowser,
+      targetPath,
+    ],
   );
 
   return (
@@ -1196,6 +1255,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
+              if (downloadPreferred && onDownload) {
+                handleDownload();
+                return;
+              }
               if (onOpenInBrowser) {
                 handleOpenInBrowser();
                 return;
@@ -1205,6 +1268,9 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             onContextMenu={handleContextMenu}
           >
             <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
+            {downloadPreferred && onDownload ? (
+              <DownloadIcon aria-hidden className="ml-0.5 size-3 shrink-0 opacity-60" />
+            ) : null}
           </a>
         }
       />
@@ -1236,7 +1302,9 @@ function areMarkdownFileLinkPropsEqual(
     previous.theme === next.theme &&
     previous.threadRef === next.threadRef &&
     previous.onOpen === next.onOpen &&
+    previous.onDownload === next.onDownload &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
+    previous.downloadPreferred === next.downloadPreferred &&
     previous.className === next.className
   );
 }
@@ -1338,6 +1406,28 @@ function ChatMarkdown({
       });
     },
     [createAssetUrl, openPreview, preparedConnection, threadRef],
+  );
+  const downloadMarkdownFile = useCallback(
+    (path: string) => {
+      if (!threadRef || preparedConnection._tag === "None") {
+        return Promise.resolve(
+          AsyncResult.failure<void, BrowserPreviewUnavailableError>(
+            Cause.fail(
+              new BrowserPreviewUnavailableError({
+                message: "Environment is not connected.",
+              }),
+            ),
+          ),
+        );
+      }
+      return downloadWorkspaceFile({
+        threadRef,
+        filePath: path,
+        httpBaseUrl: preparedConnection.value.httpBaseUrl,
+        createAssetUrl,
+      });
+    },
+    [createAssetUrl, preparedConnection, threadRef],
   );
   const markdownComponents = useMemo<Components>(
     () => ({
@@ -1479,6 +1569,11 @@ function ChatMarkdown({
             theme={resolvedTheme}
             threadRef={threadRef}
             onOpen={openInPreferredEditor}
+            onDownload={
+              threadRef && preparedConnection._tag !== "None"
+                ? () => downloadMarkdownFile(fileLinkMeta.filePath)
+                : undefined
+            }
             onOpenInBrowser={
               threadRef &&
               isPreviewSupportedInRuntime() &&
@@ -1486,6 +1581,7 @@ function ChatMarkdown({
                 ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
                 : undefined
             }
+            downloadPreferred={isWorkspaceDownloadPreferredPath(fileLinkMeta.filePath)}
             className={props.className}
           />
         );
@@ -1527,6 +1623,7 @@ function ChatMarkdown({
     }),
     [
       diffThemeName,
+      downloadMarkdownFile,
       fileLinkParentSuffixByPath,
       isStreaming,
       markdownFileLinkMetaByHref,
@@ -1534,6 +1631,7 @@ function ChatMarkdown({
       openInPreferredEditor,
       openExternalLinkInPreview,
       openMarkdownFileInPreview,
+      preparedConnection,
       resolvedTheme,
       skills,
       text,

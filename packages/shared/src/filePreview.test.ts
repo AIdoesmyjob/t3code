@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   isWorkspaceBrowserPreviewPath,
+  isWorkspaceDownloadPreferredPath,
   isWorkspaceImagePreviewPath,
   isWorkspacePreviewEntryPath,
 } from "./filePreview.ts";
@@ -31,6 +32,20 @@ describe("workspace file previews", () => {
     "rejects non-preview path %s",
     (path) => {
       expect(isWorkspacePreviewEntryPath(path)).toBe(false);
+    },
+  );
+
+  it.each(["brochure.pdf", "release.ZIP?source=chat", "recording.mp4#preview"])(
+    "recognizes download-preferred path %s",
+    (path) => {
+      expect(isWorkspaceDownloadPreferredPath(path)).toBe(true);
+    },
+  );
+
+  it.each(["README.md", "src/index.ts", "photo.png"])(
+    "keeps editable and image files out of download-preferred paths %s",
+    (path) => {
+      expect(isWorkspaceDownloadPreferredPath(path)).toBe(false);
     },
   );
 });

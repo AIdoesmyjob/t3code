@@ -27,6 +27,7 @@ import { OtlpTracer } from "effect/unstable/observability";
 
 import * as ServerConfig from "./config.ts";
 import { ASSET_ROUTE_PREFIX, resolveAsset } from "./assets/AssetAccess.ts";
+import { attachmentContentDisposition } from "./assets/contentDisposition.ts";
 import * as BrowserTraceCollector from "./observability/BrowserTraceCollector.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
@@ -205,6 +206,9 @@ export const assetRouteLayer = HttpRouter.add(
       status: 200,
       headers: {
         "Cache-Control": "private, max-age=3600",
+        ...(asset.kind === "download"
+          ? { "Content-Disposition": attachmentContentDisposition(asset.fileName) }
+          : {}),
         "X-Content-Type-Options": "nosniff",
       },
     }).pipe(
