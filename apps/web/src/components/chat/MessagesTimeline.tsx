@@ -985,6 +985,49 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
   );
 });
 
+function MessageImageGrid({
+  images,
+  className,
+  imageClassName,
+}: {
+  images: ReadonlyArray<NonNullable<TimelineMessage["attachments"]>[number]>;
+  className: string;
+  imageClassName: string;
+}) {
+  const ctx = use(TimelineRowCtx);
+  if (images.length === 0) return null;
+
+  return (
+    <div className={className}>
+      {images.map((image) => (
+        <div
+          key={image.id}
+          className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
+        >
+          {image.previewUrl ? (
+            <button
+              type="button"
+              className="h-full w-full cursor-zoom-in"
+              aria-label={`Preview ${image.name}`}
+              onClick={() => {
+                const preview = buildExpandedImagePreview(images, image.id);
+                if (!preview) return;
+                ctx.onImageExpand(preview);
+              }}
+            >
+              <img src={image.previewUrl} alt={image.name} className={imageClassName} />
+            </button>
+          ) : (
+            <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-[11px] text-muted-foreground/70">
+              {image.name}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const userImages = row.message.attachments ?? [];
@@ -1010,39 +1053,11 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
   return (
     <div className="group flex flex-col items-end gap-1">
       <div className="relative max-w-[80%] rounded-2xl bg-message p-3 text-message-foreground">
-        {regularImages.length > 0 && (
-          <div className="mb-2 grid max-w-[420px] grid-cols-2 gap-2">
-            {regularImages.map((image: NonNullable<TimelineMessage["attachments"]>[number]) => (
-              <div
-                key={image.id}
-                className="overflow-hidden rounded-lg border border-border/80 bg-background/70"
-              >
-                {image.previewUrl ? (
-                  <button
-                    type="button"
-                    className="h-full w-full cursor-zoom-in"
-                    aria-label={`Preview ${image.name}`}
-                    onClick={() => {
-                      const preview = buildExpandedImagePreview(regularImages, image.id);
-                      if (!preview) return;
-                      ctx.onImageExpand(preview);
-                    }}
-                  >
-                    <img
-                      src={image.previewUrl}
-                      alt={image.name}
-                      className="block h-auto max-h-[220px] w-full object-cover"
-                    />
-                  </button>
-                ) : (
-                  <div className="flex min-h-[72px] items-center justify-center px-2 py-3 text-center text-secondary-label text-[11px]">
-                    {image.name}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        <MessageImageGrid
+          images={regularImages}
+          className="mb-2 grid max-w-[420px] grid-cols-2 gap-2"
+          imageClassName="block h-auto max-h-[220px] w-full object-cover"
+        />
         {previewAnnotations.map((annotation, index) => (
           <UserMessagePreviewAnnotationCard
             key={annotation.id}
@@ -1137,10 +1152,16 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
 function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
   const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const assistantImages = row.message.attachments ?? [];
 
   return (
     <>
       <div className="relative min-w-0 px-1 py-0.5">
+        <MessageImageGrid
+          images={assistantImages}
+          className="mb-3 grid max-w-[640px] grid-cols-1 gap-2 sm:grid-cols-2"
+          imageClassName="block h-auto max-h-[360px] w-full object-contain"
+        />
         <ChatMarkdown
           text={messageText}
           cwd={ctx.markdownCwd}
