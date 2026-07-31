@@ -15,7 +15,6 @@ import * as Data from "effect/Data";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { resolveAssetUrl } from "~/assets/assetUrls";
-import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   applyPreviewServerSnapshot,
   isPreviewSupportedInRuntime,
@@ -26,12 +25,8 @@ import { useRightPanelStore } from "~/rightPanelStore";
 export const isBrowserPreviewFile = (path: string): boolean =>
   /\.(?:html?|pdf)$/i.test(path.split(/[?#]/, 1)[0] ?? "");
 
-export const shouldOpenMarkdownFileInBrowser = (
-  path: string,
-  workspaceRelativePath: string | null,
-): boolean =>
-  isBrowserPreviewFile(path) ||
-  (workspaceRelativePath === null && isWorkspaceImagePreviewPath(path));
+export const shouldOpenMarkdownFileInBrowser = (path: string): boolean =>
+  isBrowserPreviewFile(path);
 
 export class BrowserPreviewUnavailableError extends Data.TaggedError(
   "BrowserPreviewUnavailableError",

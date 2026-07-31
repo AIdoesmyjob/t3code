@@ -10,6 +10,7 @@ import {
   WrapTextIcon,
 } from "lucide-react";
 import type { ScopedThreadRef, ServerProviderSkill } from "@t3tools/contracts";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -1108,12 +1109,21 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   }, [onOpen, targetPath]);
 
   const handleOpenInFilePreview = useCallback(() => {
-    if (!threadRef || !workspaceRelativePath) {
+    const isEnvironmentImage =
+      workspaceRelativePath === null && isWorkspaceImagePreviewPath(iconPath);
+    if (!threadRef || (!workspaceRelativePath && !isEnvironmentImage)) {
       handleOpenInEditor();
       return;
     }
-    useRightPanelStore.getState().openFile(threadRef, workspaceRelativePath, line);
-  }, [handleOpenInEditor, line, threadRef, workspaceRelativePath]);
+    useRightPanelStore
+      .getState()
+      .openFile(
+        threadRef,
+        workspaceRelativePath ?? iconPath,
+        line,
+        isEnvironmentImage ? "environment-image" : undefined,
+      );
+  }, [handleOpenInEditor, iconPath, line, threadRef, workspaceRelativePath]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1440,10 +1450,7 @@ function ChatMarkdown({
           onOpenInBrowser={
             threadRef &&
             isPreviewSupportedInRuntime() &&
-            shouldOpenMarkdownFileInBrowser(
-              fileLinkMeta.filePath,
-              fileLinkMeta.workspaceRelativePath,
-            )
+            shouldOpenMarkdownFileInBrowser(fileLinkMeta.filePath)
               ? () =>
                   openMarkdownFileInPreview(
                     fileLinkMeta.filePath,

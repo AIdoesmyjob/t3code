@@ -1292,6 +1292,7 @@ function ChatViewContent(props: ChatViewProps) {
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
+  const previousRightPanelSurfaceIdRef = useRef<string | null>(null);
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
   const planSidebarOpenOnNextThreadRef = useRef(false);
@@ -3763,6 +3764,23 @@ function ChatViewContent(props: ChatViewProps) {
     // activeThreadRef resets transitively with the active thread.
   }, [activeThread?.id]);
 
+  useEffect(() => {
+    const surfaceId = activeRightPanelSurface?.id ?? null;
+    const previousSurfaceId = previousRightPanelSurfaceIdRef.current;
+    previousRightPanelSurfaceIdRef.current = surfaceId;
+    if (
+      surfaceId !== null &&
+      surfaceId !== previousSurfaceId &&
+      activeRightPanelSurface?.kind !== "plan"
+    ) {
+      dismissPlanSidebarForCurrentTurn();
+    }
+  }, [
+    activeRightPanelSurface?.id,
+    activeRightPanelSurface?.kind,
+    dismissPlanSidebarForCurrentTurn,
+  ]);
+
   // Auto-open the plan sidebar when plan/todo steps arrive for the current turn.
   // Don't auto-open for plans carried over from a previous turn (the user can open manually).
   useEffect(() => {
@@ -5645,6 +5663,11 @@ function ChatViewContent(props: ChatViewProps) {
           availableEditors={availableEditors}
           relativePath={
             activeRightPanelSurface.kind === "file" ? activeRightPanelSurface.relativePath : null
+          }
+          resourceScope={
+            activeRightPanelSurface.kind === "file"
+              ? activeRightPanelSurface.resourceScope
+              : undefined
           }
           revealLine={activeFileSurface?.revealLine ?? null}
           revealRequestId={activeFileSurface?.revealRequestId ?? 0}
