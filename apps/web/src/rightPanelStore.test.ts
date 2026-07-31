@@ -102,6 +102,32 @@ describe("rightPanelStore", () => {
     });
   });
 
+  it("persists the exact-image scope for files outside the workspace", () => {
+    const absolutePath = "/home/monstrcow/dev/proof/artifacts/result.png";
+    useRightPanelStore.getState().openFile(refA, absolutePath, undefined, "environment-image");
+
+    const current = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(current).toEqual({
+      isOpen: true,
+      activeSurfaceId: `file:${absolutePath}`,
+      surfaces: [
+        {
+          id: `file:${absolutePath}`,
+          kind: "file",
+          relativePath: absolutePath,
+          resourceScope: "environment-image",
+          revealLine: null,
+          revealRequestId: 1,
+        },
+      ],
+    });
+    expect(migratePersistedRightPanelState({ byThreadKey: { "env-1:thread-A": current } })).toEqual(
+      {
+        byThreadKey: { "env-1:thread-A": current },
+      },
+    );
+  });
+
   it("open sets the active panel for a thread", () => {
     useRightPanelStore.getState().open(refA, "preview");
     expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("preview");
@@ -224,6 +250,29 @@ describe("rightPanelStore", () => {
       isOpen: false,
       activeSurfaceId: null,
       surfaces: [],
+    });
+  });
+
+  it("keeps exact environment images when the workspace is temporarily unavailable", () => {
+    const absolutePath = "/home/monstrcow/dev/proof/artifacts/result.png";
+    useRightPanelStore.getState().openFile(refA, "src/index.ts");
+    useRightPanelStore.getState().openFile(refA, absolutePath, undefined, "environment-image");
+
+    useRightPanelStore.getState().reconcileFileSurfaces(refA, false);
+
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: `file:${absolutePath}`,
+      surfaces: [
+        {
+          id: `file:${absolutePath}`,
+          kind: "file",
+          relativePath: absolutePath,
+          resourceScope: "environment-image",
+          revealLine: null,
+          revealRequestId: 1,
+        },
+      ],
     });
   });
 
