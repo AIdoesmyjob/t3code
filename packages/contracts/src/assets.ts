@@ -14,6 +14,9 @@ export const AssetResource = Schema.Union([
     threadId: ThreadId,
     path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
   }),
+  Schema.TaggedStruct("environment-image", {
+    path: TrimmedNonEmptyString.check(Schema.isMaxLength(ASSET_PATH_MAX_LENGTH)),
+  }),
   Schema.TaggedStruct("attachment", {
     attachmentId: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   }),
@@ -168,6 +171,40 @@ export class AssetWorkspaceResolutionError extends Schema.TaggedErrorClass<Asset
   }
 }
 
+export class AssetEnvironmentImagePathValidationError extends Schema.TaggedErrorClass<AssetEnvironmentImagePathValidationError>()(
+  "AssetEnvironmentImagePathValidationError",
+  {
+    resource: AssetResource,
+  },
+) {
+  override get message(): string {
+    return "Environment image path must be absolute.";
+  }
+}
+
+export class AssetEnvironmentImageInspectionError extends Schema.TaggedErrorClass<AssetEnvironmentImageInspectionError>()(
+  "AssetEnvironmentImageInspectionError",
+  {
+    resource: AssetResource,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to inspect the environment image.";
+  }
+}
+
+export class AssetEnvironmentImageNotFoundError extends Schema.TaggedErrorClass<AssetEnvironmentImageNotFoundError>()(
+  "AssetEnvironmentImageNotFoundError",
+  {
+    resource: AssetResource,
+  },
+) {
+  override get message(): string {
+    return "Environment image was not found.";
+  }
+}
+
 export class AssetAttachmentNotFoundError extends Schema.TaggedErrorClass<AssetAttachmentNotFoundError>()(
   "AssetAttachmentNotFoundError",
   {
@@ -235,6 +272,9 @@ export const AssetAccessError = Schema.Union([
   AssetWorkspaceAssetInspectionError,
   AssetWorkspaceAssetNotFoundError,
   AssetWorkspaceResolutionError,
+  AssetEnvironmentImagePathValidationError,
+  AssetEnvironmentImageInspectionError,
+  AssetEnvironmentImageNotFoundError,
   AssetAttachmentNotFoundError,
   AssetProjectFaviconResolutionError,
   AssetProjectFaviconInspectionError,

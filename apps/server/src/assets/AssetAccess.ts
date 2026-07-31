@@ -1,6 +1,9 @@
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
+  AssetEnvironmentImageInspectionError,
+  AssetEnvironmentImageNotFoundError,
+  AssetEnvironmentImagePathValidationError,
   AssetPreviewTypeValidationError,
   AssetProjectFaviconInspectionError,
   AssetProjectFaviconNotFoundError,
@@ -73,6 +76,12 @@ const AssetClaimsSchema = Schema.Union([
     kind: Schema.Literal("workspace-file-exact"),
     workspaceRoot: Schema.String,
     relativePath: Schema.String,
+    expiresAt: Schema.Number,
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("environment-image-exact"),
+    path: Schema.String,
     expiresAt: Schema.Number,
   }),
   Schema.Struct({
@@ -273,6 +282,54 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             expiresAt,
           };
       fileName = path.basename(resolved.relativePath);
+      break;
+    }
+    case "environment-image": {
+      if (!path.isAbsolute(input.resource.path)) {
+        return yield* new AssetEnvironmentImagePathValidationError({
+          resource: input.resource,
+        });
+      }
+      if (!isWorkspaceImagePreviewPath(input.resource.path)) {
+        return yield* new AssetPreviewTypeValidationError({
+          resource: input.resource,
+        });
+      }
+      const canonicalImage = yield* optionOnNotFound(fileSystem.realPath(input.resource.path)).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AssetEnvironmentImageInspectionError({
+              resource: input.resource,
+              cause,
+            }),
+        ),
+      );
+      if (Option.isNone(canonicalImage)) {
+        return yield* new AssetEnvironmentImageNotFoundError({
+          resource: input.resource,
+        });
+      }
+      const imageInfo = yield* optionOnNotFound(fileSystem.stat(canonicalImage.value)).pipe(
+        Effect.mapError(
+          (cause) =>
+            new AssetEnvironmentImageInspectionError({
+              resource: input.resource,
+              cause,
+            }),
+        ),
+      );
+      if (Option.isNone(imageInfo) || imageInfo.value.type !== "File") {
+        return yield* new AssetEnvironmentImageNotFoundError({
+          resource: input.resource,
+        });
+      }
+      claims = {
+        version: 1,
+        kind: "environment-image-exact",
+        path: canonicalImage.value,
+        expiresAt,
+      };
+      fileName = path.basename(canonicalImage.value);
       break;
     }
     case "attachment": {
@@ -495,6 +552,22 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   const decodedPath = decodeRelativePath(relativePath);
   if (decodedPath === null) return null;
   const path = yield* Path.Path;
+  if (claims.kind === "environment-image-exact") {
+    if (decodedPath !== path.basename(claims.path)) return null;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const info = yield* optionOnNotFound(fileSystem.stat(claims.path)).pipe(
+      Effect.tapError((cause) =>
+        Effect.logError("Failed to inspect environment image asset.", {
+          path: claims.path,
+          cause,
+        }),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    return Option.isSome(info) && info.value.type === "File"
+      ? ({ kind: "file", path: claims.path } satisfies ResolvedAsset)
+      : null;
+  }
   if (claims.kind === "workspace-file-exact") {
     if (decodedPath !== path.basename(claims.relativePath)) return null;
     const exactWorkspaceFile = yield* resolveCanonicalWorkspaceFileForRequest({
