@@ -19,6 +19,7 @@ import type {
   ServerProviderSkill,
   ThreadLinkedPullRequest,
 } from "@t3tools/contracts";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
@@ -921,7 +922,11 @@ interface MarkdownFileLinkProps {
   theme: "light" | "dark";
   threadRef?: ScopedThreadRef | undefined;
   onOpen?: ((targetPath: string) => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
-  onOpenInPanel: (workspaceRelativePath: string, line: number | undefined) => void;
+  onOpenInPanel: (
+    workspaceRelativePath: string,
+    line: number | undefined,
+    resourceScope?: "environment-image",
+  ) => void;
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
@@ -1324,12 +1329,18 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   }, [onOpen, targetPath]);
 
   const handleOpenInFilePreview = useCallback(() => {
-    if (!threadRef || !workspaceRelativePath) {
+    const isEnvironmentImage =
+      workspaceRelativePath === null && isWorkspaceImagePreviewPath(iconPath);
+    if (!threadRef || (!workspaceRelativePath && !isEnvironmentImage)) {
       handleOpenInEditor();
       return;
     }
-    onOpenInPanel(workspaceRelativePath, line);
-  }, [handleOpenInEditor, line, onOpenInPanel, threadRef, workspaceRelativePath]);
+    onOpenInPanel(
+      workspaceRelativePath ?? iconPath,
+      line,
+      isEnvironmentImage ? "environment-image" : undefined,
+    );
+  }, [handleOpenInEditor, iconPath, line, onOpenInPanel, threadRef, workspaceRelativePath]);
 
   const handleOpenInBrowser = useCallback(() => {
     if (!onOpenInBrowser) {
@@ -1524,7 +1535,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
 
   const canOpenInEditor = onOpen !== undefined;
   const canOpenInBrowser = onOpenInBrowser !== undefined;
-  const canOpenInPanel = threadRef !== undefined && Boolean(workspaceRelativePath);
+  const canOpenInPanel =
+    threadRef !== undefined &&
+    (Boolean(workspaceRelativePath) ||
+      (workspaceRelativePath === null && isWorkspaceImagePreviewPath(iconPath)));
   const hasPrimaryAction = hasMarkdownFilePrimaryAction({
     canOpenInEditor,
     canOpenInBrowser,
@@ -1859,14 +1873,22 @@ function ChatMarkdown({
   // A bare filename resolves to the workspace root, which is rarely where the
   // file is, so ask the index before opening.
   const openFileInPanel = useCallback(
-    (workspaceRelativePath: string, line: number | undefined) => {
+    (
+      workspaceRelativePath: string,
+      line: number | undefined,
+      resourceScope?: "environment-image",
+    ) => {
       if (!threadRef) return;
       // Claimed on every open so a synchronous one supersedes a lookup already
       // in flight.
       const isLatestLookup = claimWorkspaceBasenameLookup();
       const openAt = (path: string) =>
-        useRightPanelStore.getState().openFile(threadRef, path, line);
-      if (!cwd || !needsWorkspaceBasenameLookup(workspaceRelativePath)) {
+        useRightPanelStore.getState().openFile(threadRef, path, line, resourceScope);
+      if (
+        resourceScope === "environment-image" ||
+        !cwd ||
+        !needsWorkspaceBasenameLookup(workspaceRelativePath)
+      ) {
         openAt(workspaceRelativePath);
         return;
       }
@@ -1935,10 +1957,7 @@ function ChatMarkdown({
           onOpenInBrowser={
             threadRef &&
             isPreviewSupportedInRuntime() &&
-            shouldOpenMarkdownFileInBrowser(
-              fileLinkMeta.filePath,
-              fileLinkMeta.workspaceRelativePath,
-            )
+            shouldOpenMarkdownFileInBrowser(fileLinkMeta.filePath)
               ? () =>
                   openMarkdownFileInPreview(
                     fileLinkMeta.filePath,

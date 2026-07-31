@@ -70,6 +70,7 @@ interface FilePreviewPanelProps {
   cwd: string;
   projectName: string;
   relativePath: string | null;
+  resourceScope: "environment-image" | undefined;
   threadRef: ScopedThreadRef;
   composerDraftTarget: ScopedThreadRef | DraftId;
   keybindings: ResolvedKeybindingsConfig;
@@ -133,12 +134,18 @@ function WorkspaceImagePreview(props: {
   readonly threadRef: ScopedThreadRef;
   readonly absolutePath: string;
   readonly alt: string;
+  readonly resourceScope: "environment-image" | undefined;
 }) {
-  const assetUrl = useAssetUrlState(props.environmentId, {
-    _tag: "workspace-file",
-    threadId: props.threadRef.threadId,
-    path: props.absolutePath,
-  });
+  const assetUrl = useAssetUrlState(
+    props.environmentId,
+    props.resourceScope === "environment-image"
+      ? { _tag: "environment-image", path: props.absolutePath }
+      : {
+          _tag: "workspace-file",
+          threadId: props.threadRef.threadId,
+          path: props.absolutePath,
+        },
+  );
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
   if (assetUrl._tag === "Failure" || (assetUrl._tag === "Success" && failedUrl === assetUrl.url)) {
@@ -760,6 +767,7 @@ export default function FilePreviewPanel({
   cwd,
   projectName,
   relativePath,
+  resourceScope,
   threadRef,
   composerDraftTarget,
   keybindings,
@@ -805,7 +813,10 @@ export default function FilePreviewPanel({
     (revealLine === null ||
       (handledReveal?.path === relativePath && handledReveal.requestId === revealRequestId));
   const canOpenInBrowser =
-    relativePath !== null && isPreviewSupportedInRuntime() && isBrowserPreviewFile(relativePath);
+    resourceScope !== "environment-image" &&
+    relativePath !== null &&
+    isPreviewSupportedInRuntime() &&
+    isBrowserPreviewFile(relativePath);
   const absolutePath = relativePath ? resolvePathLinkTarget(relativePath, cwd) : null;
   const breadcrumbs = useMemo(
     () => (relativePath ? fileBreadcrumbs(projectName, relativePath) : []),
@@ -904,6 +915,7 @@ export default function FilePreviewPanel({
             </div>
           </ScrollArea>
           {absolutePath &&
+          resourceScope !== "environment-image" &&
           (environmentId === primaryEnvironmentId || remoteOpenState.mode !== "local-exec") ? (
             <OpenInPicker
               environmentId={environmentId}
@@ -1001,6 +1013,7 @@ export default function FilePreviewPanel({
               threadRef={threadRef}
               absolutePath={absolutePath}
               alt={relativePath}
+              resourceScope={resourceScope}
             />
           ) : relativePath && file.error && file.data === null ? (
             <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
