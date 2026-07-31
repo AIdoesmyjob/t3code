@@ -182,6 +182,47 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues exact URLs for absolute environment images", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-environment-image-",
+      });
+      const imagePath = path.join(root, "outside.png");
+      const siblingPath = path.join(root, "sibling.png");
+      yield* fileSystem.writeFile(imagePath, new Uint8Array([137, 80, 78, 71]));
+      yield* fileSystem.writeFile(siblingPath, new Uint8Array([137, 80, 78, 71]));
+      const canonicalImagePath = yield* fileSystem.realPath(imagePath);
+
+      const result = yield* issueAssetUrl({
+        resource: { _tag: "environment-image", path: imagePath },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(yield* resolveAsset(token, "outside.png")).toEqual({
+        kind: "file",
+        path: canonicalImagePath,
+      });
+      expect(yield* resolveAsset(token, "sibling.png")).toBeNull();
+      expect(yield* resolveAsset(token, "../outside.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("rejects relative environment image paths", () =>
+    Effect.gen(function* () {
+      const error = yield* issueAssetUrl({
+        resource: { _tag: "environment-image", path: "outside.png" },
+      }).pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "AssetEnvironmentImagePathValidationError",
+      });
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("issues exact attachment capabilities by attachment id", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
