@@ -41,6 +41,7 @@ export type RightPanelSurface =
       id: `file:${string}`;
       kind: "file";
       relativePath: string;
+      resourceScope?: "environment-image";
       revealLine: number | null;
       revealRequestId: number;
     }
@@ -60,7 +61,12 @@ interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   open: (ref: ScopedThreadRef, kind: Exclude<RightPanelKind, "file" | "terminal">) => void;
   openBrowser: (ref: ScopedThreadRef, tabId: string | null) => void;
-  openFile: (ref: ScopedThreadRef, relativePath: string, line?: number) => void;
+  openFile: (
+    ref: ScopedThreadRef,
+    relativePath: string,
+    line?: number,
+    resourceScope?: "environment-image",
+  ) => void;
   openTerminal: (ref: ScopedThreadRef, terminalId: string) => void;
   splitTerminal: (
     ref: ScopedThreadRef,
@@ -112,10 +118,12 @@ const fileSurface = (
   relativePath: string,
   revealLine: number | null,
   revealRequestId: number,
+  resourceScope?: "environment-image",
 ): RightPanelSurface => ({
   id: `file:${relativePath}`,
   kind: "file",
   relativePath,
+  ...(resourceScope === "environment-image" ? { resourceScope } : {}),
   revealLine,
   revealRequestId,
 });
@@ -193,7 +201,19 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
                         surface.revealRequestId >= 0
                           ? surface.revealRequestId
                           : 0;
-                      return [{ ...surface, revealLine, revealRequestId }];
+                      const resourceScope =
+                        "resourceScope" in surface && surface.resourceScope === "environment-image"
+                          ? surface.resourceScope
+                          : undefined;
+                      const { resourceScope: _resourceScope, ...baseSurface } = surface;
+                      return [
+                        {
+                          ...baseSurface,
+                          ...(resourceScope ? { resourceScope } : {}),
+                          revealLine,
+                          revealRequestId,
+                        },
+                      ];
                     }
                     if (surface.kind !== "terminal") return [surface];
                     if (
@@ -278,7 +298,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             return upsertSurface({ ...current, surfaces: withoutPlaceholder }, surface);
           }),
         })),
-      openFile: (ref, relativePath, line) =>
+      openFile: (ref, relativePath, line, resourceScope) =>
         set((state) => ({
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
             const withoutStandaloneExplorer = current.surfaces.filter(
@@ -293,6 +313,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               relativePath,
               normalizeRevealLine(line),
               (existing?.revealRequestId ?? 0) + 1,
+              resourceScope,
             );
             return {
               isOpen: true,
@@ -481,7 +502,9 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
           byThreadKey: updateThread(state.byThreadKey, scopedThreadKey(ref), (current) => {
             if (workspaceAvailable) return current;
             const surfaces = current.surfaces.filter(
-              (surface) => surface.kind !== "files" && surface.kind !== "file",
+              (surface) =>
+                surface.kind !== "files" &&
+                (surface.kind !== "file" || surface.resourceScope === "environment-image"),
             );
             if (surfaces.length === current.surfaces.length) return current;
             const activeStillExists = surfaces.some(
