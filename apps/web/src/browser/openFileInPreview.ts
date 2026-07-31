@@ -15,6 +15,7 @@ import * as Data from "effect/Data";
 import { AsyncResult } from "effect/unstable/reactivity";
 
 import { resolveAssetUrl } from "~/assets/assetUrls";
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import {
   applyPreviewServerSnapshot,
   isPreviewSupportedInRuntime,
@@ -24,6 +25,13 @@ import { useRightPanelStore } from "~/rightPanelStore";
 
 export const isBrowserPreviewFile = (path: string): boolean =>
   /\.(?:html?|pdf)$/i.test(path.split(/[?#]/, 1)[0] ?? "");
+
+export const shouldOpenMarkdownFileInBrowser = (
+  path: string,
+  workspaceRelativePath: string | null,
+): boolean =>
+  isBrowserPreviewFile(path) ||
+  (workspaceRelativePath === null && isWorkspaceImagePreviewPath(path));
 
 export class BrowserPreviewUnavailableError extends Data.TaggedError(
   "BrowserPreviewUnavailableError",
@@ -55,6 +63,7 @@ export async function openUrlInPreview<E>(input: {
 export async function openFileInPreview<AssetError, PreviewError>(input: {
   readonly threadRef: ScopedThreadRef;
   readonly filePath: string;
+  readonly resourceScope?: "workspace" | "environment-image";
   readonly httpBaseUrl: string;
   readonly createAssetUrl: (input: {
     readonly environmentId: EnvironmentId;
@@ -74,11 +83,14 @@ export async function openFileInPreview<AssetError, PreviewError>(input: {
   const assetResult = await input.createAssetUrl({
     environmentId: input.threadRef.environmentId,
     input: {
-      resource: {
-        _tag: "workspace-file",
-        threadId: input.threadRef.threadId,
-        path: input.filePath,
-      },
+      resource:
+        input.resourceScope === "environment-image"
+          ? { _tag: "environment-image", path: input.filePath }
+          : {
+              _tag: "workspace-file",
+              threadId: input.threadRef.threadId,
+              path: input.filePath,
+            },
     },
   });
   if (assetResult._tag === "Failure") {

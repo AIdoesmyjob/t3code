@@ -89,6 +89,7 @@ import { isPreviewSupportedInRuntime } from "../previewStateStore";
 import {
   isBrowserPreviewFile,
   openFileInPreview,
+  shouldOpenMarkdownFileInBrowser,
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
@@ -1345,7 +1346,7 @@ function ChatMarkdown({
     [openPreview, threadRef],
   );
   const openMarkdownFileInPreview = useCallback(
-    (path: string) => {
+    (path: string, resourceScope: "workspace" | "environment-image" = "workspace") => {
       if (!threadRef || preparedConnection._tag === "None") {
         return Promise.resolve(
           AsyncResult.failure<void, BrowserPreviewUnavailableError>(
@@ -1360,6 +1361,7 @@ function ChatMarkdown({
       return openFileInPreview({
         threadRef,
         filePath: path,
+        resourceScope,
         httpBaseUrl: preparedConnection.value.httpBaseUrl,
         createAssetUrl,
         openPreview,
@@ -1403,8 +1405,18 @@ function ChatMarkdown({
           onOpenInBrowser={
             threadRef &&
             isPreviewSupportedInRuntime() &&
-            isBrowserPreviewFile(fileLinkMeta.filePath)
-              ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
+            shouldOpenMarkdownFileInBrowser(
+              fileLinkMeta.filePath,
+              fileLinkMeta.workspaceRelativePath,
+            )
+              ? () =>
+                  openMarkdownFileInPreview(
+                    fileLinkMeta.filePath,
+                    fileLinkMeta.workspaceRelativePath === null &&
+                      !isBrowserPreviewFile(fileLinkMeta.filePath)
+                      ? "environment-image"
+                      : "workspace",
+                  )
               : undefined
           }
           className={className}
