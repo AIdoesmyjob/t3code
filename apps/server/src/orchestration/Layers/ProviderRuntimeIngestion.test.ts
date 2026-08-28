@@ -373,7 +373,7 @@ describe("ProviderRuntimeIngestion", () => {
   });
 
   it("persists completed image views as assistant message attachments", async () => {
-    const harness = await createHarness({ serverSettings: { enableAssistantStreaming: true } });
+    const harness = await createHarness({ serverSettings: { enableLegacyTokenStreaming: true } });
     const sourceDir = makeTempDir("t3-provider-assistant-image-");
     const sourcePath = NodePath.join(sourceDir, "filter-manager.png");
     NodeFS.writeFileSync(sourcePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));

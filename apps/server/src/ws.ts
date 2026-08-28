@@ -2044,6 +2044,9 @@ const makeWsRpcLayer = (
                     : {}),
                 });
               }
+              if (input.resource._tag === "environment-image") {
+                return yield* issueAssetUrl({ resource: input.resource });
+              }
               const thread = yield* projectionSnapshotQuery
                 .getThreadShellById(input.resource.threadId)
                 .pipe(
