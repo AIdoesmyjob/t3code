@@ -210,6 +210,8 @@ describe("rightPanelStore", () => {
         },
       },
     });
+  });
+
   it("persists the exact-image scope for files outside the workspace", () => {
     const absolutePath = "/home/monstrcow/dev/proof/artifacts/result.png";
     useRightPanelStore.getState().openFile(refA, absolutePath, undefined, "environment-image");
