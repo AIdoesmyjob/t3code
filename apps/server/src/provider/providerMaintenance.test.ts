@@ -24,6 +24,7 @@ import {
 } from "./providerMaintenance.ts";
 
 const driver = (value: string) => ProviderDriverKind.make(value);
+const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 const makeTempDir = (name: string) =>
   Crypto.Crypto.pipe(
     Effect.flatMap((crypto) => crypto.randomUUIDv4),
