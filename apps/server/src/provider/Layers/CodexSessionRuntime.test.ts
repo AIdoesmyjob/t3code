@@ -9,11 +9,7 @@ import * as CodexErrors from "effect-codex-app-server/errors";
 import * as CodexRpc from "effect-codex-app-server/rpc";
 import * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import {
-  buildCodexDeveloperInstructions,
-  codexDefaultModeDeveloperInstructions,
-  codexPlanModeDeveloperInstructions,
-} from "../CodexDeveloperInstructions.ts";
+import { buildCodexDeveloperInstructions } from "../CodexDeveloperInstructions.ts";
 import { codexSessionAppServerArgs } from "./codexLaunchArgs.ts";
 import {
   buildTurnStartParams,
@@ -52,20 +48,16 @@ function makeThreadOpenResponse(
     modelProvider: "openai",
     approvalPolicy: "never",
     approvalsReviewer: "user",
-    sandbox: { type: "dangerFullAccess" },
+    sandbox: { type: "danger-full-access" },
     thread: {
       id: threadId,
-      cliVersion: "0.147.0",
-      createdAt: 1_776_470_400,
-      cwd: "/tmp/project",
-      ephemeral: false,
-      modelProvider: "openai",
-      preview: "",
-      sessionId: threadId,
-      source: "cli",
+      createdAt: "2026-04-18T00:00:00.000Z",
+      source: { session: "cli" },
       turns: [],
-      status: { type: "idle" },
-      updatedAt: 1_776_470_400,
+      status: {
+        state: "idle",
+        activeFlags: [],
+      },
     },
   } as unknown as CodexRpc.ClientRequestResponsesByMethod["thread/start"];
 }
@@ -463,7 +455,7 @@ describe("buildCodexDeveloperInstructions", () => {
       reasoningEffort: "high",
     });
 
-    NodeAssert.ok(instructions.startsWith(codexDefaultModeDeveloperInstructions(true)));
+    NodeAssert.match(instructions, /^<collaboration_mode># Collaboration Mode: Default/);
     NodeAssert.match(instructions, /T3 Code/);
     NodeAssert.match(instructions, /Codex harness/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with high reasoning effort/);
@@ -488,7 +480,7 @@ describe("buildCodexDeveloperInstructions", () => {
       reasoningEffort: "medium",
     });
 
-    NodeAssert.ok(instructions.startsWith(codexPlanModeDeveloperInstructions(true)));
+    NodeAssert.match(instructions, /^<collaboration_mode># Plan Mode/);
     NodeAssert.match(instructions, /as gpt-5\.3-codex with medium reasoning effort/);
   });
 
@@ -517,11 +509,11 @@ describe("buildCodexDeveloperInstructions", () => {
 });
 
 describe("T3 browser developer instructions", () => {
+  const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
+
   it("prefers the product-native preview tools in both collaboration modes", () => {
-    for (const instructions of [
-      codexDefaultModeDeveloperInstructions(true),
-      codexPlanModeDeveloperInstructions(true),
-    ]) {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, runtime, true);
       NodeAssert.match(instructions, /t3-code/);
       NodeAssert.match(instructions, /preview_status/);
       NodeAssert.match(instructions, /preview_open/);
@@ -530,10 +522,8 @@ describe("T3 browser developer instructions", () => {
   });
 
   it("omits the browser block entirely when the preview tools are not attached", () => {
-    for (const instructions of [
-      codexDefaultModeDeveloperInstructions(false),
-      codexPlanModeDeveloperInstructions(false),
-    ]) {
+    for (const mode of ["default", "plan"] as const) {
+      const instructions = buildCodexDeveloperInstructions(mode, runtime, false);
       NodeAssert.doesNotMatch(instructions, /preview_status/);
       NodeAssert.doesNotMatch(instructions, /preview_open/);
       NodeAssert.doesNotMatch(instructions, /T3 Code collaborative browser/);
@@ -547,7 +537,6 @@ describe("T3 browser developer instructions", () => {
   });
 
   it("tracks the turn's MCP configuration rather than defaulting to on", () => {
-    const runtime = { model: "gpt-5.3-codex", reasoningEffort: "high" };
     NodeAssert.match(buildCodexDeveloperInstructions("default", runtime, true), /preview_open/);
     NodeAssert.doesNotMatch(
       buildCodexDeveloperInstructions("default", runtime, false),
@@ -792,14 +781,109 @@ describe("isRecoverableThreadResumeError", () => {
 });
 
 describe("openCodexThread", () => {
+  it.effect("resumes metadata when historical turns contain unknown error values", () =>
+    Effect.gen(function* () {
+      const response = makeThreadOpenResponse("saved-thread");
+      const calls: unknown[] = [];
+      const opened = yield* openCodexThread({
+        client: {
+          request: () => Effect.die("A valid resumed thread must not start fresh"),
+          raw: {
+            request: (method, payload) => {
+              calls.push({ method, payload });
+              return Effect.succeed({
+                ...response,
+                thread: {
+                  ...response.thread,
+                  turns: [
+                    {
+                      id: "old-turn",
+                      status: "failed",
+                      items: [],
+                      error: {
+                        message: "Historical provider error",
+                        codexErrorInfo: "misalignment_policy_violation",
+                      },
+                    },
+                  ],
+                },
+              });
+            },
+          },
+        },
+        threadId: ThreadId.make("thread-1"),
+        runtimeMode: "auto",
+        cwd: "/tmp/project",
+        requestedModel: "gpt-5.3-codex",
+        serviceTier: "fast",
+        resumeThreadId: "saved-thread",
+      });
+
+      NodeAssert.deepStrictEqual(opened, {
+        cwd: response.cwd,
+        model: response.model,
+        thread: { id: "saved-thread" },
+      });
+      NodeAssert.deepStrictEqual(calls, [
+        {
+          method: "thread/resume",
+          payload: {
+            threadId: "saved-thread",
+            cwd: "/tmp/project",
+            model: "gpt-5.3-codex",
+            serviceTier: "fast",
+            approvalPolicy: "on-request",
+            sandbox: "workspace-write",
+            approvalsReviewer: "auto_review",
+            excludeTurns: true,
+          },
+        },
+      ]);
+    }),
+  );
+
+  it.effect("rejects malformed required resume metadata without starting a fresh thread", () =>
+    Effect.gen(function* () {
+      for (const invalidMetadata of [
+        { cwd: null },
+        { model: 42 },
+        { thread: { id: null } },
+        { thread: {} },
+      ]) {
+        const error = yield* openCodexThread({
+          client: {
+            request: () => Effect.die("Invalid resume metadata must not start a fresh thread"),
+            raw: {
+              request: () =>
+                Effect.succeed({ ...makeThreadOpenResponse("saved-thread"), ...invalidMetadata }),
+            },
+          },
+          threadId: ThreadId.make("thread-1"),
+          runtimeMode: "full-access",
+          cwd: "/tmp/project",
+          requestedModel: "gpt-5.3-codex",
+          serviceTier: undefined,
+          resumeThreadId: "saved-thread",
+        }).pipe(Effect.flip);
+
+        NodeAssert.ok(isCodexAppServerRequestError(error));
+        NodeAssert.equal(error.operation, "decode-payload");
+        NodeAssert.equal(error.method, "thread/resume");
+      }
+    }),
+  );
+
   it.effect("falls back to thread/start when resume fails recoverably", () =>
     Effect.gen(function* () {
       const calls: Array<{ method: "thread/start" | "thread/resume"; payload: unknown }> = [];
       const started = makeThreadOpenResponse("fresh-thread");
       const client = {
         raw: {
-          request: (method: string, payload?: unknown) => {
-            calls.push({ method: method as "thread/resume", payload });
+          request: (
+            method: "thread/resume",
+            payload: CodexRpc.ClientRequestParamsByMethod["thread/resume"],
+          ) => {
+            calls.push({ method, payload });
             return Effect.fail(
               new CodexErrors.CodexAppServerRequestError({
                 code: -32603,
@@ -808,12 +892,12 @@ describe("openCodexThread", () => {
             );
           },
         },
-        request: <M extends "thread/start" | "thread/resume">(
-          method: M,
-          payload: CodexRpc.ClientRequestParamsByMethod[M],
+        request: (
+          method: "thread/start",
+          payload: CodexRpc.ClientRequestParamsByMethod["thread/start"],
         ) => {
           calls.push({ method, payload });
-          return Effect.succeed(started as CodexRpc.ClientRequestResponsesByMethod[M]);
+          return Effect.succeed(started);
         },
       };
 
@@ -838,6 +922,7 @@ describe("openCodexThread", () => {
   it.effect("propagates non-recoverable resume failures", () =>
     Effect.gen(function* () {
       const client = {
+        request: () => Effect.die("Non-recoverable resume failures must not start a fresh thread"),
         raw: {
           request: () =>
             Effect.fail(
@@ -846,14 +931,6 @@ describe("openCodexThread", () => {
                 errorMessage: "timed out waiting for server",
               }),
             ),
-        },
-        request: <M extends "thread/start" | "thread/resume">(
-          _method: M,
-          _payload: CodexRpc.ClientRequestParamsByMethod[M],
-        ) => {
-          return Effect.succeed(
-            makeThreadOpenResponse("fresh-thread") as CodexRpc.ClientRequestResponsesByMethod[M],
-          );
         },
       };
 
@@ -869,51 +946,6 @@ describe("openCodexThread", () => {
 
       NodeAssert.ok(isCodexAppServerRequestError(error));
       NodeAssert.equal(error.errorMessage, "timed out waiting for server");
-    }),
-  );
-
-  it.effect("resumes without returning historical turns", () =>
-    Effect.gen(function* () {
-      const calls: Array<{ method: string; payload: unknown }> = [];
-      const resumed = makeThreadOpenResponse("resumed-thread");
-      const client = {
-        raw: {
-          request: (method: string, payload?: unknown) => {
-            calls.push({ method, payload });
-            return Effect.succeed(resumed);
-          },
-        },
-        request: <M extends "thread/start" | "thread/resume">(
-          _method: M,
-          _payload: CodexRpc.ClientRequestParamsByMethod[M],
-        ) => Effect.succeed(resumed as CodexRpc.ClientRequestResponsesByMethod[M]),
-      };
-
-      const opened = yield* openCodexThread({
-        client,
-        threadId: ThreadId.make("thread-1"),
-        runtimeMode: "full-access",
-        cwd: "/tmp/project",
-        requestedModel: "gpt-5.3-codex",
-        serviceTier: undefined,
-        resumeThreadId: "existing-thread",
-      });
-
-      NodeAssert.equal(opened.thread.id, "resumed-thread");
-      NodeAssert.deepStrictEqual(calls, [
-        {
-          method: "thread/resume",
-          payload: {
-            threadId: "existing-thread",
-            cwd: "/tmp/project",
-            approvalPolicy: "never",
-            sandbox: "danger-full-access",
-            approvalsReviewer: "user",
-            model: "gpt-5.3-codex",
-            excludeTurns: true,
-          },
-        },
-      ]);
     }),
   );
 });
