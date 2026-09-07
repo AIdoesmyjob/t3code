@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off - utimesSync creates the stable timestamp fixture required by the Git clean-filter tests.
+import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, describe } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
