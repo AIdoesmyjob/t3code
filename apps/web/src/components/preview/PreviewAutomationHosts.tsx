@@ -67,6 +67,7 @@ import {
   shouldAutoShowPreviewForAutomationUse,
   shouldOpenPreviewMiniPlayer,
 } from "./previewAutomationOpenReadiness";
+import { resolveHostWaitBudgetMs } from "./previewAutomationHostBudget";
 import {
   assertPreviewRuntimeCurrent,
   waitForNavigationReadiness,
@@ -319,6 +320,8 @@ function PreviewAutomationHost(props: { readonly environmentId: EnvironmentId })
 
   const handleRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
+      // Session sync, recording finalization, and upload share the broker's timeout budget.
+      const hostDeadlineMs = Date.now() + resolveHostWaitBudgetMs(request.timeoutMs);
       const threadRef: ScopedThreadRef = {
         environmentId,
         threadId: request.threadId,
