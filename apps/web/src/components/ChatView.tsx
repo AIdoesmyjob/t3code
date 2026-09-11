@@ -6184,8 +6184,6 @@ export default function ChatView(props: ChatViewProps) {
             error instanceof Error ? error.message : "Failed to compact context.",
           );
         }
-      } else {
-        clearUsageLimitsFor(routeThreadKey);
       }
     } finally {
       sendInFlightRef.current = false;
