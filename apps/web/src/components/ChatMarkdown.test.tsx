@@ -104,9 +104,75 @@ describe("ChatMarkdown favicon privacy", () => {
 });
 
 describe("ChatMarkdown streaming", () => {
+  it("does not retokenize completed lines when streaming finishes", async () => {
+    const highlighter = await getSyntaxHighlighterPromise("typescript");
+    const highlight = vi.spyOn(highlighter, "codeToHast");
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+    const text = "```typescript\nconst completed = 1;\nconst current = 2;";
+    try {
+      await act(async () => {
+        renderer = create(<ChatMarkdown cwd="/tmp/project" text={text} isStreaming />);
+      });
+      expect(highlight).toHaveBeenCalled();
+      highlight.mockClear();
+      await act(async () => {
+        renderer!.update(<ChatMarkdown cwd="/tmp/project" text={text + "\n```"} />);
+      });
+      expect(highlight.mock.calls.every(([code]) => !code.includes("const completed"))).toBe(true);
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("recovers highlighting after a failed fence changes without resetting its controls", async () => {
+    const highlighter = await getSyntaxHighlighterPromise("text");
+    const codeToHast = highlighter.codeToHast.bind(highlighter);
+    let fail = true;
+    vi.spyOn(highlighter, "codeToHast").mockImplementation((...args) => {
+      if (fail) throw new Error("Temporary highlighter failure");
+      return codeToHast(...args);
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    let renderer: ReactTestRenderer | undefined;
+
+    try {
+      await act(async () => {
+        renderer = create(
+          <ChatMarkdown cwd="/tmp/project" text={"```text\ninitial\n```"} isStreaming />,
+        );
+      });
+      const mounted = renderer!;
+      const codeBlock = mounted.root.findByProps({ "data-language": "text" });
+      const initialWrap = codeBlock.props["data-wrap"] === "true";
+      const wrap = codeButton(mounted, initialWrap ? "Disable line wrap" : "Wrap lines");
+      await act(async () => {
+        wrap.onClick?.({} as Parameters<NonNullable<typeof wrap.onClick>>[0]);
+      });
+      expect(mounted.root.findAllByProps({ className: "chat-markdown-shiki" })).toHaveLength(0);
+
+      fail = false;
+      await act(async () => {
+        mounted.update(
+          <ChatMarkdown cwd="/tmp/project" text={"```text\nrecovered\n```"} isStreaming />,
+        );
+      });
+      expect(mounted.root.findAllByProps({ className: "chat-markdown-shiki" })).toHaveLength(1);
+      expect(mounted.root.findByProps({ "data-language": "text" })).toBe(codeBlock);
+      expect(codeBlock.props["data-wrap"]).toBe(String(!initialWrap));
+    } finally {
+      await act(async () => renderer?.unmount());
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
   it("preserves code controls and details without highlighting an unchanged fence again", async () => {
     const highlighter = await getSyntaxHighlighterPromise("text");
-    const highlight = vi.spyOn(highlighter, "codeToHtml");
+    const highlight = vi.spyOn(highlighter, "codeToHast");
     const writeText = vi.fn(async (_text: string) => {});
     vi.stubGlobal("navigator", { clipboard: { writeText } });
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
