@@ -3639,12 +3639,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 alt=""
                 className="size-full object-cover"
                 fallback={
-                  <PierreEntryIcon
-                    pathValue={image.name}
-                    kind="file"
-                    theme={resolvedTheme}
-                    className="m-auto size-3.5"
-                  />
+                  <FileIcon className="m-auto size-3.5 text-secondary-label" />
                 }
               />
             ) : (
