@@ -26,7 +26,6 @@ describe("terminal output window", () => {
         const protocol = yield* RpcServer.Protocol.make((write) =>
           Effect.gen(function* () {
             yield* Deferred.succeed(receive, write);
-            const serialization = yield* RpcSerialization.RpcSerialization;
             return {
               disconnects: yield* Queue.unbounded<number>(),
               send: (_clientId, response) => Queue.offer(responses, response),
@@ -37,7 +36,6 @@ describe("terminal output window", () => {
               supportsTransferables: false,
               supportsSpanPropagation: false,
               supportsNotifications: true,
-              codecFor: serialization.codecFor,
             };
           }),
         );
