@@ -31,6 +31,7 @@ import {
   Minimize2Icon,
   RefreshCwIcon,
   SearchIcon,
+  UserLockIcon,
 } from "lucide-react";
 import {
   useCallback,
@@ -183,6 +184,7 @@ const STATE_TABS = [
 
 const SORT_OPTIONS = [
   { value: "ready", label: "Merge readiness", Icon: ListChecksIcon },
+  { value: "blocked", label: "Blocked on me", Icon: UserLockIcon },
   { value: "updated", label: "Recently updated", Icon: ClockIcon },
   { value: "newest", label: "Newest shown", Icon: CalendarArrowDownIcon },
   { value: "oldest", label: "Oldest shown", Icon: CalendarArrowUpIcon },
@@ -1456,8 +1458,9 @@ function PullRequestsRouteView() {
       typedParsed.text,
       (entry) =>
         entry.additions + entry.deletions > 0 || statsByRow.has(pullRequestDiffStatKey(entry)),
+      search.involvement,
     );
-  }, [groups, sort, statsByRow, typedParsed.text]);
+  }, [groups, search.involvement, sort, statsByRow, typedParsed.text]);
   const listedPullRequestsBySurface = useMemo(
     () =>
       new Map(
