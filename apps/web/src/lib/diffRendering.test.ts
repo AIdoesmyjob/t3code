@@ -6,6 +6,8 @@ import {
   buildPatchCacheKey,
   getDiffLineStat,
   getRenderablePatch,
+  resolveFileDiffPath,
+  resolveFileDiffPreviousPath,
 } from "./diffRendering";
 
 describe("buildPatchCacheKey", () => {
@@ -32,6 +34,34 @@ describe("buildPatchCacheKey", () => {
 });
 
 describe("getRenderablePatch", () => {
+  it.each([
+    ["a/example.ts", "a/example.ts", "change"],
+    ["b/example.ts", "b/example.ts", "change"],
+    ["a/before.ts", "b/after.ts", "rename-changed"],
+  ])("preserves repository paths from %s to %s", (previousPath, path, type) => {
+    const parsed = getRenderablePatch(
+      [
+        `diff --git a/${previousPath} b/${path}`,
+        ...(previousPath === path
+          ? []
+          : ["similarity index 50%", `rename from ${previousPath}`, `rename to ${path}`]),
+        `--- a/${previousPath}`,
+        `+++ b/${path}`,
+        "@@ -1 +1 @@",
+        "-before",
+        "+after",
+      ].join("\n"),
+    );
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    const file = parsed.files[0];
+    expect(file).toBeDefined();
+    if (!file) return;
+    expect(resolveFileDiffPath(file)).toBe(path);
+    expect(resolveFileDiffPreviousPath(file)).toBe(previousPath);
+    expect(buildFileDiffIdentityKey(file)).toBe(`${previousPath}\0${path}\0${type}`);
+  });
+
   it("compacts partial hunk render offsets for virtualized review diffs", () => {
     const patch = [
       "diff --git a/example.ts b/example.ts",
@@ -105,6 +135,33 @@ describe("diff file reconciliation", () => {
     file.cacheKey = `${file.cacheKey}:hydrated`;
 
     expect(buildFileDiffRenderKey(file)).toBe(key);
+  });
+
+  it("gives a type change its own identity per block", () => {
+    const patch = [
+      "diff --git a/AGENTS.md b/AGENTS.md",
+      "deleted file mode 100644",
+      "--- a/AGENTS.md",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-duplicated instructions",
+      "diff --git a/AGENTS.md b/AGENTS.md",
+      "new file mode 120000",
+      "--- /dev/null",
+      "+++ b/AGENTS.md",
+      "@@ -0,0 +1 @@",
+      "+CLAUDE.md",
+    ].join("\n");
+    const parsed = getRenderablePatch(patch, "type-change");
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    const [deleted, added] = parsed.files;
+    expect(deleted?.type).toBe("deleted");
+    expect(added?.type).toBe("new");
+    if (!deleted || !added) return;
+
+    expect(buildFileDiffIdentityKey(deleted)).not.toBe(buildFileDiffIdentityKey(added));
+    expect(new Set(parsed.files.map(buildFileDiffIdentityKey)).size).toBe(parsed.files.length);
   });
 
   it("keeps identities stable and versions local to the changed file", () => {
