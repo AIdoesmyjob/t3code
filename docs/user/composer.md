@@ -10,7 +10,8 @@ composers.
 
 You can attach images up to 10 MB. On servers that support file uploads, you can also
 attach videos, text files, PDFs, ZIP archives, and other files. Each file can be up to the limit advertised
-by the server, capped at 50 MB. Each message can contain up to eight attachments in total. Files
+by the server, capped at 50 MB. Each message can contain up to 100 attachments in total. Images
+can total up to 80 MiB per message. Files
 upload directly to the environment, where your agent can read, copy, or edit them by their file path.
 
 Attachments upload as soon as you add them while connected to a server that supports uploads.

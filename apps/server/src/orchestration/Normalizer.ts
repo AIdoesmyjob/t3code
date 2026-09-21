@@ -4,6 +4,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import {
   type ClientOrchestrationCommand,
+  getProviderAttachmentLimitError,
   type IsoDateTime,
   type OrchestrationCommand,
   OrchestrationDispatchCommandError,
@@ -133,10 +134,17 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
       return canonicalCommand as OrchestrationCommand;
     }
 
+    const attachmentLimitError = getProviderAttachmentLimitError(
+      canonicalCommand.message.attachments,
+    );
+    if (attachmentLimitError) {
+      return yield* new OrchestrationDispatchCommandError({ message: attachmentLimitError });
+    }
     const claimedAttachmentPaths: string[] = [];
+    const attachmentsWithDecodedSizes = [...canonicalCommand.message.attachments];
     const normalizedAttachments = yield* Effect.forEach(
       canonicalCommand.message.attachments,
-      (attachment) =>
+      (attachment, index) =>
         Effect.gen(function* () {
           if (!("dataUrl" in attachment)) {
             const claim = planAttachmentClaim({
@@ -226,6 +234,11 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
             mimeType: parsed.mimeType.toLowerCase(),
             sizeBytes: bytes.byteLength,
           };
+          attachmentsWithDecodedSizes[index] = persistedAttachment;
+          const decodedLimitError = getProviderAttachmentLimitError(attachmentsWithDecodedSizes);
+          if (decodedLimitError) {
+            return yield* new OrchestrationDispatchCommandError({ message: decodedLimitError });
+          }
 
           const attachmentPath = resolveAttachmentPath({
             attachmentsDir: serverConfig.attachmentsDir,
@@ -253,6 +266,7 @@ export const normalizeDispatchCommand = (command: ClientOrchestrationCommand) =>
                 }),
             ),
           );
+          claimedAttachmentPaths.push(attachmentPath);
 
           return persistedAttachment;
         }),
