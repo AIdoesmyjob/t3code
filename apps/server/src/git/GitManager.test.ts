@@ -3770,7 +3770,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     }),
   );
 
-  it.effect("generates PR content against the remote base when the local base is stale", () =>
+  it.effect("generates PR content from branch changes when the remote base advances", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -3802,7 +3802,15 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       yield* runGit(repoDir, ["push", "-u", "origin", "feature/remote-base"]);
       yield* runGit(repoDir, ["config", "branch.feature/remote-base.gh-merge-base", "main"]);
 
+      NodeFS.writeFileSync(NodePath.join(peerDir, "later-main.txt"), "unrelated\n");
+      yield* runGit(peerDir, ["add", "later-main.txt"]);
+      yield* runGit(peerDir, ["commit", "-m", "Later main commit"]);
+      yield* runGit(peerDir, ["push", "origin", "main"]);
+      yield* runGit(repoDir, ["fetch", "origin"]);
+
       let generatedCommitSummary = "";
+      let generatedDiffSummary = "";
+      let generatedDiffPatch = "";
       const { manager } = yield* makeManager({
         ghScenario: {
           prListSequence: ["[]", "[]"],
@@ -3810,6 +3818,8 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         textGeneration: {
           generatePrContent: (input) => {
             generatedCommitSummary = input.commitSummary;
+            generatedDiffSummary = input.diffSummary;
+            generatedDiffPatch = input.diffPatch;
             return Effect.succeed({ title: "Feature PR", body: "Feature body" });
           },
         },
@@ -3823,6 +3833,11 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       expect(result.pr.status).toBe("created");
       expect(generatedCommitSummary).toContain("Feature commit");
       expect(generatedCommitSummary).not.toContain("Remote base commit");
+      expect(generatedCommitSummary).not.toContain("Later main commit");
+      expect(generatedDiffSummary).toContain("feature.txt");
+      expect(generatedDiffSummary).not.toContain("later-main.txt");
+      expect(generatedDiffPatch).toContain("feature.txt");
+      expect(generatedDiffPatch).not.toContain("later-main.txt");
     }),
   );
 
