@@ -301,10 +301,7 @@ import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { resolveTimelineIsAtEnd } from "./chat/MessagesTimeline.logic";
-import {
-  resolveComposerTimelineInset,
-  resolveScrollToEndClearance,
-} from "./composerFooterLayout";
+import { resolveComposerTimelineInset, resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader } from "./chat/ChatHeader";
 import { PanelLayoutControls, RightPanelMaximizeControl } from "./chat/PanelLayoutControls";
 import { expandedImageKey, type ExpandedImagePreview } from "./chat/ExpandedImagePreview";
@@ -7099,7 +7096,8 @@ export default function ChatView(props: ChatViewProps) {
       // The option replaces the custom answer. Anything typed there is the
       // user's text, so it goes back to the thread draft instead of vanishing.
       const displacedAnswer =
-        pendingUserInputAnswersByRequestId[activePendingRequestKey]?.[questionId]?.customAnswer;
+        pendingUserInputAnswersByRequestId[activePendingUserInput.requestId]?.[questionId]
+          ?.customAnswer;
       const currentPrompt =
         useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
       const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
@@ -7134,7 +7132,6 @@ export default function ChatView(props: ChatViewProps) {
     [
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
-      activePendingRequestKey,
       composerDraftTarget,
       composerRef,
       pendingUserInputAnswersByRequestId,

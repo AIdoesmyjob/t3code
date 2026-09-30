@@ -358,11 +358,7 @@ function ComposerBannerStackAlert({
           >
             {item.title}
           </span>
-          {item.description ? (
-            <NoticeDescription compact={item.compact ?? false}>
-              {item.description}
-            </NoticeDescription>
-          ) : null}
+          {item.description ? <NoticeDescription>{item.description}</NoticeDescription> : null}
         </ComposerBanner.Content>
         {item.actions || item.onDismiss ? (
           <ComposerBanner.Actions>

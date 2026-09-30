@@ -26,6 +26,7 @@ import {
 } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
+import { writeFakeCli } from "../../testUtils/fakeCli.ts";
 import { buildRuntimeInstructions } from "../RuntimeInstructions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import type { CursorAdapterShape } from "../Services/CursorAdapter.ts";
