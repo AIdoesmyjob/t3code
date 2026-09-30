@@ -35,7 +35,6 @@ import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 export const TIMELINE_MINIMAP_ITEM_SPACING = 8;
 export const TIMELINE_MINIMAP_MIN_ITEMS = 2;
 export const TIMELINE_MINIMAP_MAX_HEIGHT_CSS = "calc(100vh - 18rem)";
-export const TIMELINE_CONTENT_MAX_WIDTH = 768;
 export const TIMELINE_MINIMAP_PERSISTENT_GUTTER = 48;
 
 function singleToolCallLabel(entry: WorkLogEntry): string {
@@ -198,14 +197,20 @@ export function resolveTimelineMinimapIndexFromPointer(input: {
   return Math.max(0, Math.min(input.itemCount - 1, Math.round(progress * (input.itemCount - 1))));
 }
 
-export function resolveTimelineMinimapHasPersistentGutter(viewportWidth: number): boolean {
-  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) {
-    return false;
+function resolveTimelineSideGutter(viewportWidth: number, contentWidth: number): number {
+  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 || !Number.isFinite(contentWidth)) {
+    return 0;
   }
+  return Math.max(0, (viewportWidth - Math.min(viewportWidth, contentWidth)) / 2);
+}
 
-  const contentWidth = Math.min(viewportWidth, TIMELINE_CONTENT_MAX_WIDTH);
-  const sideGutter = Math.max(0, (viewportWidth - contentWidth) / 2);
-  return sideGutter >= TIMELINE_MINIMAP_PERSISTENT_GUTTER;
+export function resolveTimelineMinimapHasPersistentGutter(
+  viewportWidth: number,
+  contentWidth: number,
+): boolean {
+  return (
+    resolveTimelineSideGutter(viewportWidth, contentWidth) >= TIMELINE_MINIMAP_PERSISTENT_GUTTER
+  );
 }
 
 export const TIMELINE_MINIMAP_HIT_STRIP_LEFT = 12;
@@ -214,18 +219,16 @@ export const TIMELINE_MINIMAP_EXPANDED_HIT_STRIP_WIDTH = "22rem";
 
 /**
  * The minimap overlays the viewport's left edge while the content column is
- * centered, so the side gutter between them shrinks under browser zoom or a
- * narrow pane. A fixed-width hover strip would then sit on top of the message
+ * centered, so the side gutter between them shrinks under browser zoom, a
+ * narrow pane, or a wider Chat width setting. A fixed-width hover strip would then sit on top of the message
  * text and swallow its pointer events. Cap the strip's width so it never
  * extends past the gutter into the content column; 0 disables the strip.
  */
-export function resolveTimelineMinimapHitStripWidth(viewportWidth: number): number {
-  if (!Number.isFinite(viewportWidth) || viewportWidth <= 0) {
-    return 0;
-  }
-
-  const contentWidth = Math.min(viewportWidth, TIMELINE_CONTENT_MAX_WIDTH);
-  const sideGutter = Math.max(0, (viewportWidth - contentWidth) / 2);
+export function resolveTimelineMinimapHitStripWidth(
+  viewportWidth: number,
+  contentWidth: number,
+): number {
+  const sideGutter = resolveTimelineSideGutter(viewportWidth, contentWidth);
   return Math.max(
     0,
     Math.min(

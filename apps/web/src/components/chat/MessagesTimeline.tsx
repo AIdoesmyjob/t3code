@@ -118,6 +118,7 @@ import { ProposedPlanCard } from "./ProposedPlanCard";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { shouldAutoExpandChangedFiles } from "./changedFilesPresentation";
 import { CHAT_TIMELINE_ANCHOR_OFFSET } from "./timelineScrollAnchoring";
+import { useClientSettings } from "~/hooks/useSettings";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { AssistantSelectionToolbar } from "./AssistantSelectionToolbar";
@@ -585,6 +586,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [timelineViewportElement, setTimelineViewportElement] = useState<HTMLDivElement | null>(
     null,
   );
+  const chatWidth = useClientSettings((settings) => settings.chatWidth);
   const {
     target: readyCitationRequest,
     positioning: citationPositioning,
@@ -667,11 +669,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
     const measure = () => {
       const viewportWidth = timelineViewportElement.getBoundingClientRect().width;
-      const nextHasPersistentGutter = resolveTimelineMinimapHasPersistentGutter(viewportWidth);
+      const contentWidth =
+        timelineViewportElement
+          .querySelector<HTMLElement>("[data-timeline-root]")
+          ?.getBoundingClientRect().width ?? viewportWidth;
+      const nextHasPersistentGutter = resolveTimelineMinimapHasPersistentGutter(
+        viewportWidth,
+        contentWidth,
+      );
       setMinimapHasPersistentGutter((current) =>
         current === nextHasPersistentGutter ? current : nextHasPersistentGutter,
       );
-      setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth));
+      setMinimapHitStripWidth(resolveTimelineMinimapHitStripWidth(viewportWidth, contentWidth));
     };
 
     const frame = requestAnimationFrame(measure);
@@ -683,7 +692,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       cancelAnimationFrame(frame);
       observer.disconnect();
     };
-  }, [timelineViewportElement, rows.length]);
+  }, [timelineViewportElement, rows.length, chatWidth]);
 
   const sharedState = useMemo<TimelineRowSharedState>(
     () => ({
