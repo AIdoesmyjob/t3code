@@ -110,6 +110,48 @@ function totalOutputTokens(summary: { buckets: readonly { totals: { outputTokens
 }
 
 describe("UsageService", () => {
+  it.live("keeps large-record totals exact through append, deduplication and restart", () =>
+    Effect.gen(function* () {
+      const { transcript, settings, home } = yield* setup;
+      const large = claudeLine(1, 9900).replace(
+        '"message":',
+        '"padding":' + encodeUnknownJsonString("x".repeat(9 * 1024 * 1024)) + ',"message":',
+      );
+      yield* Effect.promise(() => NodeFSP.writeFile(transcript, large));
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const first = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(first), 9900);
+        assert.closeTo(
+          first.buckets.reduce((sum, bucket) => sum + bucket.costUsd, 0),
+          0.4951,
+          1e-12,
+        );
+        assert.deepStrictEqual((yield* service.readSummary(WINDOW)).buckets, first.buckets);
+        yield* Effect.promise(() => NodeFSP.appendFile(transcript, large + claudeLine(2, 100)));
+        const appended = yield* service.readSummary(WINDOW);
+        assert.strictEqual(totalOutputTokens(appended), 10000);
+        assert.strictEqual(
+          appended.buckets.reduce((sum, bucket) => sum + bucket.totals.uncachedInputTokens, 0),
+          20,
+        );
+        const restarted = yield* UsageService.make;
+        assert.deepStrictEqual((yield* restarted.readSummary(WINDOW)).buckets, appended.buckets);
+      }).pipe(
+        Effect.provide(
+          serviceLayers({
+            prefix: "usage-service-large-record-test",
+            home,
+            settings,
+            ratesDocument: {
+              "claude-fable-5": { input_cost_per_token: 1e-5, output_cost_per_token: 5e-5 },
+            },
+          }),
+        ),
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.live("reads configured and disabled accounts once across shared and aliased homes", () =>
     Effect.gen(function* () {
       const { transcript, settings, home } = yield* setup;
