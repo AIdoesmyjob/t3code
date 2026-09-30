@@ -223,6 +223,22 @@ describe("ClientSettings glass opacity", () => {
   });
 });
 
+describe("ClientSettings chat width", () => {
+  it("defaults existing settings to the comfortable column", () => {
+    expect(decodeClientSettings({}).chatWidth).toBe("comfortable");
+  });
+
+  it.each(["comfortable", "wide", "full"])("accepts %s in settings and patches", (value) => {
+    expect(decodeClientSettings({ chatWidth: value }).chatWidth).toBe(value);
+    expect(decodeClientSettingsPatch({ chatWidth: value }).chatWidth).toBe(value);
+  });
+
+  it("rejects unsupported widths", () => {
+    expect(() => decodeClientSettings({ chatWidth: "narrow" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ chatWidth: "narrow" })).toThrow();
+  });
+});
+
 describe("ClientSettings appearance contrast", () => {
   it("defaults to the theme's original contrast", () => {
     expect(decodeClientSettings({}).appearanceContrast).toBe(100);

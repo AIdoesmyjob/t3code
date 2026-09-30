@@ -1286,6 +1286,19 @@ html[data-theme-id="t3-chat"] [data-app-sidebar] {
   }
 }
 
+/* Chat timeline and composer column width, set from the Chat width setting. */
+:root {
+  --chat-max-width: 48rem;
+}
+
+:root[data-chat-width="wide"] {
+  --chat-max-width: 72rem;
+}
+
+:root[data-chat-width="full"] {
+  --chat-max-width: 100%;
+}
+
 /* Contrast stays in ordinary custom properties so both Tailwind utilities and
    global/imperative chrome styles resolve the same adjusted role. Redeclare on
    the sidebar because it owns a local semantic palette. */

@@ -1,5 +1,10 @@
 # Message composer
 
+On web and desktop, **Settings → Appearance → Chat width** controls how wide messages and the
+composer grow on large screens. **Comfortable** keeps the default width, **Wide** provides more
+room for code and tables, and **Full** uses the available pane width. Narrow panes still fit the
+window. Use the setting's reset button to restore the default.
+
 Messages can contain up to 120,000 characters. If a draft is longer, T3 Code keeps it in the
 composer and shows how many characters need to be removed. Shorten the draft or split it into
 multiple messages, then send again in the same thread.
@@ -16,7 +21,8 @@ upload directly to the environment, where your agent can read, copy, or edit the
 
 Attachments upload as soon as you add them while connected to a server that supports uploads.
 The send button becomes available after every upload finishes. Failed uploads can be retried or
-removed. On mobile, tap **+** to open
+removed; on web and desktop, they retry automatically after reconnecting while the file remains
+in the draft. On mobile, tap **+** to open
 the photo library from either the compact or expanded composer. When the connected server supports
 file uploads, **+** opens a menu beside the button with **Photo Library** and **Choose Files**.
 Videos use the server's file upload limit. You can also share photos, videos, and files into
