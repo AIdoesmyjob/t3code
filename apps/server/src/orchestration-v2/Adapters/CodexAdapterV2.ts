@@ -1,3 +1,4 @@
+import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
@@ -1285,6 +1286,12 @@ type PendingCodexRuntimeRequest =
       readonly requestId: RuntimeRequestId;
       readonly answers: Deferred.Deferred<ProviderUserInputAnswers, never>;
     };
+
+type CodexImageViewItem = {
+  readonly id: string;
+  readonly type: "imageView";
+  readonly path: string;
+};
 
 type CodexWebSearchItem = {
   readonly id: string;
@@ -3766,6 +3773,77 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           },
         );
 
+        // Skofo fork: Codex reports images it views (view_image, screenshots) as
+        // imageView items. Project them as a read-style tool row carrying
+        // viewedImagePath so the timeline shows the same thumbnail it shows for
+        // Claude reads, as production did before orchestration-v2.
+        const buildImageViewArtifacts = Effect.fn("CodexAdapterV2.buildImageViewArtifacts")(
+          function* (input: {
+            readonly context: ActiveCodexTurnContext;
+            readonly item: CodexImageViewItem;
+            readonly completed: boolean;
+          }) {
+            const updatedAt = yield* DateTime.now;
+            const completedAt = input.completed ? updatedAt : null;
+            const nodeId = idAllocator.derive.nodeFromProviderItem({
+              driver: CODEX_PROVIDER,
+              nativeItemId: input.item.id,
+            });
+            const turnItemId = idAllocator.derive.turnItemFromProviderItem({
+              driver: CODEX_PROVIDER,
+              nativeItemId: input.item.id,
+            });
+            const { ordinal, startedAt } = yield* resolveItemPosition(input.context, input.item.id);
+            const status = input.completed ? "completed" : "running";
+            const imagePath = input.item.path.trim();
+            const viewedImagePath =
+              imagePath.length > 0 &&
+              imagePath.length <= 4096 &&
+              !/[\r\n]/.test(imagePath) &&
+              isWorkspaceImagePreviewPath(imagePath)
+                ? imagePath
+                : undefined;
+            const node: OrchestrationV2ExecutionNode = {
+              id: nodeId,
+              threadId: input.context.projectionThreadId,
+              runId: input.context.projectionRunId,
+              parentNodeId: input.context.itemParentNodeId,
+              rootNodeId: input.context.rootNodeId,
+              kind: "tool_call",
+              status,
+              countsForRun: false,
+              providerThreadId: input.context.providerThread.id,
+              providerTurnId: input.context.providerTurnId,
+              nativeItemRef: codexNativeItemRef(input.item.id),
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt,
+              completedAt,
+            };
+            const turnItem: OrchestrationV2TurnItem = {
+              id: turnItemId,
+              threadId: input.context.projectionThreadId,
+              runId: input.context.projectionRunId,
+              nodeId,
+              providerThreadId: input.context.providerThread.id,
+              providerTurnId: input.context.providerTurnId,
+              nativeItemRef: codexNativeItemRef(input.item.id),
+              parentItemId: null,
+              ordinal,
+              status,
+              title: "View image",
+              startedAt,
+              completedAt,
+              updatedAt,
+              type: "dynamic_tool",
+              toolName: "view_image",
+              ...(viewedImagePath === undefined ? {} : { viewedImagePath }),
+              input: { path: imagePath },
+            };
+            return { node, turnItem };
+          },
+        );
+
         const buildDynamicToolArtifacts = Effect.fn("CodexAdapterV2.buildDynamicToolArtifacts")(
           function* (context: ActiveCodexTurnContext, item: CodexDynamicToolItem) {
             const updatedAt = yield* DateTime.now;
@@ -4897,6 +4975,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return;
             }
 
+            if (payload.item.type === "imageView") {
+              const artifacts = yield* buildImageViewArtifacts({
+                context,
+                item: payload.item,
+                completed: false,
+              });
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              });
+              return;
+            }
+
             if (payload.item.type !== "webSearch") {
               return;
             }
@@ -5066,6 +5163,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (artifacts === null) {
                 return;
               }
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              });
+              return;
+            }
+
+            if (payload.item.type === "imageView") {
+              const artifacts = yield* buildImageViewArtifacts({
+                context,
+                item: payload.item,
+                completed: true,
+              });
               yield* emitProviderEvent({
                 type: "node.updated",
                 driver: CODEX_PROVIDER,

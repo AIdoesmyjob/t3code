@@ -2778,6 +2778,68 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("projects viewed images as read rows with a thumbnail path (skofo fork)", () =>
+    Effect.gen(function* () {
+      const scenario = "codex-viewed-image";
+      const base = finalAnswerTranscript(scenario, [{ id: "answer", text: "Looked." }]);
+      const imageView = (phase: "started" | "completed", id: string, path: string) => ({
+        type: "emit_inbound" as const,
+        frame: {
+          method: `item/${phase}`,
+          params: {
+            threadId: `native-${scenario}-thread`,
+            turnId: `native-${scenario}-turn`,
+            item: { type: "imageView", id, path },
+          },
+        },
+      });
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...base.entries.slice(0, -1),
+            imageView("started", "view-1", "/tmp/screens/shot.png"),
+            imageView("completed", "view-1", "/tmp/screens/shot.png"),
+            imageView("completed", "view-2", "/tmp/notes.txt"),
+            ...base.entries.slice(-1),
+          ],
+        }),
+      );
+      yield* harness.runtime.startTurn(
+        makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-viewed-image"),
+          text: "Reply with the requested recovery marker.",
+        }),
+      );
+      yield* harness.firstTerminal;
+
+      const items = harness.events.flatMap((event) =>
+        event.type === "turn_item.updated" && event.turnItem.type === "dynamic_tool"
+          ? [event.turnItem]
+          : [],
+      );
+      const viewed = items.filter((item) => item.toolName === "view_image");
+      assert.deepEqual(
+        viewed.map((item) => [item.status, item.viewedImagePath ?? null]),
+        [
+          ["running", "/tmp/screens/shot.png"],
+          ["completed", "/tmp/screens/shot.png"],
+          ["completed", null],
+        ],
+      );
+      assert.deepEqual(viewed[1]?.input, { path: "/tmp/screens/shot.png" });
+      assert.strictEqual(viewed[0]?.id, viewed[1]?.id);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect.each(["complete", "stop"] as const)(
     "retains a generating image after settlement until %s",
     (outcome) =>
