@@ -1,9 +1,10 @@
+import { pipe } from "effect/Function";
 import {
   fileBasename,
-  formatFilePathPosition,
-  splitFilePathPosition,
   stripSlashPrefixedWindowsDrive,
-} from "@t3tools/client-runtime/markdown-links";
+  isWindowsAbsolutePath,
+} from "@t3tools/shared/path";
+import { formatFilePathPosition, splitFilePathPosition } from "@t3tools/shared/fileLinks";
 
 function normalizePathSeparators(path: string): string {
   return path.replaceAll("\\", "/");
@@ -26,14 +27,19 @@ export function formatWorkspaceRelativePath(
 
   let displayPath = normalizedPath;
   if (workspaceRoot) {
-    const normalizedWorkspaceRoot = stripSlashPrefixedWindowsDrive(
-      normalizePathSeparators(trimTrailingPathSeparators(workspaceRoot)),
+    const normalizedWorkspaceRoot = pipe(
+      trimTrailingPathSeparators(workspaceRoot),
+      normalizePathSeparators,
+      stripSlashPrefixedWindowsDrive,
     );
     const workspaceLabel = fileBasename(normalizedWorkspaceRoot);
-    const pathForCompare = normalizedPath.toLowerCase();
-    const workspaceForCompare = normalizedWorkspaceRoot.toLowerCase();
+    const caseInsensitive = isWindowsAbsolutePath(stripSlashPrefixedWindowsDrive(workspaceRoot));
+    const pathForCompare = caseInsensitive ? normalizedPath.toLowerCase() : normalizedPath;
+    const workspaceForCompare = caseInsensitive
+      ? normalizedWorkspaceRoot.toLowerCase()
+      : normalizedWorkspaceRoot;
     const workspaceWithSeparator = `${workspaceForCompare}/`;
-    const workspaceLabelWithSeparator = `${workspaceLabel.toLowerCase()}/`;
+    const workspaceLabelWithSeparator = `${caseInsensitive ? workspaceLabel.toLowerCase() : workspaceLabel}/`;
 
     if (pathForCompare === workspaceForCompare) {
       displayPath = workspaceLabel;

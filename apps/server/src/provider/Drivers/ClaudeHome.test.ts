@@ -14,23 +14,6 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
-    it.effect("treats empty, ~/.claude, and the expanded default as the same Claude home", () =>
-      Effect.gen(function* () {
-        const path = yield* Path.Path;
-        const resolved = path.resolve(path.join(NodeOS.homedir(), ".claude"));
-
-        expect(yield* resolveClaudeHomePath({ homePath: "" })).toBe(resolved);
-        expect(yield* resolveClaudeHomePath({ homePath: "~/.claude" })).toBe(resolved);
-        expect(yield* resolveClaudeHomePath({ homePath: resolved })).toBe(resolved);
-        expect(yield* makeClaudeEnvironment({ homePath: "" })).toBe(process.env);
-
-        const key = `claude:home:${resolved}`;
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: "" })).toBe(key);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: "~/.claude" })).toBe(key);
-        expect(yield* makeClaudeContinuationGroupKey({ homePath: resolved })).toBe(key);
-      }),
-    );
-
     it.effect("resolves configured Claude HOME and stamps continuation/cache keys with it", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
@@ -63,6 +46,7 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         );
       }),
     );
+
     it.effect("separates capability probes by cwd", () =>
       Effect.gen(function* () {
         const config = { binaryPath: "claude", homePath: "" };

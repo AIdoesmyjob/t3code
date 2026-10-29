@@ -22,17 +22,21 @@ We wanted something performant, remote-ready, and truly open. If we ever go the 
 > - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
 > - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
 
-### Try it out (install-free)
-
-The easiest way to test T3 Code is to run the server in your terminal (requires Node.js 22.16+, 23.11+, or 24.10+):
+### Command line
 
 ```bash
-npx t3@latest
+curl -fsSL https://t3.codes/install.sh | sh
 ```
 
-This will launch T3 Code's backend on your machine as well as the local web app to control your agents.
+On Windows, in PowerShell:
 
-Tip: Use `npx t3@latest --help` for the full CLI reference.
+```powershell
+irm https://t3.codes/install.ps1 | iex
+```
+
+Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
+
+To try it once without installing, run `npx t3@latest` instead.
 
 ### Desktop app
 
@@ -44,10 +48,24 @@ Install the latest version of the desktop app from [GitHub Releases](https://git
 winget install T3Tools.T3Code
 ```
 
+#### Windows (`scoop`)
+
+```bash
+scoop install extras/t3code
+```
+
 #### macOS (Homebrew)
 
 ```bash
 brew install --cask t3-code
+```
+
+#### Debian, Ubuntu (`.deb`)
+
+Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
+
+```bash
+sudo apt install ./T3-Code-*.deb
 ```
 
 #### Arch Linux (AUR)
@@ -66,6 +84,16 @@ yay -S t3code-nightly-bin
 
 The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
 
+#### Nix (nixpkgs)
+
+```bash
+nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code
+```
+
+The package is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code)
+and includes the desktop app (`t3code-desktop`) and the `t3` command.
+See [Nix installation](./docs/user/install.md#nix-nixpkgs) for NixOS configuration and updates.
+
 ## Some notes
 
 We are very very early in this project. Expect bugs.
@@ -76,15 +104,18 @@ We are (mostly) not accepting contributions yet. Small fixes may be considered. 
 
 Full docs live in [docs/](./docs). There's no docs site yet.
 
+- [FAQ](./docs/user/faq.md)
 - [Install and first run](./docs/user/install.md)
 - [Permission modes](./docs/user/permission-modes.md)
 - [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Customize a project icon](./docs/user/project-settings.md)
+- [Project settings](./docs/user/project-settings.md)
+- [Appearance preferences](./docs/user/appearance.md)
 - [Remote access from a phone or another machine](./docs/user/remote-access.md)
+- [Connect Claude Code, Codex, ChatGPT and other agents over MCP](./docs/user/outside-agents.md)
 - [Keeping app and server in sync](./docs/user/updating.md)
 - [Source control integrations](./docs/user/source-control.md)
 - Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- Linux: [run T3 Code as a background service](./docs/user/background-service.md)
+- [Run T3 Code as a background service](./docs/user/background-service.md)
 
 Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
 

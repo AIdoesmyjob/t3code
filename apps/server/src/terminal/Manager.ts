@@ -1,13 +1,10 @@
-/**
- * TerminalManager - Terminal session orchestration service interface.
- *
- * Owns terminal lifecycle operations, output fanout, and session state
- * transitions for thread-scoped terminals.
- *
- * @module TerminalManager
- */
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto digest is effectful; a sync hash keeps historyPath a plain function.
+import * as NodeCrypto from "node:crypto";
+
+import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import {
   DEFAULT_TERMINAL_ID,
+  DEFAULT_MAX_TERMINAL_BUFFER_BYTES,
   TerminalCwdError,
   TerminalCwdNotDirectoryError,
   TerminalCwdNotFoundError,
@@ -15,6 +12,8 @@ import {
   TerminalError,
   TerminalHistoryError,
   TerminalNotRunningError,
+  TerminalProviderInstanceNotFoundError,
+  TerminalProviderEnvironmentError,
   TerminalResizeError,
   TerminalSessionLookupError,
   TerminalWriteError,
@@ -25,20 +24,30 @@ import {
   type TerminalEvent,
   type TerminalMetadataStreamEvent,
   type TerminalOpenInput,
+  type TerminalObserveInput,
   type TerminalResizeInput,
-  type TerminalRestartInput,
+  type ResourceMonitorProcessTableEntry,
   type TerminalSessionSnapshot,
   type TerminalSessionStatus,
   type TerminalSummary,
   type TerminalWriteInput,
+  ClaudeSettings,
+  CodexSettings,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { mergePathEntries } from "@t3tools/shared/shell";
+
+import { acpRegistryManagedBinaryDirectories } from "@t3tools/provider-acp-registry/server";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Encoding from "effect/Encoding";
+import * as Base64Url from "effect/encoding/Base64Url";
 import * as Equal from "effect/Equal";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -48,18 +57,22 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as ServerConfig from "../config.ts";
-import {
-  increment,
-  terminalRestartsTotal,
-  terminalSessionsTotal,
-} from "../observability/Metrics.ts";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
+import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome.ts";
+import { deriveProviderInstanceConfigMap } from "../provider/ProviderInstanceRegistryHydration.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { increment, terminalSessionsTotal } from "../observability/Metrics.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProcessRunner from "../processRunner.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
-import * as PtyAdapter from "./PtyAdapter.ts";
+import * as NativeTelemetryClient from "../resourceTelemetry/NativeTelemetryClient.ts";
+import { terminalOutputStream } from "./OutputProtocol.ts";
+import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 
 export {
   TerminalCwdError,
@@ -69,6 +82,8 @@ export {
   TerminalError,
   TerminalHistoryError,
   TerminalNotRunningError,
+  TerminalProviderInstanceNotFoundError,
+  TerminalProviderEnvironmentError,
   TerminalResizeError,
   TerminalSessionLookupError,
   TerminalWriteError,
@@ -77,21 +92,39 @@ export {
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_HISTORY_BYTE_LIMIT = 8 * 1024 * 1024;
 const MAX_HISTORY_CHUNK_LENGTH = 16 * 1024;
-const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
+const DEFAULT_PERSIST_DEBOUNCE_MS = 250;
 const DEFAULT_SUBPROCESS_POLL_INTERVAL_MS = 1_000;
+const MAX_SUBPROCESS_POLL_INTERVAL_MS = 60_000;
+// Discover children started without terminal input or output.
+const QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS = 30;
 const DEFAULT_PROCESS_KILL_GRACE_MS = 1_000;
 const DEFAULT_MAX_RETAINED_INACTIVE_SESSIONS = 128;
 const DEFAULT_OPEN_COLS = 120;
 const DEFAULT_OPEN_ROWS = 30;
-const TERMINAL_ENV_BLOCKLIST = new Set(["PORT", "ELECTRON_RENDERER_PORT", "ELECTRON_RUN_AS_NODE"]);
+// The tmux/screen/Zellij keys name the multiplexer pane that launched the server,
+// so inheriting them points multiplexer-aware tools at that unrelated pane.
+const TERMINAL_ENV_BLOCKLIST = new Set([
+  "PORT",
+  "ELECTRON_RENDERER_PORT",
+  "ELECTRON_RUN_AS_NODE",
+  "TMUX",
+  "TMUX_PANE",
+  "STY",
+  "WINDOW",
+  "ZELLIJ",
+  "ZELLIJ_SESSION_NAME",
+  "ZELLIJ_PANE_ID",
+]);
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 const MAX_TERMINAL_LABEL_LENGTH = 128;
+const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
+const decodeCodexSettings = Schema.decodeUnknownOption(CodexSettings);
 
-class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubprocessCheckError>()(
+class TerminalSubprocessCheckError extends Schema.TaggedError<TerminalSubprocessCheckError>()(
   "TerminalSubprocessCheckError",
   {
     cause: Schema.optional(Schema.Defect()),
-    command: Schema.Literals(["powershell", "ps"]),
+    command: Schema.Literals(["powershell", "ps", "resource-monitor"]),
     exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
     timedOut: Schema.optional(Schema.Boolean),
     stdoutTruncated: Schema.optional(Schema.Boolean),
@@ -109,7 +142,7 @@ class TerminalSubprocessCheckError extends Schema.TaggedErrorClass<TerminalSubpr
   }
 }
 
-class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcessSignalError>()(
+class TerminalProcessSignalError extends Schema.TaggedError<TerminalProcessSignalError>()(
   "TerminalProcessSignalError",
   {
     cause: Schema.optional(Schema.Defect()),
@@ -122,77 +155,68 @@ class TerminalProcessSignalError extends Schema.TaggedErrorClass<TerminalProcess
   }
 }
 
-/**
- * TerminalManager - Service tag for terminal session orchestration.
- */
 export class TerminalManager extends Context.Service<
   TerminalManager,
   {
-    /**
-     * Open or attach to a terminal session.
-     *
-     * Reuses an existing session for the same thread/terminal id and restores
-     * persisted history on first open.
-     */
     readonly open: (
       input: TerminalOpenInput,
     ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
 
     /**
-     * Attach to a terminal and stream its initial snapshot followed by live events.
-     *
-     * Returns an unsubscribe function.
+     * Attached viewers share one PTY sized to the smallest of them, so a narrow client
+     * still sees the whole TUI. Streams and resizes with the same `viewerId` (one client
+     * connection) count as one viewer; streams without one are each their own viewer.
      */
     readonly attachStream: (
       input: TerminalAttachInput,
       listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
+      registerCleanup?: (stop: () => void) => void,
+      viewerId?: string,
     ) => Effect.Effect<() => void, TerminalError>;
 
     /**
-     * Write input bytes to a terminal session.
+     * The `terminal.attach` RPC stream. Overflow recovery swaps the inner subscription, so
+     * `viewerId` and the size it reported stay attached until the whole stream ends.
      */
+    readonly attachOutputStream: (
+      input: TerminalAttachInput,
+      viewerId: string,
+    ) => Stream.Stream<TerminalAttachStreamEvent, TerminalError>;
+
+    readonly observeStream: (
+      input: TerminalObserveInput,
+      listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
+      registerCleanup?: (stop: () => void) => void,
+    ) => Effect.Effect<() => void, TerminalError>;
+
+    readonly resyncStream: (
+      input: TerminalObserveInput,
+      listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
+      registerCleanup?: (stop: () => void) => void,
+    ) => Effect.Effect<() => void, TerminalError>;
+
     readonly write: (input: TerminalWriteInput) => Effect.Effect<void, TerminalError>;
 
-    /**
-     * Resize the PTY backing a terminal session.
-     */
-    readonly resize: (input: TerminalResizeInput) => Effect.Effect<void, TerminalError>;
+    readonly resize: (
+      input: TerminalResizeInput,
+      viewerId?: string,
+    ) => Effect.Effect<void, TerminalError>;
 
-    /**
-     * Clear terminal output history.
-     */
     readonly clear: (input: TerminalClearInput) => Effect.Effect<void, TerminalError>;
 
-    /**
-     * Restart a terminal session in place.
-     *
-     * Always resets history before spawning the new process.
-     */
-    readonly restart: (
-      input: TerminalRestartInput,
-    ) => Effect.Effect<TerminalSessionSnapshot, TerminalError>;
-
-    /**
-     * Close an active terminal session.
-     *
-     * When `terminalId` is omitted, closes all sessions for the thread.
-     */
+    /** Omit terminalId to close all sessions for the thread. */
     readonly close: (input: TerminalCloseInput) => Effect.Effect<void, TerminalError>;
 
-    /**
-     * Subscribe to terminal runtime events with a direct callback.
-     *
-     * Returns an unsubscribe function.
-     */
+    readonly closeIdle: (input: {
+      readonly threadId: string;
+      readonly terminalId?: string;
+    }) => Effect.Effect<void>;
+
     readonly subscribe: (
       listener: (event: TerminalEvent) => Effect.Effect<void>,
+      registerCleanup?: (stop: () => void) => void,
     ) => Effect.Effect<() => void>;
 
-    /**
-     * Subscribe to lightweight terminal metadata with an initial full snapshot.
-     *
-     * Returns an unsubscribe function.
-     */
     readonly subscribeMetadata: (
       listener: (event: TerminalMetadataStreamEvent) => Effect.Effect<void>,
     ) => Effect.Effect<() => void>;
@@ -235,9 +259,11 @@ export interface ShellCandidate {
   args?: string[];
 }
 
-export interface TerminalStartInput extends TerminalOpenInput {
-  cols: number;
-  rows: number;
+interface TerminalStartInput {
+  readonly cwd: string;
+  readonly worktreePath?: string | null;
+  readonly cols: number;
+  readonly rows: number;
 }
 
 interface TerminalSessionState {
@@ -256,15 +282,26 @@ interface TerminalSessionState {
   exitSignal: number | null;
   updatedAt: string;
   eventSequence: number;
+  inputCount: number;
   cols: number;
   rows: number;
   process: PtyAdapter.PtyProcess | null;
   unsubscribeData: (() => void) | null;
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
-  /** Normalized child command name when `hasRunningSubprocess`; cleared when idle. */
   childCommandLabel: string | null;
   runtimeEnv: Record<string, string> | null;
+}
+
+interface TerminalGrid {
+  readonly cols: number;
+  readonly rows: number;
+}
+
+/** One client connection attached to a terminal, possibly through several streams. */
+interface TerminalViewer {
+  streams: number;
+  grid: TerminalGrid | null;
 }
 
 interface PersistHistoryRequest {
@@ -348,6 +385,8 @@ function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     label: terminalWireLabel(session),
     updatedAt: session.updatedAt,
     sequence: session.eventSequence,
+    cols: session.cols,
+    rows: session.rows,
   };
 }
 
@@ -382,7 +421,7 @@ function shouldPublishTerminalMetadataEvent(event: TerminalEvent): boolean {
   }
 }
 
-function terminalEventToAttachEvent(event: TerminalEvent): TerminalAttachStreamEvent | null {
+function terminalEventToAttachEvent(event: TerminalEvent): TerminalAttachStreamEvent {
   switch (event.type) {
     case "started":
       return {
@@ -420,6 +459,16 @@ function advanceEventSequence(session: TerminalSessionState): {
   session.eventSequence += 1;
   session.updatedAt = updatedAt;
   return { updatedAt, sequence: session.eventSequence };
+}
+
+function terminalActivityMark(session: TerminalSessionState): number {
+  return session.eventSequence + session.inputCount;
+}
+
+interface QuietTerminalSession {
+  readonly process: PtyAdapter.PtyProcess | null;
+  readonly mark: number;
+  readonly idleSnapshots: number;
 }
 
 function cleanupProcessHandles(session: TerminalSessionState): void {
@@ -626,12 +675,15 @@ interface TerminalProcessTableSnapshot {
   readonly commandById: ReadonlyMap<number, string>;
 }
 
+function subprocessSnapshotPollDelayMs(pollIntervalMs: number, failureCount: number): number {
+  return Math.min(pollIntervalMs * 2 ** failureCount, MAX_SUBPROCESS_POLL_INTERVAL_MS);
+}
+
 function parsePosixProcessTable(stdout: string): TerminalProcessTableSnapshot {
   const childrenByParent = new Map<number, number[]>();
   const commandById = new Map<number, string>();
   for (const line of stdout.split(/\r?\n/g)) {
-    // `comm=` is the final column and may itself contain spaces, so only the
-    // first two tokens are structural.
+    // The final comm column can contain spaces; only the first two tokens are structural.
     const match = /^\s*(\d+)\s+(\d+)\s+(.+)$/.exec(line);
     if (!match) continue;
     const pid = Number(match[1]);
@@ -645,15 +697,15 @@ function parsePosixProcessTable(stdout: string): TerminalProcessTableSnapshot {
   return { childrenByParent, commandById };
 }
 
-function parseWindowsProcessTable(stdout: string): TerminalProcessTableSnapshot {
+function processTableSnapshotFromProcesses(
+  processes: ReadonlyArray<ResourceMonitorProcessTableEntry>,
+): TerminalProcessTableSnapshot {
   const childrenByParent = new Map<number, number[]>();
   const commandById = new Map<number, string>();
-  for (const line of stdout.split(/\r?\n/g)) {
-    const [pidRaw, parentPidRaw, nameRaw] = line.trim().split("|", 3);
-    const pid = Number(pidRaw);
-    const parentPid = Number(parentPidRaw);
+  for (const process of processes) {
+    const { pid, ppid: parentPid, name } = process;
     if (!Number.isInteger(pid) || !Number.isInteger(parentPid)) continue;
-    commandById.set(pid, nameRaw?.trim() ?? "");
+    commandById.set(pid, name.trim());
     const children = childrenByParent.get(parentPid) ?? [];
     children.push(pid);
     childrenByParent.set(parentPid, children);
@@ -666,7 +718,16 @@ function deriveSubprocessInspectResult(
   terminalPid: number,
   platform: NodeJS.Platform,
 ): TerminalSubprocessInspectResult {
-  const childPid = (snapshot.childrenByParent.get(terminalPid) ?? [])[0];
+  const commandName = (pid: number) =>
+    normalizeChildCommandName(snapshot.commandById.get(pid) ?? "", platform);
+  const shellName = commandName(terminalPid);
+  // Async prompt themes fork childless shell helpers that are not user commands.
+  const childPid = (snapshot.childrenByParent.get(terminalPid) ?? []).find(
+    (pid) =>
+      shellName === null ||
+      commandName(pid) !== shellName ||
+      (snapshot.childrenByParent.get(pid)?.length ?? 0) > 0,
+  );
   if (childPid === undefined) {
     return { hasRunningSubprocess: false, childCommand: null, processIds: [] };
   }
@@ -681,7 +742,7 @@ function deriveSubprocessInspectResult(
       pending.push(pid);
     }
   }
-  const normalized = normalizeChildCommandName(snapshot.commandById.get(childPid) ?? "", platform);
+  const normalized = commandName(childPid);
   return {
     hasRunningSubprocess: true,
     childCommand: normalized ? truncateTerminalWireLabel(normalized) : null,
@@ -691,9 +752,7 @@ function deriveSubprocessInspectResult(
 
 const POSIX_PS_ABSOLUTE_PATHS = ["/bin/ps", "/usr/bin/ps"] as const;
 
-// Resolve `ps` to an absolute path once at startup. Spawning by bare name
-// walks every PATH entry per spawn (one failed posix_spawn per directory
-// until the hit), which is measurable at a 1s poll cadence on long PATHs.
+// Resolve ps once; bare-name spawns repeatedly probe long PATHs during one-second polling.
 const resolvePosixPsCommand = Effect.fn("terminal.resolvePosixPsCommand")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   for (const candidate of POSIX_PS_ABSOLUTE_PATHS) {
@@ -730,8 +789,7 @@ const posixProcessTableSnapshot = Effect.fn("terminal.posixProcessTableSnapshot"
       ),
     );
   if (result.code !== 0 || result.timedOut || result.stdoutTruncated) {
-    // Not authoritative: an empty or partial table would mark every terminal
-    // idle and clear its registered process ids. Failing skips the tick.
+    // Reject partial tables; treating them as authoritative would clear process ids and mark terminals idle.
     return yield* new TerminalSubprocessCheckError({
       command: "ps",
       exitCode: result.code,
@@ -748,14 +806,11 @@ const windowsProcessTableSnapshot = Effect.fn("terminal.windowsProcessTableSnaps
     TerminalSubprocessCheckError,
     ProcessRunner.ProcessRunner
   > {
+    const processRunner = yield* ProcessRunner.ProcessRunner;
     const command =
       'Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object { Write-Output "$($_.ProcessId)|$($_.ParentProcessId)|$($_.Name)" }';
-    const processRunner = yield* ProcessRunner.ProcessRunner;
     const result = yield* processRunner
       .run({
-        // powershell.exe is a real executable — never spawn it through cmd.exe
-        // shell mode, which would re-tokenize the `-Command` payload (pipes,
-        // semicolons) before PowerShell ever sees it.
         command: "powershell.exe",
         args: ["-NoProfile", "-NonInteractive", "-Command", command],
         timeout: "1500 millis",
@@ -765,16 +820,10 @@ const windowsProcessTableSnapshot = Effect.fn("terminal.windowsProcessTableSnaps
       })
       .pipe(
         Effect.mapError(
-          (cause) =>
-            new TerminalSubprocessCheckError({
-              cause,
-              command: "powershell",
-            }),
+          (cause) => new TerminalSubprocessCheckError({ cause, command: "powershell" }),
         ),
       );
     if (result.code !== 0 || result.timedOut || result.stdoutTruncated) {
-      // Not authoritative: an empty or partial table would mark every terminal
-      // idle and clear its registered process ids. Failing skips the tick.
       return yield* new TerminalSubprocessCheckError({
         command: "powershell",
         exitCode: result.code,
@@ -782,7 +831,15 @@ const windowsProcessTableSnapshot = Effect.fn("terminal.windowsProcessTableSnaps
         stdoutTruncated: result.stdoutTruncated,
       });
     }
-    return parseWindowsProcessTable(result.stdout);
+    const processes = result.stdout.split(/\r?\n/g).flatMap((line) => {
+      const [pidRaw, ppidRaw, name = ""] = line.trim().split("|", 3);
+      const pid = Number(pidRaw);
+      const ppid = Number(ppidRaw);
+      return Number.isInteger(pid) && pid > 0 && Number.isInteger(ppid)
+        ? [{ pid, ppid, name }]
+        : [];
+    });
+    return processTableSnapshotFromProcesses(processes);
   },
 );
 
@@ -814,7 +871,6 @@ export class BoundedTerminalHistory {
     this.cachedValue = null;
     if (this.maxBytes <= 0 || this.maxLines <= 0) {
       this.clear();
-      // Preserve the existing zero-line limit's trailing newline behavior.
       if (this.maxBytes > 0 && text.endsWith("\n")) this.appendChunk("\n");
       return;
     }
@@ -925,14 +981,12 @@ export class BoundedTerminalHistory {
         continue;
       }
       if (first.byteLength === first.data.length && first.lineBreaks === 0) {
-        // ASCII without newlines needs no scan to find the byte cutoff.
         this.trimChunk(bytesToDrop, bytesToDrop, 0);
         continue;
       }
       let offset = 0;
       let bytes = 0;
       let lineBreaks = 0;
-      // Scan only the discarded prefix of one small chunk, never all history.
       while (bytes < bytesToDrop) {
         const codePoint = first.data.codePointAt(offset)!;
         bytes += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
@@ -970,6 +1024,45 @@ export class BoundedTerminalHistory {
   }
 }
 
+// Pop beyond Ghostty's eight-entry Kitty stacks on both screens before clearing
+// flags. A 1049 round trip preserves the main cursor, text, and scrollback.
+const INHERITED_INPUT_RESET =
+  "\u001b[?1049h\u001b[<100u\u001b[=0;1u\u001b[?1049l" +
+  "\u001b[?1;9;66;67;1000;1002;1003;1004;1005;1006;1015;2004l" +
+  "\u001b[?25;1035;1036h\u001b[<100u\u001b[=0;1u\u001b[>4m";
+
+function neutralizeInheritedHistory(history: string, maxLines: number, maxBytes: number): string {
+  // Scan exactly the cold replay window, reserving the entire longest reset so
+  // neither the server nor the client can trim away the entry after we choose its exit.
+  const resetBytes = history.includes("\u001b")
+    ? Buffer.byteLength(INHERITED_INPUT_RESET + "\u001b7\u001b[?1049l")
+    : 0;
+  history = new BoundedTerminalHistory(
+    // The suffix occupies the empty line after a trailing newline, too.
+    resetBytes > 0 && history.endsWith("\n") ? maxLines - 1 : maxLines,
+    history,
+    Math.max(0, maxBytes - resetBytes),
+  ).value();
+  if (!history.includes("\u001b")) return history;
+  // An unconditional 1049 reset restores a stale saved cursor on the main
+  // screen. The exit must match the inherited screen's cursor-save behavior.
+  let alternateScreen: number | undefined;
+  for (const match of history.matchAll(/\u001b(?:\[\?([0-9;]+)([hl])|(c))/gu)) {
+    if (match[3]) alternateScreen = undefined;
+    for (const parameter of (match[1] ?? "").split(";")) {
+      const mode = Number(parameter);
+      if (mode === 47 || mode === 1047 || mode === 1049) {
+        alternateScreen = match[2] === "h" ? (alternateScreen ?? mode) : undefined;
+      }
+    }
+  }
+  // A client may trim away the entry, leaving us on main: save its current
+  // cursor before exiting. On alternate this saves only the alternate cursor.
+  const leaveAlternateScreen =
+    alternateScreen === undefined ? "" : `\u001b7\u001b[?${alternateScreen}l`;
+  return history + leaveAlternateScreen + INHERITED_INPUT_RESET;
+}
+
 function isCsiFinalByte(codePoint: number): boolean {
   return codePoint >= 0x40 && codePoint <= 0x7e;
 }
@@ -984,10 +1077,7 @@ function shouldStripCsiSequence(body: string, finalByte: string): boolean {
   if (finalByte === "c" && /^[>0-9;?]*$/.test(body)) {
     return true;
   }
-  // DECRQM mode queries (…$p) and DECRPM replies (…$y): replaying a stored
-  // query makes the terminal answer again, and the shell echoes the answer as
-  // junk at the prompt. The `$` guard keeps setters like DECSTR (!p) and
-  // DECSCL ("p) intact.
+  // Strip DECRQM/DECRPM query traffic to prevent echoed replies during replay; $ guards preserve setters.
   if ((finalByte === "p" || finalByte === "y") && /^[0-9;?]*\$$/.test(body)) {
     return true;
   }
@@ -1002,9 +1092,7 @@ function shouldStripCsiSequence(body: string, finalByte: string): boolean {
   return false;
 }
 
-// DECRQSS ($q) and XTGETTCAP (+q) queries plus their replies ([01]$r / [01]+r):
-// pure request/response traffic with no visual value, and replaying a stored
-// query triggers a fresh reply.
+// Strip DECRQSS/XTGETTCAP query traffic; replaying queries triggers fresh replies without visual value.
 function shouldStripDcsSequence(content: string): boolean {
   return /^[01]?[$+][qr]/.test(content);
 }
@@ -1056,11 +1144,20 @@ function findEscapeSequenceEndIndex(input: string, start: number): number | null
   return isEscapeFinalByte(input.charCodeAt(cursor)) ? cursor + 1 : start + 1;
 }
 
+const HISTORY_SEQUENCE_START = /[\u001b\u0090\u009b\u009d\u009e\u009f]/;
+const NEXT_HISTORY_SEQUENCE_START = new RegExp(HISTORY_SEQUENCE_START.source, "g");
+
 function sanitizeTerminalHistoryChunk(
   pendingControlSequence: string,
   data: string,
 ): { visibleText: string; pendingControlSequence: string } {
+  if (pendingControlSequence.length === 0 && !HISTORY_SEQUENCE_START.test(data)) {
+    return { visibleText: data, pendingControlSequence: "" };
+  }
+
   const input = `${pendingControlSequence}${data}`;
+  // Only the pending prefix's final ESC can begin a terminator split across chunks.
+  const pendingScanStart = Math.max(0, pendingControlSequence.length - 1);
   let visibleText = "";
   let index = 0;
 
@@ -1103,7 +1200,10 @@ function sanitizeTerminalHistoryChunk(
         nextCodePoint === 0x5e ||
         nextCodePoint === 0x5f
       ) {
-        const terminatorIndex = findStringTerminatorIndex(input, index + 2);
+        const terminatorIndex = findStringTerminatorIndex(
+          input,
+          Math.max(index + 2, pendingScanStart),
+        );
         if (terminatorIndex === null) {
           return { visibleText, pendingControlSequence: input.slice(index) };
         }
@@ -1149,7 +1249,10 @@ function sanitizeTerminalHistoryChunk(
     }
 
     if (codePoint === 0x9d || codePoint === 0x90 || codePoint === 0x9e || codePoint === 0x9f) {
-      const terminatorIndex = findStringTerminatorIndex(input, index + 1);
+      const terminatorIndex = findStringTerminatorIndex(
+        input,
+        Math.max(index + 1, pendingScanStart),
+      );
       if (terminatorIndex === null) {
         return { visibleText, pendingControlSequence: input.slice(index) };
       }
@@ -1165,8 +1268,11 @@ function sanitizeTerminalHistoryChunk(
       continue;
     }
 
-    append(input[index] ?? "");
-    index += 1;
+    // One slice per printable run: every chunk of coloured output reaches this loop.
+    NEXT_HISTORY_SEQUENCE_START.lastIndex = index + 1;
+    const nextSequenceStart = NEXT_HISTORY_SEQUENCE_START.exec(input)?.index ?? input.length;
+    append(input.slice(index, nextSequenceStart));
+    index = nextSequenceStart;
   }
 
   return { visibleText, pendingControlSequence: "" };
@@ -1176,12 +1282,23 @@ function legacySafeThreadId(threadId: string): string {
   return threadId.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
-function toSafeThreadId(threadId: string): string {
-  return `terminal_${Encoding.encodeBase64Url(threadId)}`;
+const MAX_FILE_NAME_BYTES = 255;
+
+function encodedHistoryThreadPart(threadId: string): string {
+  return `terminal_${Base64Url.encode(threadId)}`;
 }
 
-function toSafeTerminalId(terminalId: string): string {
-  return Encoding.encodeBase64Url(terminalId);
+function hashId(id: string): string {
+  return NodeCrypto.createHash("sha256").update(id).digest("base64url");
+}
+
+// "." is outside the base64url alphabet, so a hashed name can never collide with an encoded one.
+function hashedHistoryThreadPart(threadId: string): string {
+  return `terminal_sha256.${hashId(threadId)}`;
+}
+
+function joinHistoryFileName(threadPart: string, terminalPart: string | null): string {
+  return terminalPart === null ? `${threadPart}.log` : `${threadPart}_${terminalPart}.log`;
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
@@ -1199,17 +1316,7 @@ function shouldExcludeTerminalEnvKey(key: string): boolean {
   return TERMINAL_ENV_BLOCKLIST.has(normalizedKey);
 }
 
-// Marker variables the AppImage runtime injects into the process it launches.
-// They describe the AppImage itself, not the user's session, so terminals must
-// not inherit them.
 const APPIMAGE_RUNTIME_ENV_KEYS = ["APPIMAGE", "APPDIR", "ARGV0", "OWD"] as const;
-// Colon-separated search-path variables the AppImage runtime points at its
-// temporary mount (e.g. /tmp/.mount_T3-XXXX/usr/bin, the bundled glib schemas,
-// and an $APPDIR/usr/share XDG data entry). Only the mount segments are
-// dropped; the user's real entries are preserved. When nothing but mount
-// segments remain the variable is removed entirely so consumers fall back to
-// their platform default (e.g. gsettings finds the host schemas instead of
-// reporting "No schemas installed"). See issues #1699 and #5059.
 const APPIMAGE_PATH_LIKE_ENV_KEYS = [
   "PATH",
   "LD_LIBRARY_PATH",
@@ -1221,13 +1328,7 @@ function isPathSegmentUnderAppDir(segment: string, appDir: string): boolean {
   return segment === appDir || segment.startsWith(`${appDir}/`);
 }
 
-// On Linux AppImage builds the runtime mounts the app under a temporary dir and
-// injects APPIMAGE/APPDIR/ARGV0/OWD plus mount entries on PATH/LD_LIBRARY_PATH.
-// The integrated terminal inherits the server process environment, so without
-// this scrub those leak into the PTY and tools resolve against the AppImage
-// mount instead of the user's real environment (e.g. `php` reporting
-// PHP_BINARY as the AppImage path). See issue #1699. The scrub is gated on an
-// actual AppImage launch so non-AppImage environments are left untouched.
+// AppImage mount paths would make PTY tools resolve against the mount instead of the user's system.
 function stripAppImageRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (env.APPIMAGE === undefined && env.APPDIR === undefined) return env;
 
@@ -1257,7 +1358,9 @@ function stripAppImageRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 function createTerminalSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
-  runtimeEnv?: Record<string, string> | null,
+  runtimeEnv: Record<string, string> | null | undefined,
+  platform: NodeJS.Platform,
+  home: string,
 ): NodeJS.ProcessEnv {
   const spawnEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(baseEnv)) {
@@ -1267,12 +1370,27 @@ function createTerminalSpawnEnv(
   }
   if (runtimeEnv) {
     for (const [key, value] of Object.entries(runtimeEnv)) {
-      spawnEnv[key] = value;
+      const existingKey =
+        platform === "win32"
+          ? Object.keys(spawnEnv).find((candidate) => candidate.toLowerCase() === key.toLowerCase())
+          : undefined;
+      spawnEnv[existingKey ?? key] =
+        key === "CODEX_HOME" || key === "CLAUDE_CONFIG_DIR" ? expandHomePath(value, home) : value;
     }
   }
-  // Both PTY backends feed truecolor-capable terminal clients.
-  if (spawnEnv.COLORTERM === undefined || spawnEnv.COLORTERM === "") {
+  if (!spawnEnv.COLORTERM && runtimeEnv?.COLORTERM === undefined) {
     spawnEnv.COLORTERM = "truecolor";
+  }
+  // fish 4.1+ can wait 10s at startup for a DA1 reply before a renderer can answer.
+  // Skip the query unless the user or provider already chose `query-term` or `no-query-term`.
+  const fishFeaturesKey =
+    platform === "win32"
+      ? (Object.keys(spawnEnv).find((candidate) => candidate.toLowerCase() === "fish_features") ??
+        "fish_features")
+      : "fish_features";
+  const fishFeatures = spawnEnv[fishFeaturesKey];
+  if (!fishFeatures?.includes("query-term")) {
+    spawnEnv[fishFeaturesKey] = fishFeatures ? `${fishFeatures},no-query-term` : "no-query-term";
   }
   return stripAppImageRuntimeEnv(spawnEnv);
 }
@@ -1293,7 +1411,13 @@ interface TerminalManagerOptions {
   ptyAdapter: PtyAdapter.PtyAdapter["Service"];
   shellResolver?: () => string;
   env?: NodeJS.ProcessEnv;
+  managedBinaryCacheDir?: string;
+  managedBinaryToolsDir?: string;
   subprocessInspector?: TerminalSubprocessInspector;
+  processTable?: Effect.Effect<
+    ReadonlyArray<ResourceMonitorProcessTableEntry>,
+    TerminalSubprocessCheckError
+  >;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
   maxRetainedInactiveSessions?: number;
@@ -1306,17 +1430,87 @@ interface TerminalManagerOptions {
     readonly threadId: string;
     readonly terminalId: string;
   }) => Effect.Effect<void>;
+  resolveProviderInstanceEnvironment?: (
+    providerInstanceId: string,
+    env: Record<string, string> | undefined,
+  ) => Effect.Effect<
+    Record<string, string>,
+    TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
+  >;
 }
 
+export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
+  "terminal.resolveProviderInstanceTerminalEnvironment",
+)(function* (input: {
+  readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
+  readonly path: Path.Path;
+  readonly rawProviderInstanceId: string;
+  readonly env: Record<string, string> | undefined;
+}) {
+  const providerInstanceId = ProviderInstanceId.make(input.rawProviderInstanceId);
+  const settings = yield* input.serverSettings.getSettings.pipe(
+    Effect.mapError((cause) => new TerminalProviderEnvironmentError({ providerInstanceId, cause })),
+  );
+  const instance = deriveProviderInstanceConfigMap(settings)[providerInstanceId];
+  if (instance === undefined) {
+    return yield* new TerminalProviderInstanceNotFoundError({ providerInstanceId });
+  }
+
+  let resolved = yield* mergeProviderInstanceEnvironment(instance.environment, input.env ?? {});
+  if (instance.driver === "codex") {
+    const config = decodeCodexSettings(instance.config ?? {});
+    if (Option.isSome(config)) {
+      const layout = yield* resolveCodexHomeLayout(config.value).pipe(
+        Effect.provideService(Path.Path, input.path),
+      );
+      if (layout.effectiveHomePath)
+        resolved = { ...resolved, CODEX_HOME: layout.effectiveHomePath };
+    }
+  } else if (instance.driver === "claudeAgent") {
+    const config = decodeClaudeSettings(instance.config ?? {});
+    if (Option.isSome(config)) {
+      resolved = yield* makeClaudeEnvironment(config.value, resolved).pipe(
+        Effect.provideService(Path.Path, input.path),
+      );
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(resolved).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+});
+
+/** @public */
 export const make = Effect.fn("TerminalManager.make")(function* () {
-  const { terminalLogsDir } = yield* ServerConfig.ServerConfig;
+  const { terminalLogsDir, providerStatusCacheDir, baseDir } = yield* ServerConfig.ServerConfig;
   const ptyAdapter = yield* PtyAdapter.PtyAdapter;
   const portDiscovery = yield* PortScanner.PortDiscovery;
+  const nativeTelemetry = yield* NativeTelemetryClient.NativeTelemetryClient;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
+  const path = yield* Path.Path;
+  const resolveProviderInstanceEnvironment = Effect.fn(
+    "terminal.resolveProviderInstanceEnvironment",
+  )((rawProviderInstanceId: string, env: Record<string, string> | undefined) =>
+    resolveProviderInstanceTerminalEnvironment({
+      serverSettings,
+      path,
+      rawProviderInstanceId,
+      env,
+    }),
+  );
   return yield* makeWithOptions({
     logsDir: terminalLogsDir,
     ptyAdapter,
+    processTable: nativeTelemetry.processTable.pipe(
+      Effect.mapError(
+        (cause) => new TerminalSubprocessCheckError({ cause, command: "resource-monitor" }),
+      ),
+    ),
+    managedBinaryCacheDir: providerStatusCacheDir,
+    managedBinaryToolsDir: path.join(baseDir, "tools"),
     registerTerminalProcesses: portDiscovery.registerTerminalProcesses,
     unregisterTerminal: portDiscovery.unregisterTerminal,
+    resolveProviderInstanceEnvironment,
   });
 });
 
@@ -1331,34 +1525,81 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
   const historyByteLimit = options.historyByteLimit ?? DEFAULT_HISTORY_BYTE_LIMIT;
-  const platform = yield* HostProcessPlatform;
-  // Terminals must inherit the user's full environment (minus the blocklist
-  // applied in createTerminalSpawnEnv) — an allowlist here silently strips
-  // things like PSModulePath, DISPLAY, proxies, and toolchain variables.
-  // `options.env` is the test seam.
+  const platform = yield* HostProcess.Platform;
+  const architecture = yield* HostProcess.Architecture;
+  const agentScope = yield* AgentScope;
+  // Inherit the full environment minus createTerminalSpawnEnv's blocklist; allowlists silently drop user tooling variables.
   const baseEnv = options.env ?? process.env;
   const shellResolver = options.shellResolver ?? (() => defaultShellResolver(platform, baseEnv));
   const processRunner = yield* ProcessRunner.ProcessRunner;
-  // One process-table snapshot per poll tick, shared across every terminal.
-  // Per-terminal `pgrep`/`ps` calls multiply spawn load by terminal count and
-  // can exhaust the PID space on hosts with many sessions (#6332).
-  const fetchProcessTableSnapshot = (
+  const resolveLaunchInputEnvironment = Effect.fn("terminal.resolveLaunchInputEnvironment")(
+    function* <Input extends TerminalOpenInput | TerminalAttachInput>(
+      input: Input,
+    ): Effect.fn.Return<
+      Input,
+      TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
+    > {
+      if (input.providerInstanceId === undefined) return input;
+      const resolver = options.resolveProviderInstanceEnvironment;
+      if (resolver === undefined) {
+        return yield* new TerminalProviderInstanceNotFoundError({
+          providerInstanceId: ProviderInstanceId.make(input.providerInstanceId),
+        });
+      }
+      const env = yield* resolver(input.providerInstanceId, input.env);
+      return { ...input, env };
+    },
+  );
+  // Share one process table per poll; per-terminal scans can exhaust PIDs on busy hosts.
+  const fallbackProcessTableSnapshot = (
     platform === "win32"
       ? windowsProcessTableSnapshot()
       : posixProcessTableSnapshot(yield* resolvePosixPsCommand())
   ).pipe(Effect.provideService(ProcessRunner.ProcessRunner, processRunner));
+  const fetchProcessTableSnapshot: Effect.Effect<
+    {
+      readonly snapshot: TerminalProcessTableSnapshot;
+      readonly snapshotSucceeded: boolean;
+    },
+    TerminalSubprocessCheckError
+  > = options.processTable
+    ? options.processTable.pipe(
+        Effect.map((entries) => ({
+          snapshot: processTableSnapshotFromProcesses(entries),
+          snapshotSucceeded: true,
+        })),
+        Effect.catch(() =>
+          fallbackProcessTableSnapshot.pipe(
+            Effect.map((snapshot) => ({ snapshot, snapshotSucceeded: false })),
+          ),
+        ),
+      )
+    : fallbackProcessTableSnapshot.pipe(
+        Effect.map((snapshot) => ({ snapshot, snapshotSucceeded: true })),
+      );
   const customSubprocessInspector = options.subprocessInspector;
   const acquireSubprocessInspector: Effect.Effect<
-    TerminalSubprocessInspector,
+    {
+      readonly inspector: TerminalSubprocessInspector;
+      readonly snapshotSucceeded: boolean;
+    },
     TerminalSubprocessCheckError
   > =
     customSubprocessInspector !== undefined
-      ? Effect.succeed(customSubprocessInspector)
+      ? Effect.succeed({ inspector: customSubprocessInspector, snapshotSucceeded: true })
       : Effect.map(
           fetchProcessTableSnapshot,
-          (snapshot): TerminalSubprocessInspector =>
-            (terminalPid) =>
+          ({
+            snapshot,
+            snapshotSucceeded,
+          }): {
+            readonly inspector: TerminalSubprocessInspector;
+            readonly snapshotSucceeded: boolean;
+          } => ({
+            inspector: (terminalPid) =>
               Effect.succeed(deriveSubprocessInspectResult(snapshot, terminalPid, platform)),
+            snapshotSucceeded,
+          }),
         );
   const subprocessPollIntervalMs =
     options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
@@ -1374,28 +1615,43 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     sessions: new Map(),
     killFibers: new Map(),
   });
-  const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
+  // Keep close markers in memory so unknown IDs recover after a server restart.
+  const closedSessionKeys = new Set<string>();
+  const threadLocks = yield* KeyedLock.make<string>();
   const terminalEventListeners = new Set<(event: TerminalEvent) => Effect.Effect<void>>();
   const workerScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(workerScope, Exit.void));
 
-  const publishEvent = (event: TerminalEvent) =>
-    Effect.gen(function* () {
+  const publishEvent =
+    /* Provider events include streaming deltas; avoid a span for each update. */
+    Effect.fnUntraced(function* (event: TerminalEvent) {
       for (const listener of terminalEventListeners) {
         yield* listener(event).pipe(Effect.ignoreCause({ log: true }));
       }
     });
 
+  // Nested subagent thread ids can encode past the filename limit. Only names that would not fit
+  // switch to hashed ids, so every history file that already exists keeps its path.
   const historyPath = (threadId: string, terminalId: string) => {
-    const threadPart = toSafeThreadId(threadId);
-    if (terminalId === DEFAULT_TERMINAL_ID) {
-      return path.join(logsDir, `${threadPart}.log`);
+    const isDefault = terminalId === DEFAULT_TERMINAL_ID;
+    const encodedName = joinHistoryFileName(
+      encodedHistoryThreadPart(threadId),
+      isDefault ? null : Base64Url.encode(terminalId),
+    );
+    if (encodedName.length <= MAX_FILE_NAME_BYTES) {
+      return path.join(logsDir, encodedName);
     }
-    return path.join(logsDir, `${threadPart}_${toSafeTerminalId(terminalId)}.log`);
+    return path.join(
+      logsDir,
+      joinHistoryFileName(hashedHistoryThreadPart(threadId), isDefault ? null : hashId(terminalId)),
+    );
   };
 
-  const legacyHistoryPath = (threadId: string) =>
-    path.join(logsDir, `${legacySafeThreadId(threadId)}.log`);
+  const legacyHistoryName = (threadId: string) => `${legacySafeThreadId(threadId)}.log`;
+  const legacyHistoryPath = (threadId: string) => path.join(logsDir, legacyHistoryName(threadId));
+  // Ids this long could never have been written under the legacy name.
+  const hasLegacyHistoryPath = (threadId: string) =>
+    Buffer.byteLength(legacyHistoryName(threadId)) <= MAX_FILE_NAME_BYTES;
 
   const readManagerState = SynchronizedRef.get(managerStateRef);
 
@@ -1403,29 +1659,108 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     f: (state: TerminalManagerState) => readonly [A, TerminalManagerState],
   ) => SynchronizedRef.modify(managerStateRef, f);
 
-  const getThreadSemaphore = (threadId: string) =>
-    SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
-      const existing: Option.Option<Semaphore.Semaphore> = Option.fromNullishOr(
-        current.get(threadId),
-      );
-      return Option.match(existing, {
-        onNone: () =>
-          Semaphore.make(1).pipe(
-            Effect.map((semaphore) => {
-              const next = new Map(current);
-              next.set(threadId, semaphore);
-              return [semaphore, next] as const;
-            }),
-          ),
-        onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
-      });
-    });
-
   const withThreadLock = <A, E, R>(
     threadId: string,
     effect: Effect.Effect<A, E, R>,
-  ): Effect.Effect<A, E, R> =>
-    Effect.flatMap(getThreadSemaphore(threadId), (semaphore) => semaphore.withPermit(effect));
+  ): Effect.Effect<A, E, R> => threadLocks.withLock(threadId, effect);
+
+  const terminalViewers = new Map<string, Map<string, TerminalViewer>>();
+  let anonymousViewerCount = 0;
+
+  const retainViewer = (sessionKey: string, viewerId: string, grid: TerminalGrid | null) => {
+    let viewers = terminalViewers.get(sessionKey);
+    if (!viewers) {
+      viewers = new Map();
+      terminalViewers.set(sessionKey, viewers);
+    }
+    const viewer = viewers.get(viewerId);
+    if (viewer) {
+      viewer.streams += 1;
+      // After a viewer's first size, resizes own it; attach retries resend the original size.
+      viewer.grid ??= grid;
+    } else {
+      viewers.set(viewerId, { streams: 1, grid });
+    }
+  };
+
+  /** Returns whether the viewer left, which can grow the shared grid. */
+  const releaseViewer = (sessionKey: string, viewerId: string) => {
+    const viewers = terminalViewers.get(sessionKey);
+    const viewer = viewers?.get(viewerId);
+    if (!viewers || !viewer) return false;
+    viewer.streams -= 1;
+    if (viewer.streams > 0) return false;
+    viewers.delete(viewerId);
+    if (viewers.size === 0) terminalViewers.delete(sessionKey);
+    return true;
+  };
+
+  // The smallest attached viewer bounds each axis, so every viewer can draw the whole grid.
+  const sharedViewerGrid = (sessionKey: string): TerminalGrid | null => {
+    let shared: TerminalGrid | null = null;
+    for (const viewer of terminalViewers.get(sessionKey)?.values() ?? []) {
+      if (!viewer.grid) continue;
+      shared = shared
+        ? {
+            cols: Math.min(shared.cols, viewer.grid.cols),
+            rows: Math.min(shared.rows, viewer.grid.rows),
+          }
+        : viewer.grid;
+    }
+    return shared;
+  };
+
+  /** Attached viewers own the size; a caller's own size only applies when none has reported one. */
+  const withSharedGrid = <
+    A extends { readonly cols?: number | undefined; readonly rows?: number | undefined },
+  >(
+    sessionKey: string,
+    input: A,
+  ): A => {
+    const shared = sharedViewerGrid(sessionKey);
+    return shared ? { ...input, cols: shared.cols, rows: shared.rows } : input;
+  };
+
+  // Renderers draw the PTY grid, so every size change reaches them. It rides on activity
+  // because older clients reject unknown event types.
+  const resizeSession = Effect.fnUntraced(function* (
+    session: TerminalSessionState,
+    process: PtyAdapter.PtyProcess,
+    cols: number,
+    rows: number,
+  ) {
+    yield* resizePtyProcess(session, process, cols, rows);
+    session.cols = cols;
+    session.rows = rows;
+    session.updatedAt = yield* nowIso;
+    const eventStamp = advanceEventSequence(session);
+    yield* publishEvent({
+      type: "activity",
+      threadId: session.threadId,
+      terminalId: session.terminalId,
+      sequence: eventStamp.sequence,
+      hasRunningSubprocess: session.hasRunningSubprocess,
+      label: terminalWireLabel(session),
+      cols,
+      rows,
+    });
+  });
+
+  const applySharedGrid = Effect.fnUntraced(function* (threadId: string, terminalId: string) {
+    const session = yield* getSession(threadId, terminalId);
+    if (Option.isNone(session)) return;
+    const process = session.value.process;
+    const shared = sharedViewerGrid(toSessionKey(threadId, terminalId));
+    if (
+      !process ||
+      session.value.status !== "running" ||
+      !shared ||
+      (shared.cols === session.value.cols && shared.rows === session.value.rows)
+    ) {
+      return;
+    }
+    yield* resizeSession(session.value, process, shared.cols, shared.rows);
+  });
 
   const clearKillFiber = Effect.fn("terminal.clearKillFiber")(function* (
     process: PtyAdapter.PtyProcess | null,
@@ -1454,6 +1789,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     fiber: Fiber.Fiber<void, never>,
   ) {
     yield* modifyManagerState((state) => {
+      // Children may finalize before registration; check inside the synchronized update to avoid retaining finished fibers.
+      if (fiber.pollUnsafe() !== undefined) {
+        return [undefined, state] as const;
+      }
       const killFibers = new Map(state.killFibers);
       killFibers.set(process, fiber);
       return [undefined, { ...state, killFibers }] as const;
@@ -1465,49 +1804,65 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     threadId: string,
     terminalId: string,
   ) {
-    const terminated = yield* Effect.try({
-      try: () => process.kill("SIGTERM"),
-      catch: (cause) =>
-        new TerminalProcessSignalError({
-          cause,
-          signal: "SIGTERM",
-          terminalPid: process.pid,
-        }),
-    }).pipe(
-      Effect.as(true),
-      Effect.catch((error) =>
-        Effect.logWarning("failed to kill terminal process", {
-          threadId,
-          terminalId,
-          signal: "SIGTERM",
-          cause: error,
-        }).pipe(Effect.as(false)),
-      ),
-    );
-    if (!terminated) {
-      return;
-    }
+    // Subscribe before SIGTERM to catch immediate exits; Effect.ensuring releases even on interruption, unlike JS finally.
+    const exited = Deferred.makeUnsafe<void>();
+    const unsubscribeExit = process.onExit(() => {
+      Deferred.doneUnsafe(exited, Effect.void);
+    });
+    yield* Effect.gen(function* () {
+      const terminated = yield* Effect.try({
+        try: () => process.kill("SIGTERM"),
+        catch: (cause) =>
+          new TerminalProcessSignalError({
+            cause,
+            signal: "SIGTERM",
+            terminalPid: process.pid,
+          }),
+      }).pipe(
+        Effect.as(true),
+        Effect.catch((error) =>
+          Effect.logWarning("failed to kill terminal process", {
+            threadId,
+            terminalId,
+            signal: "SIGTERM",
+            cause: error,
+          }).pipe(Effect.as(false)),
+        ),
+      );
+      if (!terminated) {
+        return;
+      }
 
-    yield* Effect.sleep(processKillGraceMs);
+      const exitedBeforeGrace = yield* Deferred.await(exited).pipe(
+        Effect.as(true),
+        Effect.timeoutOrElse({
+          duration: processKillGraceMs,
+          orElse: () => Effect.succeed(false),
+        }),
+      );
+      if (exitedBeforeGrace) {
+        return;
+      }
 
-    yield* Effect.try({
-      try: () => process.kill("SIGKILL"),
-      catch: (cause) =>
-        new TerminalProcessSignalError({
-          cause,
-          signal: "SIGKILL",
-          terminalPid: process.pid,
-        }),
-    }).pipe(
-      Effect.catch((error) =>
-        Effect.logWarning("failed to force-kill terminal process", {
-          threadId,
-          terminalId,
-          signal: "SIGKILL",
-          cause: error,
-        }),
-      ),
-    );
+      yield* Effect.try({
+        try: () => process.kill("SIGKILL"),
+        catch: (cause) =>
+          new TerminalProcessSignalError({
+            cause,
+            signal: "SIGKILL",
+            terminalPid: process.pid,
+          }),
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("failed to force-kill terminal process", {
+            threadId,
+            terminalId,
+            signal: "SIGKILL",
+            cause: error,
+          }),
+        ),
+      );
+    }).pipe(Effect.ensuring(Effect.sync(unsubscribeExit)));
   });
 
   const startKillEscalation = Effect.fn("terminal.startKillEscalation")(function* (
@@ -1655,7 +2010,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       return history;
     }
 
-    if (terminalId !== DEFAULT_TERMINAL_ID) {
+    if (terminalId !== DEFAULT_TERMINAL_ID || !hasLegacyHistoryPath(threadId)) {
       return new BoundedTerminalHistory(historyLineLimit, "", historyByteLimit);
     }
 
@@ -1713,7 +2068,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         }),
       ),
     );
-    if (terminalId === DEFAULT_TERMINAL_ID) {
+    if (terminalId === DEFAULT_TERMINAL_ID && hasLegacyHistoryPath(threadId)) {
       yield* fileSystem.remove(legacyHistoryPath(threadId), { force: true }).pipe(
         Effect.catch((error) =>
           Effect.logWarning("failed to delete terminal history", {
@@ -1729,16 +2084,15 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const deleteAllHistoryForThread = Effect.fn("terminal.deleteAllHistoryForThread")(function* (
     threadId: string,
   ) {
-    const threadPrefix = `${toSafeThreadId(threadId)}_`;
+    const threadParts = [encodedHistoryThreadPart(threadId), hashedHistoryThreadPart(threadId)];
     const entries = yield* fileSystem
       .readDirectory(logsDir, { recursive: false })
       .pipe(Effect.orElseSucceed(() => [] as Array<string>));
     yield* Effect.forEach(
       entries.filter(
         (name) =>
-          name === `${toSafeThreadId(threadId)}.log` ||
           name === `${legacySafeThreadId(threadId)}.log` ||
-          name.startsWith(threadPrefix),
+          threadParts.some((part) => name === `${part}.log` || name.startsWith(`${part}_`)),
       ),
       (name) =>
         fileSystem.remove(path.join(logsDir, name), { force: true }).pipe(
@@ -1781,16 +2135,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     terminalId: string,
   ): Effect.fn.Return<TerminalSessionState, TerminalSessionLookupError> {
     return yield* Effect.flatMap(getSession(threadId, terminalId), (session) =>
-      Option.match(session, {
-        onNone: () =>
-          Effect.fail(
-            new TerminalSessionLookupError({
-              threadId,
-              terminalId,
-            }),
-          ),
-        onSome: Effect.succeed,
-      }),
+      Effect.fromOption(session, () => new TerminalSessionLookupError({ threadId, terminalId })),
     );
   });
 
@@ -1825,6 +2170,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         for (const session of inactiveSessions.slice(0, toEvict)) {
           const key = toSessionKey(session.threadId, session.terminalId);
           sessions.delete(key);
+          closedSessionKeys.add(key);
         }
 
         return [undefined, { ...state, sessions }] as const;
@@ -2005,10 +2351,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       );
     }
 
+    const launch = yield* agentScope.wrap({
+      command: candidate.shell,
+      args: candidate.args ?? [],
+      name: "terminal",
+      env: spawnEnv,
+      survivesRestart: true,
+    });
     const attempt = yield* Effect.result(
       options.ptyAdapter.spawn({
-        shell: candidate.shell,
-        ...(candidate.args ? { args: candidate.args } : {}),
+        shell: launch.command,
+        ...(launch.args.length > 0 ? { args: [...launch.args] } : {}),
         cwd: session.cwd,
         cols: session.cols,
         rows: session.rows,
@@ -2070,24 +2423,50 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         Effect.andThen(
           Effect.gen(function* () {
             const shellCandidates = resolveShellCandidates(shellResolver, platform, baseEnv);
-            const terminalEnv = createTerminalSpawnEnv(baseEnv, session.runtimeEnv);
+            const terminalEnv = createTerminalSpawnEnv(
+              baseEnv,
+              session.runtimeEnv,
+              platform,
+              yield* HostProcess.HomeDirectory,
+            );
+            // Append managed install directories so agent commands resolve without shadowing user/system tools.
+            if (
+              options.managedBinaryCacheDir !== undefined &&
+              options.managedBinaryToolsDir !== undefined
+            ) {
+              const managedDirectories = yield* acpRegistryManagedBinaryDirectories({
+                cacheDir: options.managedBinaryCacheDir,
+                toolsDir: options.managedBinaryToolsDir,
+                platform,
+                architecture,
+              }).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+                Effect.provideService(Path.Path, path),
+              );
+              if (managedDirectories.length > 0) {
+                const delimiter = platform === "win32" ? ";" : ":";
+                const pathKey =
+                  platform === "win32"
+                    ? (Object.keys(terminalEnv).find(
+                        (candidate) => candidate.toLowerCase() === "path",
+                      ) ?? "PATH")
+                    : "PATH";
+                const merged = mergePathEntries(
+                  terminalEnv[pathKey],
+                  managedDirectories.join(delimiter),
+                  platform,
+                );
+                if (merged !== undefined) {
+                  terminalEnv[pathKey] = merged;
+                }
+              }
+            }
             const spawnResult = yield* trySpawn(shellCandidates, terminalEnv, session);
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
 
             const processPid = ptyProcess.pid;
-            const unsubscribeData = ptyProcess.onData((data) => {
-              if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
-                return;
-              }
-              runFork(drainProcessEvents(session, processPid));
-            });
-            const unsubscribeExit = ptyProcess.onExit((event) => {
-              if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
-                return;
-              }
-              runFork(drainProcessEvents(session, processPid));
-            });
+            let eventsActivated = false;
 
             let eventStamp: ReturnType<typeof advanceEventSequence> = {
               updatedAt: session.updatedAt,
@@ -2097,8 +2476,19 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               session.process = ptyProcess;
               session.pid = processPid;
               session.status = "running";
-              session.unsubscribeData = unsubscribeData;
-              session.unsubscribeExit = unsubscribeExit;
+              // onExit may replay an exit immediately; accept it before subscribing.
+              session.unsubscribeData = spawnResult.process.onData((data) => {
+                if (!enqueueProcessEvent(session, processPid, { type: "output", data })) {
+                  return;
+                }
+                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+              });
+              session.unsubscribeExit = spawnResult.process.onExit((event) => {
+                if (!enqueueProcessEvent(session, processPid, { type: "exit", event })) {
+                  return;
+                }
+                if (eventsActivated) runFork(drainProcessEvents(session, processPid));
+              });
               eventStamp = advanceEventSequence(session);
               return [undefined, state] as const;
             });
@@ -2110,6 +2500,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               sequence: eventStamp.sequence,
               snapshot: snapshot(session),
             });
+            // Publish startup before draining any events replayed during subscription.
+            eventsActivated = true;
+            if (session.processEventDrainRunning) runFork(drainProcessEvents(session, processPid));
           }),
         ),
       ),
@@ -2180,6 +2573,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     yield* flushPersist(threadId, terminalId);
 
     const removed = yield* modifyManagerState((state) => {
+      closedSessionKeys.add(key);
       if (!state.sessions.has(key)) {
         return [false, state] as const;
       }
@@ -2202,38 +2596,78 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
   });
 
+  // Two unchanged snapshots cover children forked just after the first snapshot.
+  // Process identity prevents a restarted shell from inheriting quiet state.
+  let quietSessions = new WeakMap<TerminalSessionState, QuietTerminalSession>();
+  let skippedQuietTicks = 0;
+  const isQuiet = (session: TerminalSessionState & { pid: number }) => {
+    const quiet = quietSessions.get(session);
+    return (
+      quiet !== undefined &&
+      quiet.idleSnapshots === 2 &&
+      quiet.process === session.process &&
+      quiet.mark === terminalActivityMark(session) &&
+      !session.hasRunningSubprocess
+    );
+  };
+
   const pollSubprocessActivity = Effect.fn("terminal.pollSubprocessActivity")(function* () {
     const state = yield* readManagerState;
-    const runningSessions = [...state.sessions.values()].filter(
-      (session): session is TerminalSessionState & { pid: number } =>
-        session.status === "running" && Number.isInteger(session.pid),
-    );
+    const runningSessions = [...state.sessions.values()]
+      .filter(
+        (session): session is TerminalSessionState & { pid: number } =>
+          session.status === "running" && Number.isInteger(session.pid),
+      )
+      .map((session) => ({
+        session,
+        terminalPid: session.pid,
+        process: session.process,
+        mark: terminalActivityMark(session),
+      }));
 
     if (runningSessions.length === 0) {
-      return;
+      return true;
     }
+    if (
+      runningSessions.every(({ session }) => isQuiet(session)) &&
+      skippedQuietTicks < QUIET_SUBPROCESS_SNAPSHOT_EVERY_TICKS - 1
+    ) {
+      skippedQuietTicks += 1;
+      return true;
+    }
+    skippedQuietTicks = 0;
 
     const inspectorOption = yield* acquireSubprocessInspector.pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((reason) =>
         Effect.logWarning("failed to snapshot processes for terminal subprocess polling", {
           reason,
-        }).pipe(Effect.as(Option.none<TerminalSubprocessInspector>())),
+        }).pipe(
+          Effect.as(
+            Option.none<{
+              readonly inspector: TerminalSubprocessInspector;
+              readonly snapshotSucceeded: boolean;
+            }>(),
+          ),
+        ),
       ),
     );
 
     if (Option.isNone(inspectorOption)) {
-      return;
+      quietSessions = new WeakMap();
+      return false;
     }
 
-    const subprocessInspector = inspectorOption.value;
-
+    const { inspector: subprocessInspector, snapshotSucceeded } = inspectorOption.value;
     const checkSubprocessActivity = Effect.fn("terminal.checkSubprocessActivity")(function* (
-      session: TerminalSessionState & { pid: number },
+      candidate: (typeof runningSessions)[number],
     ) {
-      const terminalPid = session.pid;
+      const { session, terminalPid, process } = candidate;
+      let mark = candidate.mark;
+      const previous = quietSessions.get(session);
+      quietSessions.delete(session);
       const inspectResult = yield* subprocessInspector(terminalPid).pipe(
-        Effect.map(Option.some),
+        Effect.asSome,
         Effect.catch((reason) =>
           Effect.logWarning("failed to check terminal subprocess activity", {
             threadId: session.threadId,
@@ -2244,7 +2678,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         ),
       );
 
-      if (Option.isNone(inspectResult)) {
+      if (
+        Option.isNone(inspectResult) ||
+        session.status !== "running" ||
+        session.pid !== terminalPid ||
+        session.process !== process
+      ) {
         return;
       }
 
@@ -2261,8 +2700,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         );
         if (
           Option.isNone(liveSession) ||
+          liveSession.value !== session ||
           liveSession.value.status !== "running" ||
           liveSession.value.pid !== terminalPid ||
+          liveSession.value.process !== process ||
           (liveSession.value.hasRunningSubprocess === next.hasRunningSubprocess &&
             liveSession.value.childCommandLabel === nextChildLabel)
         ) {
@@ -2272,6 +2713,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         liveSession.value.hasRunningSubprocess = next.hasRunningSubprocess;
         liveSession.value.childCommandLabel = nextChildLabel;
         const eventStamp = advanceEventSequence(liveSession.value);
+        // Only this poll's own event may advance the mark without waking it.
+        mark += 1;
 
         return [
           Option.some({
@@ -2289,12 +2732,29 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       if (Option.isSome(event)) {
         yield* publishEvent(event.value);
       }
+
+      if (
+        snapshotSucceeded &&
+        !next.hasRunningSubprocess &&
+        session.status === "running" &&
+        session.pid === terminalPid &&
+        session.process === process &&
+        terminalActivityMark(session) === mark
+      ) {
+        quietSessions.set(session, {
+          process,
+          mark,
+          idleSnapshots: previous?.process === process && previous.mark === mark ? 2 : 1,
+        });
+      }
     });
 
     yield* Effect.forEach(runningSessions, checkSubprocessActivity, {
       concurrency: "unbounded",
       discard: true,
     });
+
+    return snapshotSucceeded;
   });
 
   const hasRunningSessions = readManagerState.pipe(
@@ -2303,14 +2763,26 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     ),
   );
 
+  let subprocessSnapshotFailureCount = 0;
   yield* Effect.forever(
     hasRunningSessions.pipe(
       Effect.flatMap((active) =>
         active
           ? pollSubprocessActivity().pipe(
-              Effect.flatMap(() => Effect.sleep(subprocessPollIntervalMs)),
+              Effect.flatMap((snapshotSucceeded) => {
+                subprocessSnapshotFailureCount = snapshotSucceeded
+                  ? 0
+                  : Math.min(subprocessSnapshotFailureCount + 1, 30);
+                const delayMs = subprocessSnapshotPollDelayMs(
+                  subprocessPollIntervalMs,
+                  subprocessSnapshotFailureCount,
+                );
+                return Effect.sleep(delayMs);
+              }),
             )
-          : Effect.sleep(subprocessPollIntervalMs),
+          : Effect.sync(() => {
+              subprocessSnapshotFailureCount = 0;
+            }).pipe(Effect.flatMap(() => Effect.sleep(subprocessPollIntervalMs))),
       ),
     ),
   ).pipe(Effect.forkIn(workerScope));
@@ -2344,15 +2816,27 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }).pipe(Effect.ignoreCause({ log: true })),
   );
 
-  const openLocked = Effect.fn("terminal.openLocked")(function* (input: TerminalOpenInput) {
-    const terminalId = input.terminalId;
-    yield* assertValidCwd(input.cwd);
+  const openWithWorkspaceLease = Effect.fn("terminal.openLocked")(function* (
+    requestedInput: TerminalOpenInput,
+  ) {
+    const terminalId = requestedInput.terminalId;
+    yield* assertValidCwd(requestedInput.cwd);
 
-    const sessionKey = toSessionKey(input.threadId, terminalId);
+    const sessionKey = toSessionKey(requestedInput.threadId, terminalId);
+    const input = withSharedGrid(sessionKey, requestedInput);
     const existing = yield* getSession(input.threadId, terminalId);
     if (Option.isNone(existing)) {
       yield* flushPersist(input.threadId, terminalId);
-      const history = yield* readHistory(input.threadId, terminalId);
+      const inherited = yield* readHistory(input.threadId, terminalId);
+      const history = new BoundedTerminalHistory(
+        historyLineLimit,
+        neutralizeInheritedHistory(
+          inherited.value(),
+          historyLineLimit,
+          Math.min(historyByteLimit, DEFAULT_MAX_TERMINAL_BUFFER_BYTES),
+        ),
+        historyByteLimit,
+      );
       const cols = input.cols ?? DEFAULT_OPEN_COLS;
       const rows = input.rows ?? DEFAULT_OPEN_ROWS;
       const session: TerminalSessionState = {
@@ -2371,6 +2855,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         exitSignal: null,
         updatedAt: yield* nowIso,
         eventSequence: 0,
+        inputCount: 0,
         cols,
         rows,
         process: null,
@@ -2385,6 +2870,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* modifyManagerState((state) => {
         const sessions = new Map(state.sessions);
         sessions.set(sessionKey, createdSession);
+        closedSessionKeys.delete(sessionKey);
         return [undefined, { ...state, sessions }] as const;
       });
 
@@ -2392,13 +2878,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* startSession(
         session,
         {
-          threadId: input.threadId,
-          terminalId,
           cwd: input.cwd,
           ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
           cols,
           rows,
-          ...(input.env ? { env: input.env } : {}),
         },
         "started",
       );
@@ -2444,13 +2927,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* startSession(
         liveSession,
         {
-          threadId: input.threadId,
-          terminalId,
           cwd: input.cwd,
           worktreePath: liveSession.worktreePath,
           cols: targetCols,
           rows: targetRows,
-          ...(input.env ? { env: input.env } : {}),
         },
         "started",
       );
@@ -2458,67 +2938,71 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     }
 
     if (liveSession.cols !== targetCols || liveSession.rows !== targetRows) {
-      yield* resizePtyProcess(liveSession, liveSession.process, targetCols, targetRows);
-      liveSession.cols = targetCols;
-      liveSession.rows = targetRows;
-      liveSession.updatedAt = yield* nowIso;
+      yield* resizeSession(liveSession, liveSession.process, targetCols, targetRows);
     }
 
     return snapshot(liveSession);
   });
 
-  const open: TerminalManager["Service"]["open"] = (input) =>
-    withThreadLock(input.threadId, openLocked(input));
+  const openLocked = (input: TerminalOpenInput) =>
+    withWorkspaceLease(
+      path.resolve(input.worktreePath ?? input.cwd),
+      openWithWorkspaceLease(input),
+    );
 
-  const openOrAttachForStream = (input: TerminalAttachInput) =>
+  const open: TerminalManager["Service"]["open"] = (input) =>
     withThreadLock(
       input.threadId,
-      Effect.gen(function* () {
-        const terminalId = input.terminalId;
-        const existing = yield* getSession(input.threadId, terminalId);
-
-        if (Option.isNone(existing)) {
-          if (!input.cwd) {
-            return yield* new TerminalSessionLookupError({
-              threadId: input.threadId,
-              terminalId,
-            });
-          }
-
-          return yield* openLocked({
-            ...input,
-            terminalId,
-            cwd: input.cwd,
-          });
-        }
-
-        const session = existing.value;
-        const targetCols = input.cols ?? session.cols;
-        const targetRows = input.rows ?? session.rows;
-
-        if (!session.process && input.cwd && input.restartIfNotRunning === true) {
-          return yield* openLocked({
-            ...input,
-            terminalId,
-            cwd: input.cwd,
-          });
-        }
-
-        if (
-          session.process &&
-          session.status === "running" &&
-          (session.cols !== targetCols || session.rows !== targetRows)
-        ) {
-          const process = session.process;
-          yield* resizePtyProcess(session, process, targetCols, targetRows);
-          session.cols = targetCols;
-          session.rows = targetRows;
-          session.updatedAt = yield* nowIso;
-        }
-
-        return snapshot(session);
-      }),
+      resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
     );
+
+  const openOrAttachForStream = Effect.fnUntraced(function* (requestedInput: TerminalAttachInput) {
+    const terminalId = requestedInput.terminalId;
+    const input = withSharedGrid(toSessionKey(requestedInput.threadId, terminalId), requestedInput);
+    const existing = yield* getSession(input.threadId, terminalId);
+
+    if (Option.isNone(existing)) {
+      if (input.resume && closedSessionKeys.has(toSessionKey(input.threadId, terminalId))) {
+        return null;
+      }
+      if (!input.cwd) {
+        return yield* new TerminalSessionLookupError({
+          threadId: input.threadId,
+          terminalId,
+        });
+      }
+
+      const resolvedInput = yield* resolveLaunchInputEnvironment({
+        ...input,
+        terminalId,
+        cwd: input.cwd,
+      });
+      return yield* Effect.uninterruptible(openLocked(resolvedInput));
+    }
+
+    const session = existing.value;
+    const targetCols = input.cols ?? session.cols;
+    const targetRows = input.rows ?? session.rows;
+
+    if (!input.resume && !session.process && input.cwd && input.restartIfNotRunning === true) {
+      const resolvedInput = yield* resolveLaunchInputEnvironment({
+        ...input,
+        terminalId,
+        cwd: input.cwd,
+      });
+      return yield* Effect.uninterruptible(openLocked(resolvedInput));
+    }
+
+    if (
+      session.process &&
+      session.status === "running" &&
+      (session.cols !== targetCols || session.rows !== targetRows)
+    ) {
+      yield* resizeSession(session, session.process, targetCols, targetRows);
+    }
+
+    return snapshot(session);
+  });
 
   const readAllTerminalMetadata = () =>
     readManagerState.pipe(
@@ -2542,70 +3026,194 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       Effect.map((session) => (Option.isSome(session) ? summary(session.value) : null)),
     );
 
-  const subscribe: TerminalManager["Service"]["subscribe"] = (listener) =>
+  const subscribe: TerminalManager["Service"]["subscribe"] = (listener, registerCleanup) =>
     Effect.sync(() => {
       terminalEventListeners.add(listener);
-      return () => {
+      const stop = () => {
         terminalEventListeners.delete(listener);
       };
+      // Transfer ownership before an interrupt can discard the returned handle.
+      registerCleanup?.(stop);
+      return stop;
     });
 
-  const attachStream: TerminalManager["Service"]["attachStream"] = (input, listener) => {
+  // Subscribe after taking the lock so contention cannot accumulate an unbounded replay.
+  // Snapshot listeners run under that lock and must not block.
+  const streamSession = (
+    input: TerminalObserveInput,
+    initial: Effect.Effect<TerminalSessionSnapshot | null, TerminalError>,
+    listener: (event: TerminalAttachStreamEvent) => Effect.Effect<void>,
+    registerCleanup?: (stop: () => void) => void,
+  ) => {
     let unsubscribe: (() => void) | null = null;
+    const stop = () => {
+      unsubscribe?.();
+      unsubscribe = null;
+    };
 
     return Effect.gen(function* () {
       const bufferedEvents: TerminalEvent[] = [];
       let deliverLive = false;
+      let snapshotFloor: number | null = null;
 
-      unsubscribe = yield* subscribe((event) => {
-        if (event.threadId !== input.threadId || event.terminalId !== input.terminalId) {
-          return Effect.void;
-        }
+      yield* subscribe(
+        (event) => {
+          if (event.threadId !== input.threadId || event.terminalId !== input.terminalId) {
+            return Effect.void;
+          }
 
-        if (!deliverLive) {
-          bufferedEvents.push(event);
-          return Effect.void;
-        }
+          if (!deliverLive) {
+            bufferedEvents.push(event);
+            return Effect.void;
+          }
 
-        const attachEvent = terminalEventToAttachEvent(event);
-        return attachEvent ? listener(attachEvent) : Effect.void;
-      });
+          // Fanout can finish after a snapshot that already includes the event.
+          // Keep only its sequence, not its history, until the session changes.
+          if (snapshotFloor !== null) {
+            if (
+              event.type === "started" ||
+              event.type === "restarted" ||
+              event.type === "error" ||
+              event.type === "closed"
+            ) {
+              snapshotFloor = null;
+            } else if (typeof event.sequence === "number" && event.sequence <= snapshotFloor) {
+              return Effect.void;
+            }
+          }
 
-      const initialSnapshot = yield* openOrAttachForStream(input);
+          const attachEvent = terminalEventToAttachEvent(event);
+          return listener(attachEvent);
+        },
+        (cleanup) => {
+          unsubscribe = cleanup;
+          registerCleanup?.(stop);
+        },
+      );
 
-      yield* listener({
-        type: "snapshot",
-        snapshot: initialSnapshot,
-      });
+      const initialSnapshot = yield* initial;
+
+      yield* listener(
+        initialSnapshot === null
+          ? { type: "closed", threadId: input.threadId, terminalId: input.terminalId }
+          : { type: "snapshot", snapshot: initialSnapshot },
+      );
 
       for (const event of bufferedEvents) {
-        if (isDuplicateAttachSnapshotEvent(event, initialSnapshot)) {
+        if (initialSnapshot !== null && isDuplicateAttachSnapshotEvent(event, initialSnapshot)) {
           continue;
         }
 
         const attachEvent = terminalEventToAttachEvent(event);
-        if (attachEvent) {
-          yield* listener(attachEvent);
-        }
+        yield* listener(attachEvent);
       }
+      // The live listener keeps this closure, so release replayed output.
+      bufferedEvents.length = 0;
 
+      snapshotFloor = initialSnapshot?.sequence ?? null;
       deliverLive = true;
-      return () => {
-        unsubscribe?.();
-        unsubscribe = null;
-      };
+      return stop;
     }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.flatMap(
-          Effect.sync(() => {
-            unsubscribe?.();
-            unsubscribe = null;
-          }),
-          () => Effect.failCause(cause),
+      (effect) => withThreadLock(input.threadId, effect),
+      Effect.onError(() => Effect.sync(stop)),
+    );
+  };
+
+  /** Retains `viewer` and returns its release, which runs at most once. */
+  const retainViewerOnce = (
+    input: TerminalObserveInput,
+    viewer: string,
+    grid: TerminalGrid | null,
+  ) => {
+    const sessionKey = toSessionKey(input.threadId, input.terminalId);
+    retainViewer(sessionKey, viewer, grid);
+    let retained = true;
+    return () => {
+      if (!retained) return;
+      retained = false;
+      if (releaseViewer(sessionKey, viewer)) {
+        runFork(withThreadLock(input.threadId, applySharedGrid(input.threadId, input.terminalId)));
+      }
+    };
+  };
+
+  const attachStream: TerminalManager["Service"]["attachStream"] = (
+    input,
+    listener,
+    registerCleanup,
+    viewerId,
+  ) => {
+    const viewer = viewerId ?? `stream:${++anonymousViewerCount}`;
+    let detach = () => {};
+    const initial = Effect.suspend(() => {
+      detach = retainViewerOnce(
+        input,
+        viewer,
+        input.cols !== undefined && input.rows !== undefined
+          ? { cols: input.cols, rows: input.rows }
+          : null,
+      );
+      return openOrAttachForStream(input);
+    });
+    return streamSession(
+      input,
+      initial,
+      listener,
+      registerCleanup &&
+        ((stop) =>
+          registerCleanup(() => {
+            stop();
+            detach();
+          })),
+    ).pipe(
+      Effect.map((stop) => () => {
+        stop();
+        detach();
+      }),
+      Effect.onError(() => Effect.sync(detach)),
+    );
+  };
+
+  const observeStream: TerminalManager["Service"]["observeStream"] = (
+    input,
+    listener,
+    registerCleanup,
+  ) =>
+    streamSession(
+      input,
+      requireSession(input.threadId, input.terminalId).pipe(Effect.map(snapshot)),
+      listener,
+      registerCleanup,
+    );
+
+  const resyncStream: TerminalManager["Service"]["resyncStream"] = (
+    input,
+    listener,
+    registerCleanup,
+  ) =>
+    streamSession(
+      input,
+      getSession(input.threadId, input.terminalId).pipe(
+        Effect.map((session) => (Option.isSome(session) ? snapshot(session.value) : null)),
+      ),
+      listener,
+      registerCleanup,
+    );
+
+  const attachOutputStream: TerminalManager["Service"]["attachOutputStream"] = (input, viewerId) =>
+    Stream.unwrap(
+      Effect.acquireRelease(
+        Effect.sync(() => retainViewerOnce(input, viewerId, null)),
+        (release) => Effect.sync(release),
+      ).pipe(
+        Effect.as(
+          terminalOutputStream(
+            (listener, registerCleanup) => attachStream(input, listener, registerCleanup, viewerId),
+            (listener, registerCleanup) => resyncStream(input, listener, registerCleanup),
+          ),
         ),
       ),
     );
-  };
 
   const metadataEventFromTerminalEvent = (
     event: TerminalEvent,
@@ -2700,6 +3308,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         terminalId,
       });
     }
+    session.inputCount += 1;
     yield* Effect.try({
       try: () => process.write(input.data),
       catch: (cause) =>
@@ -2712,24 +3321,36 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     });
   });
 
-  const resizeLocked = Effect.fn("terminal.resize")(function* (input: TerminalResizeInput) {
+  const resizeLocked = Effect.fn("terminal.resize")(function* (
+    input: TerminalResizeInput,
+    viewerId: string | undefined,
+  ) {
+    const sessionKey = toSessionKey(input.threadId, input.terminalId);
+    const viewer =
+      viewerId === undefined ? undefined : terminalViewers.get(sessionKey)?.get(viewerId);
+    if (viewer) {
+      viewer.grid = { cols: input.cols, rows: input.rows };
+      return yield* applySharedGrid(input.threadId, input.terminalId);
+    }
+    // A caller that is not attached cannot override the viewers that are.
+    if (sharedViewerGrid(sessionKey)) return;
     const session = yield* getSession(input.threadId, input.terminalId);
-    // ResizeObserver traffic can already be in flight when the UI closes the session.
     if (Option.isNone(session)) {
       return;
     }
     const process = session.value.process;
-    if (!process || session.value.status !== "running") {
+    if (
+      !process ||
+      session.value.status !== "running" ||
+      (session.value.cols === input.cols && session.value.rows === input.rows)
+    ) {
       return;
     }
-    yield* resizePtyProcess(session.value, process, input.cols, input.rows);
-    session.value.cols = input.cols;
-    session.value.rows = input.rows;
-    session.value.updatedAt = yield* nowIso;
+    yield* resizeSession(session.value, process, input.cols, input.rows);
   });
 
-  const resize: TerminalManager["Service"]["resize"] = (input) =>
-    withThreadLock(input.threadId, resizeLocked(input));
+  const resize: TerminalManager["Service"]["resize"] = (input, viewerId) =>
+    withThreadLock(input.threadId, resizeLocked(input, viewerId));
 
   const clear: TerminalManager["Service"]["clear"] = (input) =>
     withThreadLock(
@@ -2750,86 +3371,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           terminalId,
           sequence: eventStamp.sequence,
         });
-      }),
-    );
-
-  const restart: TerminalManager["Service"]["restart"] = (input) =>
-    withThreadLock(
-      input.threadId,
-      Effect.gen(function* () {
-        yield* increment(terminalRestartsTotal, { scope: "thread" });
-        const terminalId = input.terminalId;
-        yield* assertValidCwd(input.cwd);
-
-        const sessionKey = toSessionKey(input.threadId, terminalId);
-        const existingSession = yield* getSession(input.threadId, terminalId);
-        let session: TerminalSessionState;
-        if (Option.isNone(existingSession)) {
-          const cols = input.cols ?? DEFAULT_OPEN_COLS;
-          const rows = input.rows ?? DEFAULT_OPEN_ROWS;
-          session = {
-            threadId: input.threadId,
-            terminalId,
-            cwd: input.cwd,
-            worktreePath: input.worktreePath ?? null,
-            status: "starting",
-            pid: null,
-            history: new BoundedTerminalHistory(historyLineLimit, "", historyByteLimit),
-            pendingHistoryControlSequence: "",
-            pendingProcessEvents: [],
-            pendingProcessEventIndex: 0,
-            processEventDrainRunning: false,
-            exitCode: null,
-            exitSignal: null,
-            updatedAt: yield* nowIso,
-            eventSequence: 0,
-            cols,
-            rows,
-            process: null,
-            unsubscribeData: null,
-            unsubscribeExit: null,
-            hasRunningSubprocess: false,
-            childCommandLabel: null,
-            runtimeEnv: normalizedRuntimeEnv(input.env),
-          };
-          const createdSession = session;
-          yield* modifyManagerState((state) => {
-            const sessions = new Map(state.sessions);
-            sessions.set(sessionKey, createdSession);
-            return [undefined, { ...state, sessions }] as const;
-          });
-          yield* evictInactiveSessionsIfNeeded();
-        } else {
-          session = existingSession.value;
-          yield* stopProcess(session);
-          session.cwd = input.cwd;
-          session.worktreePath = input.worktreePath ?? null;
-          session.runtimeEnv = normalizedRuntimeEnv(input.env);
-        }
-
-        const cols = input.cols ?? session.cols;
-        const rows = input.rows ?? session.rows;
-
-        session.history.clear();
-        session.pendingHistoryControlSequence = "";
-        session.pendingProcessEvents = [];
-        session.pendingProcessEventIndex = 0;
-        session.processEventDrainRunning = false;
-        yield* persistHistory(input.threadId, terminalId, session.history);
-        yield* startSession(
-          session,
-          {
-            threadId: input.threadId,
-            terminalId,
-            cwd: input.cwd,
-            ...(input.worktreePath !== undefined ? { worktreePath: input.worktreePath } : {}),
-            cols,
-            rows,
-            ...(input.env ? { env: input.env } : {}),
-          },
-          "restarted",
-        );
-        return snapshot(session);
       }),
     );
 
@@ -2855,14 +3396,56 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       }),
     );
 
+  const closeIdle: TerminalManager["Service"]["closeIdle"] = (input) =>
+    withThreadLock(
+      input.threadId,
+      Effect.gen(function* () {
+        const running = (yield* sessionsForThread(input.threadId)).filter(
+          (session): session is TerminalSessionState & { pid: number } =>
+            session.status === "running" &&
+            Number.isInteger(session.pid) &&
+            (input.terminalId === undefined || session.terminalId === input.terminalId),
+        );
+        if (running.length === 0) return;
+        const marks = new Map(
+          running.map((session) => [session.terminalId, terminalActivityMark(session)]),
+        );
+        // Inspect now so commands started after the last poll still protect their terminals.
+        const { inspector } = yield* acquireSubprocessInspector;
+        yield* Effect.forEach(
+          running,
+          (session) =>
+            inspector(session.pid).pipe(
+              Effect.flatMap((result) =>
+                result.hasRunningSubprocess ||
+                terminalActivityMark(session) !== marks.get(session.terminalId)
+                  ? Effect.void
+                  : closeSession(input.threadId, session.terminalId, false),
+              ),
+            ),
+          { discard: true },
+        );
+      }),
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("failed to close idle terminals", {
+          threadId: input.threadId,
+          error: error.message,
+        }),
+      ),
+    );
+
   return TerminalManager.of({
     open,
     attachStream,
+    attachOutputStream,
+    observeStream,
+    resyncStream,
     write,
     resize,
     clear,
-    restart,
     close,
+    closeIdle,
     subscribe,
     subscribeMetadata,
   });

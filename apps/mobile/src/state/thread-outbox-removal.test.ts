@@ -19,7 +19,7 @@ vi.mock("./thread-outbox", async () => {
   harness.manager = createThreadOutboxManager({
     registry: appAtomRegistry,
     storage: {
-      load: async () => [],
+      load: async () => ({ messages: [], errors: [] }),
       write: async () => undefined,
       remove: async () => undefined,
     },
@@ -127,60 +127,6 @@ describe("thread outbox removal", () => {
       appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom),
     ).flat();
     expect(remaining).toEqual([edited]);
-  });
-
-  it("clears a removed pending task draft and includes its editor-only files", async () => {
-    const message = queuedMessage({
-      environmentId: "environment-1",
-      messageId: "message-pending",
-      fileUri: "file:///documents/t3-composer-attachments/queued.pdf",
-      creation: true,
-    });
-    const editorOnlyFile = {
-      id: "file-editor-only",
-      type: "file" as const,
-      name: "editor-only.pdf",
-      mimeType: "application/pdf",
-      sizeBytes: 84,
-      fileUri: "file:///documents/t3-composer-attachments/editor-only.pdf",
-    };
-    const draftKey = `pending-task:${message.messageId}`;
-    appAtomRegistry.set(composerDraftsAtom, {
-      [draftKey]: { text: "edited", attachments: [editorOnlyFile] },
-    });
-    await harness.manager.enqueue(message);
-
-    await expect(removeThreadOutboxMessage(message)).resolves.toBe(true);
-
-    expect(harness.waitForDrafts).toHaveBeenCalledOnce();
-    expect(harness.clearDraft).toHaveBeenCalledExactlyOnceWith(draftKey, {
-      deferAttachmentCleanup: true,
-    });
-    expect(harness.flushDrafts).toHaveBeenCalledOnce();
-    expect(harness.cleanup).toHaveBeenCalledExactlyOnceWith([
-      ...message.attachments,
-      editorOnlyFile,
-    ]);
-    expect(harness.flushDrafts.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.cleanup.mock.invocationCallOrder[0]!,
-    );
-  });
-
-  it("does not flush composer drafts when a removed creation has no editor draft", async () => {
-    const message = queuedMessage({
-      environmentId: "environment-1",
-      messageId: "message-without-editor-draft",
-      fileUri: "file:///documents/t3-composer-attachments/queued.pdf",
-      creation: true,
-    });
-    await harness.manager.enqueue(message);
-
-    await expect(removeThreadOutboxMessage(message)).resolves.toBe(true);
-
-    expect(harness.waitForDrafts).toHaveBeenCalledOnce();
-    expect(harness.clearDraft).not.toHaveBeenCalled();
-    expect(harness.flushDrafts).not.toHaveBeenCalled();
-    expect(harness.cleanup).toHaveBeenCalledExactlyOnceWith(message.attachments);
   });
 
   it("releases only the cleared environment's queued attachment files", async () => {

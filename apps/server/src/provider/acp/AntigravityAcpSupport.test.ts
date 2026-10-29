@@ -2,21 +2,18 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ChatAttachment,
-  type RuntimeMode,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as EffectAcpErrors from "effect-acp/errors";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
-  ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES,
-  antigravityPermissionMode,
   applyAntigravityAcpModelSelection,
   buildAntigravityPrompt,
 } from "./AntigravityAcpSupport.ts";
@@ -41,8 +38,18 @@ function makeModelRuntime(
     if (failure) return yield* failure;
     selections.push(model);
   });
+  const setConfigOption = Effect.fn("AntigravityAcpSupportTest.setConfigOption")(function* (
+    configId: string,
+    value: string | boolean,
+    options?: { readonly allowUnlistedValue?: boolean },
+  ) {
+    selections.push(
+      `${configId}=${String(value)}${options?.allowUnlistedValue === true ? " (unlisted)" : ""}`,
+    );
+    return { configOptions };
+  });
   return {
-    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel },
+    runtime: { getConfigOptions: Effect.succeed(configOptions), setModel, setConfigOption },
     selections,
   };
 }
@@ -51,22 +58,6 @@ describe("applyAntigravityAcpModelSelection", () => {
   it.effect("restores the saved model instead of the cold-resume default", () =>
     Effect.gen(function* () {
       const { runtime, selections } = makeModelRuntime();
-      const model = yield* applyAntigravityAcpModelSelection({
-        runtime,
-        model: "gemini-saved",
-        mapError: (cause) => cause,
-      });
-
-      expect(model).toBe("gemini-saved");
-      expect(selections).toEqual(["gemini-saved"]);
-    }),
-  );
-
-  it.effect("reapplies an explicit selection even when setup reports the same model", () =>
-    Effect.gen(function* () {
-      const { runtime, selections } = makeModelRuntime([
-        { ...modelConfig, currentValue: "gemini-saved" },
-      ]);
       const model = yield* applyAntigravityAcpModelSelection({
         runtime,
         model: "gemini-saved",
@@ -143,7 +134,7 @@ describe("applyAntigravityAcpModelSelection", () => {
       const { runtime, selections } = makeModelRuntime([
         {
           ...modelConfig,
-          options: [{ group: "gemini", name: "Gemini", options: modelConfig.options }],
+          options: [{ groupId: "gemini", name: "Gemini", options: modelConfig.options }],
         },
       ]);
       const model = yield* applyAntigravityAcpModelSelection({
@@ -157,32 +148,28 @@ describe("applyAntigravityAcpModelSelection", () => {
     }),
   );
 
-  it.effect("reports a native model-selection failure through the adapter error mapper", () =>
+  it.effect("passes a model ID saved on runtime 1.3 to the agent as its 1.4 family", () =>
     Effect.gen(function* () {
-      const nativeError = EffectAcpErrors.AcpRequestError.invalidParams("Model access changed.");
-      const { runtime } = makeModelRuntime([modelConfig], nativeError);
-      const error = yield* applyAntigravityAcpModelSelection({
+      // The cold-resume model has no thinking option, so the level is unknown locally.
+      const { runtime, selections } = makeModelRuntime([
+        {
+          ...modelConfig,
+          currentValue: "gpt-oss-120b-medium",
+          options: [
+            { value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" },
+            { value: "gpt-oss-120b-medium", name: "GPT-OSS 120B (Medium)" },
+          ],
+        },
+      ]);
+      const model = yield* applyAntigravityAcpModelSelection({
         runtime,
-        model: "gemini-saved",
-        mapError: (cause) => ({ operation: "select-model", cause }),
-      }).pipe(Effect.flip);
+        model: "gemini-3.8-flash-low",
+        mapError: (cause) => cause,
+      });
 
-      expect(error).toEqual({ operation: "select-model", cause: nativeError });
+      expect(model).toBe("gemini-3.8-flash");
+      expect(selections).toEqual(["model=gemini-3.8-flash-low (unlisted)"]);
     }),
-  );
-});
-
-describe("antigravityPermissionMode", () => {
-  it.each([
-    { runtimeMode: "approval-required", nativeMode: "default" },
-    { runtimeMode: "auto", nativeMode: "default" },
-    { runtimeMode: "auto-accept-edits", nativeMode: "auto_edit" },
-    { runtimeMode: "full-access", nativeMode: "yolo" },
-  ] satisfies ReadonlyArray<{ runtimeMode: RuntimeMode; nativeMode: string }>)(
-    "maps $runtimeMode to $nativeMode",
-    ({ runtimeMode, nativeMode }) => {
-      expect(antigravityPermissionMode(runtimeMode)).toBe(nativeMode);
-    },
   );
 });
 
@@ -244,6 +231,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         input: "  Explain this image.  ",
         attachments: [imageAttachment],
         attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       });
 
       expect(prompt).toEqual([
@@ -264,6 +252,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         input: undefined,
         attachments: [textAttachment],
         attachmentsDir: selectedEnvironment.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       });
 
       expect(prompt).toEqual([
@@ -277,6 +266,111 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         yield* selectedEnvironment.fs.readDirectory(selectedEnvironment.attachmentsDir),
       ).toHaveLength(1);
     }),
+  );
+
+  it.effect("keeps folded clipboard text out of native context", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeAttachmentFixture();
+      const pastedText = {
+        ...textAttachment,
+        name: "pasted-text.txt",
+        mimeType: "text/plain",
+        source: { _tag: "pasted-text" as const },
+      } satisfies ChatAttachment;
+      yield* fixture.write(pastedText, "A very large crash report");
+
+      const prompt = yield* buildAntigravityPrompt({
+        input: "Inspect the pasted text only as needed.",
+        attachments: [pastedText],
+        attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      });
+
+      expect(prompt).toEqual([{ type: "text", text: "Inspect the pasted text only as needed." }]);
+    }),
+  );
+
+  it.effect.each([
+    { name: "archive.zip", mimeType: "application/zip" },
+    { name: "clip.mp4", mimeType: "video/mp4" },
+    { name: "recording.aiff", mimeType: "audio/aiff" },
+    { name: "large.pdf", mimeType: "application/pdf", sizeBytes: 75_000_000 },
+    { name: "large.txt", mimeType: "text/plain", sizeBytes: 1024 * 1024 + 1 },
+    { name: "large.wav", mimeType: "audio/wav", sizeBytes: 20 * 1024 * 1024 + 1 },
+  ])("keeps $name as a file path without reading or spending the native media budget", (file) =>
+    Effect.gen(function* () {
+      const fixture = yield* makeAttachmentFixture();
+      const attachment = { ...textAttachment, sizeBytes: 50 * 1024 * 1024, ...file };
+      const upload = yield* fixture.write(attachment, "");
+      yield* fixture.fs.truncate(upload.filePath, attachment.sizeBytes);
+      const pdf = yield* fixture.write(pdfAttachment, "");
+      yield* fixture.fs.truncate(pdf.filePath, 50 * 1024 * 1024);
+      const input = `Inspect the file at ${upload.filePath}`;
+      const prompt = yield* buildAntigravityPrompt({
+        input,
+        attachments: [attachment, pdfAttachment],
+        attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fixture.fs,
+          stream: () => {
+            throw new Error("Path attachments must not be read into the prompt");
+          },
+        }),
+      );
+      expect(prompt).toEqual([
+        { type: "text", text: input },
+        { type: "resource_link", uri: pdf.uri, name: "report.pdf", mimeType: "application/pdf" },
+      ]);
+    }),
+  );
+
+  it.effect.each([undefined, {}, { image: false, audio: false, embeddedContext: false }])(
+    "keeps attachments path-only when native prompt capabilities are absent: %s",
+    (promptCapabilities) =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAttachmentFixture();
+        const audio = {
+          ...textAttachment,
+          id: "unsupported-audio",
+          name: "audio.wav",
+          mimeType: "audio/wav",
+        };
+        const gifAttachment = {
+          ...imageAttachment,
+          id: "unsupported-gif",
+          name: "animation.gif",
+          mimeType: "image/gif",
+        };
+        const gif = yield* fixture.write(gifAttachment, "GIF89a");
+        const image = yield* fixture.write(imageAttachment, "pixels");
+        const pdf = yield* fixture.write(pdfAttachment, "%PDF-1.7");
+        const text = yield* fixture.write(textAttachment, "hello");
+        const sound = yield* fixture.write(audio, "RIFF");
+        const input = `Read ${image.filePath}, ${gif.filePath}, ${pdf.filePath}, ${text.filePath}, and ${sound.filePath}`;
+        const prompt = yield* buildAntigravityPrompt({
+          input,
+          attachments: [imageAttachment, gifAttachment, pdfAttachment, textAttachment, audio],
+          attachmentsDir: fixture.attachmentsDir,
+          promptCapabilities,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fixture.fs,
+            stream: () =>
+              Effect.die("Unnegotiated attachments must not be read").pipe(Stream.fromEffect),
+          }),
+        );
+        expect(prompt).toEqual([{ type: "text", text: input }]);
+        expect(
+          yield* buildAntigravityPrompt({
+            input: "Continue",
+            attachments: [],
+            attachmentsDir: fixture.attachmentsDir,
+            promptCapabilities,
+          }),
+        ).toEqual([{ type: "text", text: "Continue" }]);
+      }),
   );
 
   it.effect("sends supported audio files as native audio content", () =>
@@ -294,6 +388,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         input: "Transcribe this.",
         attachments: [audioAttachment],
         attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       });
 
       expect(prompt).toEqual([
@@ -303,84 +398,50 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
     }),
   );
 
-  it.effect("uses a PDF file resource link without copying or reading its bytes", () =>
+  it.effect.each([undefined, {}, { image: false }, { image: true }])(
+    "keeps unsupported image formats path-only with capabilities %s",
+    (promptCapabilities) =>
+      Effect.gen(function* () {
+        const fixture = yield* makeAttachmentFixture();
+        const attachment = { ...imageAttachment, name: "animation.gif", mimeType: "image/gif" };
+        const upload = yield* fixture.write(attachment, "GIF89a");
+        const input = `Analyze the image at ${upload.filePath}`;
+        const prompt = yield* buildAntigravityPrompt({
+          input,
+          attachments: [attachment],
+          attachmentsDir: fixture.attachmentsDir,
+          promptCapabilities,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fixture.fs,
+            stream: () => Effect.die("Unsupported images must not be read").pipe(Stream.fromEffect),
+          }),
+        );
+
+        expect(prompt).toEqual([{ type: "text", text: input }]);
+      }),
+  );
+
+  it.effect("rejects oversized images using file size instead of upload metadata", () =>
     Effect.gen(function* () {
       const fixture = yield* makeAttachmentFixture();
-      const upload = yield* fixture.write(pdfAttachment, "%PDF-1.7\n");
-      const forbidFileAccess = () =>
-        Effect.die("PDF prompt construction must only inspect the file.");
-      const prompt = yield* buildAntigravityPrompt({
-        input: undefined,
-        attachments: [pdfAttachment],
+      const upload = yield* fixture.write(imageAttachment, "");
+      yield* fixture.fs.truncate(upload.filePath, PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1);
+      const error = yield* buildAntigravityPrompt({
+        input: "Read this attachment.",
+        attachments: [imageAttachment],
         attachmentsDir: fixture.attachmentsDir,
-      }).pipe(
-        Effect.provideService(FileSystem.FileSystem, {
-          ...fixture.fs,
-          readFile: forbidFileAccess,
-          writeFile: forbidFileAccess,
-          writeFileString: forbidFileAccess,
-          copyFile: forbidFileAccess,
-          copy: forbidFileAccess,
-          rename: forbidFileAccess,
-        }),
-      );
-
-      expect(prompt).toEqual([
-        { type: "resource_link", uri: upload.uri, name: "report.pdf", mimeType: "application/pdf" },
-      ]);
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      }).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "AcpRequestError",
+        code: -32602,
+        errorMessage: expect.stringContaining("'screen.png' is too large"),
+      });
     }),
   );
 
-  it.effect.each([
-    { ...imageAttachment, name: "animation.gif", mimeType: "image/gif" },
-    { ...textAttachment, name: "archive.zip", mimeType: "application/zip" },
-    { ...textAttachment, name: "recording.aiff", mimeType: "audio/aiff" },
-  ] satisfies ReadonlyArray<ChatAttachment>)(
-    "rejects $name instead of silently dropping it from a valid prompt",
-    (attachment) =>
-      Effect.gen(function* () {
-        const fixture = yield* makeAttachmentFixture();
-        yield* fixture.write(imageAttachment, new Uint8Array([1, 2, 3]));
-        const error = yield* buildAntigravityPrompt({
-          input: "Analyze every attachment.",
-          attachments: [imageAttachment, attachment],
-          attachmentsDir: fixture.attachmentsDir,
-        }).pipe(Effect.flip);
-
-        expect(error).toMatchObject({
-          _tag: "AcpRequestError",
-          code: -32602,
-          errorMessage: expect.stringContaining(`does not support '${attachment.name}'`),
-        });
-      }),
-  );
-
-  it.effect.each([
-    { attachment: textAttachment, bytes: ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES + 1 },
-    { attachment: imageAttachment, bytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1 },
-    { attachment: pdfAttachment, bytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1 },
-  ])(
-    "rejects oversized $attachment.name using file size instead of upload metadata",
-    ({ attachment, bytes }) =>
-      Effect.gen(function* () {
-        const fixture = yield* makeAttachmentFixture();
-        const upload = yield* fixture.write(attachment, "");
-        yield* fixture.fs.truncate(upload.filePath, bytes);
-        const error = yield* buildAntigravityPrompt({
-          input: "Read this attachment.",
-          attachments: [attachment],
-          attachmentsDir: fixture.attachmentsDir,
-        }).pipe(Effect.flip);
-
-        expect(error).toMatchObject({
-          _tag: "AcpRequestError",
-          code: -32602,
-          errorMessage: expect.stringContaining(`'${attachment.name}' is too large`),
-        });
-      }),
-  );
-
-  it.effect("accepts 50 MiB in total but rejects one byte more across files", () =>
+  it.effect("keeps PDF overflow on the file-path route", () =>
     Effect.gen(function* () {
       const fixture = yield* makeAttachmentFixture();
       const secondAttachment = {
@@ -390,25 +451,59 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       };
       const first = yield* fixture.write(pdfAttachment, "");
       const second = yield* fixture.write(secondAttachment, "");
-      yield* fixture.fs.truncate(first.filePath, PROVIDER_SEND_TURN_MAX_FILE_BYTES / 2);
-      yield* fixture.fs.truncate(second.filePath, PROVIDER_SEND_TURN_MAX_FILE_BYTES / 2);
+      yield* fixture.fs.truncate(first.filePath, (50 * 1024 * 1024) / 2);
+      yield* fixture.fs.truncate(second.filePath, (50 * 1024 * 1024) / 2);
       const input = {
-        input: undefined,
+        input: `Read ${first.filePath} and ${second.filePath}`,
         attachments: [pdfAttachment, secondAttachment],
         attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       };
       const prompt = yield* buildAntigravityPrompt(input);
       expect(prompt).toEqual([
-        { type: "resource_link", uri: first.uri, name: "report.pdf", mimeType: "application/pdf" },
-        { type: "resource_link", uri: second.uri, name: "second.pdf", mimeType: "application/pdf" },
+        { type: "text", text: input.input },
+        {
+          type: "resource_link",
+          uri: first.uri,
+          name: "report.pdf",
+          mimeType: "application/pdf",
+        },
+        {
+          type: "resource_link",
+          uri: second.uri,
+          name: "second.pdf",
+          mimeType: "application/pdf",
+        },
       ]);
 
-      yield* fixture.fs.truncate(second.filePath, PROVIDER_SEND_TURN_MAX_FILE_BYTES / 2 + 1);
-      const error = yield* buildAntigravityPrompt(input).pipe(Effect.flip);
+      yield* fixture.fs.truncate(second.filePath, (50 * 1024 * 1024) / 2 + 1);
+      expect(yield* buildAntigravityPrompt(input)).toEqual([
+        { type: "text", text: input.input },
+        {
+          type: "resource_link",
+          uri: first.uri,
+          name: "report.pdf",
+          mimeType: "application/pdf",
+        },
+      ]);
+    }),
+  );
+
+  it.effect("still rejects images when the native budget is full", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeAttachmentFixture();
+      const pdf = yield* fixture.write(pdfAttachment, "");
+      yield* fixture.fs.truncate(pdf.filePath, 50 * 1024 * 1024);
+      yield* fixture.write(imageAttachment, new Uint8Array([1]));
+      const error = yield* buildAntigravityPrompt({
+        input: "Inspect both attachments.",
+        attachments: [pdfAttachment, imageAttachment],
+        attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
+      }).pipe(Effect.flip);
       expect(error).toMatchObject({
         _tag: "AcpRequestError",
-        code: -32602,
-        errorMessage: expect.stringContaining("'second.pdf' is too large"),
+        errorMessage: expect.stringContaining("'screen.png' is too large"),
       });
     }),
   );
@@ -418,11 +513,12 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       const fixture = yield* makeAttachmentFixture();
       const pdf = yield* fixture.write(pdfAttachment, "");
       const text = yield* fixture.write(textAttachment, "a");
-      yield* fixture.fs.truncate(pdf.filePath, PROVIDER_SEND_TURN_MAX_FILE_BYTES - 1);
+      yield* fixture.fs.truncate(pdf.filePath, 50 * 1024 * 1024 - 1);
       const error = yield* buildAntigravityPrompt({
         input: undefined,
         attachments: [pdfAttachment, textAttachment],
         attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       }).pipe(
         Effect.provideService(FileSystem.FileSystem, {
           ...fixture.fs,
@@ -456,6 +552,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         input: undefined,
         attachments: [textAttachment],
         attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       }).pipe(Effect.flip);
 
       expect(error).toMatchObject({
@@ -473,29 +570,13 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         input: "Read this image.",
         attachments: [imageAttachment],
         attachmentsDir: fixture.attachmentsDir,
+        promptCapabilities: { image: true, audio: true, embeddedContext: true },
       }).pipe(Effect.flip);
 
       expect(error).toMatchObject({
         _tag: "AcpRequestError",
         code: -32602,
         errorMessage: "Could not read attachment 'screen.png'.",
-      });
-    }),
-  );
-
-  it.effect("rejects an empty turn", () =>
-    Effect.gen(function* () {
-      const fixture = yield* makeAttachmentFixture();
-      const error = yield* buildAntigravityPrompt({
-        input: "  ",
-        attachments: [],
-        attachmentsDir: fixture.attachmentsDir,
-      }).pipe(Effect.flip);
-
-      expect(error).toMatchObject({
-        _tag: "AcpRequestError",
-        code: -32602,
-        errorMessage: "A turn requires text or supported attachments.",
       });
     }),
   );

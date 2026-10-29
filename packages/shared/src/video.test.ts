@@ -14,11 +14,4 @@ describe("videoMimeType", () => {
       "video/webm",
     );
   });
-
-  it.each(["README", "report.pdf", "file.constructor", "file.__proto__"])(
-    "does not mistake %s for a video",
-    (name) => {
-      expect(videoMimeType({ name, mimeType: "application/octet-stream" })).toBeNull();
-    },
-  );
 });

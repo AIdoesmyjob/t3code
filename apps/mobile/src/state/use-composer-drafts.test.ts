@@ -1,10 +1,30 @@
+import { PrimaryConnectionTarget } from "@t3tools/client-runtime/connection";
+import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state/threads";
+import {
+  applyShellStreamEvent,
+  createEnvironmentSnapshotAtom,
+  EMPTY_SHELL_STATE,
+  type EnvironmentShellState,
+  type EnvironmentShellStatus,
+} from "@t3tools/client-runtime/state/shell";
+import {
+  v2ShellSnapshot,
+  v2ThreadShell,
+} from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import {
   CommandId,
+  ComposerContextId,
   EnvironmentId,
   MessageId,
+  ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type OrchestrationV2ThreadShell,
+  type OrchestrationV2ShellSnapshot,
+  type ModelSelection,
 } from "@t3tools/contracts";
 import { onTestFinished, vi } from "vite-plus/test";
 
@@ -145,40 +165,58 @@ vi.mock("../features/sharing/incoming-share-storage", () => ({
   loadIncomingShareDrafts: incomingShareStorageMocks.load,
 }));
 
+import type { DraftComposerAttachment } from "../lib/composerImages";
+import {
+  collectComposerContextReferences,
+  formatComposerContextReference,
+} from "@t3tools/shared/composerContextReferences";
 import { appAtomRegistry } from "./atom-registry";
+import { startComposerDraftOperation } from "./composerDraftOperations";
 import { threadOutboxManager } from "./thread-outbox";
 import {
   appendComposerDraftAttachments,
+  captureComposerDraftInsertion,
+  countComposerDraftAttachmentsAfterSelection,
+  getComposerDraftAfterSelection,
   archiveCloudComposerDrafts,
   clearComposerDraftContent,
   clearComposerDraftContentState,
+  subscribeComposerDraftModelReconciliation,
   clearComposerDraftsEnvironment,
   ComposerDraftPersistenceError,
   composerDraftsAtom,
   composerCloudDraftsAtom,
-  copyComposerDraftContentIfEmpty,
-  copyComposerDraftContentState,
+  createNewTaskDraft,
+  createComposerDraftContextHistory,
+  setComposerDraftContext,
   decodePersistedComposerState,
-  decodePersistedComposerDrafts,
   ensureComposerDraftsLoaded,
   type ComposerDraft,
+  findNewTaskDraftKeys,
   flushComposerDrafts,
   getComposerDraftSnapshot,
   mergeComposerDraftContentState,
+  migrateLegacyNewTaskDraft,
+  modelOptionMemoryAtom,
   releaseUnusedComposerAttachmentFiles,
   removeComposerDraftsForEnvironment,
+  replaceComposerDraftAttachments,
   resetComposerDraftsLoadState,
-  retainComposerAttachmentFileForPreview,
   restoreComposerDraftSnapshotState,
   restoreCloudComposerDrafts,
+  retargetNewTaskDraft,
   setComposerDraftText,
+  insertComposerDraftContext,
+  insertComposerDraftText,
+  rememberComposerDraftSelection,
   setComposerDraftAttachmentUpload,
   waitForComposerDraftsLoaded,
   setStickyComposerModelSelection,
   stickyComposerModelSelectionAtom,
-  undoComposerDraftMerge,
   undoComposerDraftMergeState,
+  updateComposerDraftSettings,
 } from "./use-composer-drafts";
+import { retainComposerAttachmentFileForPreview } from "../lib/composerAttachmentPreviewRetention";
 
 const DRAFT: ComposerDraft = {
   text: "hello",
@@ -199,6 +237,7 @@ afterEach(() => {
   appAtomRegistry.set(composerDraftsAtom, {});
   appAtomRegistry.set(composerCloudDraftsAtom, { accountId: null, signedOut: {} });
   appAtomRegistry.set(stickyComposerModelSelectionAtom, null);
+  appAtomRegistry.set(modelOptionMemoryAtom, {});
   appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {});
   composerAttachmentCleanupMocks.remove.mockClear();
   composerAttachmentCleanupMocks.releaseUploads.mockReset();
@@ -207,60 +246,770 @@ afterEach(() => {
   incomingShareStorageMocks.load.mockResolvedValue([]);
 });
 
-describe("mobile composer drafts", () => {
-  // Hydration is one-shot per module instance and the attachment sweep now
-  // triggers it too, so this test must observe it before any sweep test runs.
-  it("waits for persisted drafts before copying content between projects", async () => {
-    const sourceKey = "new-task:environment-1:project-1";
-    const targetKey = "new-task:environment-1:project-2";
-    const unrelatedKey = "environment-1:thread-1";
-    const source = { text: "Current task", attachments: [] } satisfies ComposerDraft;
-    const target = { text: "Persisted target", attachments: [] } satisfies ComposerDraft;
-    const unrelated = { text: "Keep me", attachments: [] } satisfies ComposerDraft;
+function contextDraft(start: number, count: number): ComposerDraft {
+  const records = Array.from({ length: count }, (_, index) => ({
+    version: 1 as const,
+    contextId: ComposerContextId.make(`skill-${start + index}`),
+    kind: "skill" as const,
+    label: "Skill",
+    name: "skill",
+  }));
+  return {
+    text: records.map((record) => `[Skill](t3-context://v1/skill/${record.contextId})`).join(" "),
+    context: { version: 1, records },
+    attachments: [],
+  };
+}
 
-    composerDraftFileMocks.setDocument({
-      schemaVersion: 1,
-      drafts: {
-        [targetKey]: target,
-        [unrelatedKey]: unrelated,
-      },
-    });
-    composerDraftFileMocks.blockRead();
-    appAtomRegistry.set(composerDraftsAtom, { [sourceKey]: source });
-
-    const copy = copyComposerDraftContentIfEmpty(sourceKey, targetKey);
-    expect(appAtomRegistry.get(composerDraftsAtom)).toEqual({ [sourceKey]: source });
-
-    composerDraftFileMocks.releaseRead();
-    await copy;
-
-    expect(appAtomRegistry.get(composerDraftsAtom)).toEqual({
-      [sourceKey]: source,
-      [targetKey]: target,
-      [unrelatedKey]: unrelated,
-    });
+function modelReconciliationHarness(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  initialStatus: EnvironmentShellStatus = "live",
+) {
+  const tasks: Array<() => void> = [];
+  const registry = AtomRegistry.make({
+    scheduleTask: (task) => {
+      tasks.push(task);
+      return () => {};
+    },
   });
+  onTestFinished(() => registry.dispose());
+  const flush = () => {
+    for (let task = tasks.shift(); task !== undefined; task = tasks.shift()) task();
+  };
+  const selectedThreadId = ThreadId.make("another-selected-thread");
+  const initialSnapshot: OrchestrationV2ShellSnapshot = {
+    ...v2ShellSnapshot,
+    threads: [
+      { ...v2ThreadShell, id: threadId },
+      { ...v2ThreadShell, id: selectedThreadId },
+    ],
+  };
+  const shellStateAtom = Atom.make<EnvironmentShellState>({
+    ...EMPTY_SHELL_STATE,
+    snapshot: Option.some(initialSnapshot),
+    status: initialStatus,
+  });
+  const shellResultAtom = Atom.map(shellStateAtom, AsyncResult.success);
+  const snapshotAtom = createEnvironmentSnapshotAtom(() => shellResultAtom)(environmentId);
+  const catalogValueAtom = Atom.make({
+    isReady: true,
+    entries: new Map([
+      [
+        environmentId,
+        {
+          target: new PrimaryConnectionTarget({
+            environmentId,
+            label: "Environment",
+            httpBaseUrl: "https://example.test",
+            wsBaseUrl: "wss://example.test",
+          }),
+          profile: Option.none(),
+          enabled: true,
+        },
+      ],
+    ]),
+  });
+  const shells = createEnvironmentThreadShellAtoms({
+    catalogValueAtom,
+    snapshotAtom: () => snapshotAtom,
+  });
+  const selectedShell = shells.threadShellAtom({ environmentId, threadId: selectedThreadId });
+  onTestFinished(registry.mount(selectedShell));
+  onTestFinished(
+    subscribeComposerDraftModelReconciliation({
+      registry,
+      threadShellAtom: shells.threadShellAtom,
+      threadRefsAtom: shells.threadRefsAtom,
+      shellStateAtom: () => shellResultAtom,
+    }),
+  );
+  flush();
+  return {
+    flush,
+    setStatus(status: EnvironmentShellStatus) {
+      registry.set(shellStateAtom, { ...registry.get(shellStateAtom), status });
+      flush();
+    },
+    update(changes: Partial<OrchestrationV2ThreadShell>, status?: EnvironmentShellStatus) {
+      const state = registry.get(shellStateAtom);
+      const snapshot = Option.getOrThrow(state.snapshot);
+      registry.set(shellStateAtom, {
+        ...state,
+        status: status ?? state.status,
+        snapshot: Option.some(
+          applyShellStreamEvent(snapshot, {
+            kind: "thread.updated",
+            location: "active",
+            sequence: snapshot.snapshotSequence + 1,
+            thread: { ...snapshot.threads[0]!, ...changes },
+          }),
+        ),
+      });
+      flush();
+      expect(registry.get(selectedShell)?.id).toBe(selectedThreadId);
+    },
+    model: () => registry.get(shells.threadShellAtom({ environmentId, threadId }))!.modelSelection,
+  };
+}
 
-  it("hydrates generic file attachments from their saved local paths", () => {
+describe("mobile composer drafts", () => {
+  it.each([false, true])(
+    "restores visible file chips from legacy drafts (archived: %s)",
+    async (archived) => {
+      const file = {
+        type: "file" as const,
+        id: "legacy-file",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 10,
+        fileUri: "file:///notes.txt",
+      };
+      const image = { ...file, id: "photo", name: "photo.png", mimeType: "image/png" };
+      const video = { ...file, id: "video", name: "clip.mp4", mimeType: "video/mp4" };
+      const legacy = { text: "Review these", attachments: [file, image, video] };
+      const document = {
+        schemaVersion: 1,
+        drafts: archived ? {} : { thread: legacy },
+        ...(archived
+          ? { signedOutDrafts: { account: { drafts: { thread: legacy }, queuedMessages: [] } } }
+          : {}),
+      };
+      const decoded = decodePersistedComposerState(document);
+      const restored = archived
+        ? decoded.cloudDrafts.signedOut.account?.drafts.thread
+        : decoded.drafts.thread;
+      expect(restored?.text).toBe("Review these [notes.txt](t3-context://v1/file/legacy-file) ");
+      expect(restored?.attachments).toEqual(legacy.attachments);
+      expect(restored?.context?.records).toEqual([
+        expect.objectContaining({ kind: "file", attachmentId: file.id }),
+      ]);
+      expect(
+        decodePersistedComposerState({ schemaVersion: 1, drafts: { thread: restored } }).drafts
+          .thread,
+      ).toEqual(restored);
+      appAtomRegistry.set(composerDraftsAtom, { thread: restored! });
+      setComposerDraftText("thread", "Review these");
+      expect(getComposerDraftSnapshot("thread").attachments).toEqual([image, video]);
+      await releaseUnusedComposerAttachmentFiles([file]);
+    },
+  );
+
+  it("restores a missing file reference without duplicating its record or replacing another record's id", () => {
     const file = {
-      id: "file-1",
       type: "file" as const,
-      name: "report.pdf",
-      mimeType: "application/pdf",
-      sizeBytes: 42,
-      fileUri: "file:///documents/report.pdf",
+      id: "file",
+      name: "notes.txt",
+      mimeType: "text/plain",
+      sizeBytes: 10,
+      fileUri: "file:///notes.txt",
     };
-
-    expect(
-      decodePersistedComposerDrafts({
+    const existing = {
+      version: 1,
+      contextId: "original",
+      kind: "file",
+      label: file.name,
+      attachmentId: file.id,
+      name: file.name,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+    };
+    const skill = { version: 1, contextId: "file", kind: "skill", label: "Skill", name: "skill" };
+    for (const records of [[existing, skill], [skill]]) {
+      const restored = decodePersistedComposerState({
         schemaVersion: 1,
         drafts: {
-          "environment-1:thread-1": { text: "Review this file", attachments: [file] },
+          thread: { text: "", attachments: [file], context: { version: 1, records } },
         },
-      }),
-    ).toEqual({
-      "environment-1:thread-1": { text: "Review this file", attachments: [file] },
+      }).drafts.thread;
+      expect(restored?.context?.records).toHaveLength(2);
+      expect(restored?.context?.records).toContainEqual(skill);
+      expect(restored?.text).toBe(
+        `[notes.txt](t3-context://v1/file/${records.length === 2 ? "original" : "file_2"}) `,
+      );
+    }
+  });
+  it.each([false, true])(
+    "restores deleted file chips and releases undo history (uploaded: %s)",
+    async (uploaded) => {
+      const key = "environment:undo-file";
+      const file = {
+        type: "file" as const,
+        id: "undo-file",
+        name: "notes.txt",
+        mimeType: "text/plain",
+        sizeBytes: 1,
+        fileUri: "file:///documents/t3-composer-attachments/undo-file.txt",
+        ...(uploaded
+          ? {
+              uploadedAttachmentId: "pending-upload",
+              uploadEnvironmentId: EnvironmentId.make("environment"),
+            }
+          : {}),
+      };
+      appendComposerDraftAttachments(key, [file], { appendReference: true });
+      const original = getComposerDraftSnapshot(key);
+      const history = createComposerDraftContextHistory();
+      const changeText = (text: string) => {
+        const restored = history.restore(text, getComposerDraftSnapshot(key));
+        setComposerDraftText(key, text);
+        setComposerDraftContext(key, restored.context);
+        appendComposerDraftAttachments(key, restored.attachments, { allowOverflow: true });
+      };
+      try {
+        changeText("");
+        expect(getComposerDraftSnapshot(key).attachments).toEqual([]);
+        await releaseUnusedComposerAttachmentFiles([file]);
+        expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalledWith(file.fileUri);
+        changeText(original.text);
+        expect(getComposerDraftSnapshot(key).context).toEqual(original.context);
+        expect(getComposerDraftSnapshot(key).attachments).toEqual([
+          { ...file, uploadedAttachmentId: undefined, uploadEnvironmentId: undefined },
+        ]);
+        changeText("");
+      } finally {
+        history.dispose();
+      }
+      await releaseUnusedComposerAttachmentFiles([file]);
+      expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(file.fileUri);
+    },
+  );
+
+  it("retains a pick matching cached state until the live shell confirms it", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const threadId = ThreadId.make("thread-1");
+    const key = `${environmentId}:${threadId}`;
+    const h = modelReconciliationHarness(environmentId, threadId, "cached");
+    const pick = h.model();
+    updateComposerDraftSettings(key, { modelSelection: pick });
+    h.flush();
+    const before = getComposerDraftSnapshot(key);
+    expect(before.modelSelection).toEqual(pick);
+
+    for (const status of ["empty", "synchronizing", "cached"] as const) {
+      h.setStatus(status);
+      expect(getComposerDraftSnapshot(key)).toEqual(before);
+    }
+    h.update({ modelSelection: { ...pick, model: "remote-model" } }, "live");
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    h.update({ modelSelection: pick }, "synchronizing");
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    h.setStatus("live");
+    expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+  });
+
+  it("releases an inactive thread pick only after its queued model becomes durable", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const threadId = ThreadId.make("thread-1");
+    const key = `${environmentId}:${threadId}`;
+    const pick = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
+    setComposerDraftText(key, "keep this unsent follow-up");
+    appendComposerDraftAttachments(
+      key,
+      [
+        {
+          type: "file",
+          id: "file",
+          name: "notes.txt",
+          mimeType: "text/plain",
+          sizeBytes: 4,
+          fileUri: "file:///notes.txt",
+        },
+      ],
+      { appendReference: true },
+    );
+    updateComposerDraftSettings(key, {
+      modelSelection: pick,
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
     });
+    const before = getComposerDraftSnapshot(key);
+    const remoteKey = `environment-remote:${threadId}`;
+    updateComposerDraftSettings(remoteKey, { modelSelection: pick });
+    const remoteBefore = getComposerDraftSnapshot(remoteKey);
+    const h = modelReconciliationHarness(environmentId, threadId);
+
+    h.update({ status: "queued" });
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    h.update({
+      status: "running",
+      modelSelection: { ...pick, options: [{ id: "fastMode", value: false }] },
+    });
+    expect(getComposerDraftSnapshot(key)).toEqual({ ...before, modelSelection: undefined });
+    expect(getComposerDraftSnapshot(remoteKey)).toEqual(remoteBefore);
+
+    h.update({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-5-5",
+      },
+    });
+    expect(getComposerDraftSnapshot(key).modelSelection ?? h.model()).toEqual(h.model());
+    expect(getComposerDraftSnapshot(key)).toEqual({ ...before, modelSelection: undefined });
+  });
+
+  it("retains an unavailable provider pick through differing durable model updates", () => {
+    const environmentId = EnvironmentId.make("environment-1");
+    const threadId = ThreadId.make("thread-1");
+    const key = `${environmentId}:${threadId}`;
+    const pick: ModelSelection = {
+      instanceId: ProviderInstanceId.make("codex-secondary"),
+      model: "gpt-5.5",
+      options: [
+        { id: "reasoningEffort", value: "high" },
+        { id: "fastMode", value: true },
+      ],
+    };
+    updateComposerDraftSettings(key, { modelSelection: pick });
+    const before = getComposerDraftSnapshot(key);
+    const h = modelReconciliationHarness(environmentId, threadId);
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    for (const modelSelection of [
+      { ...pick, instanceId: ProviderInstanceId.make("codex") },
+      { ...pick, model: "gpt-5.4" },
+      { ...pick, options: [{ id: "reasoningEffort", value: "high" }] },
+      {
+        ...pick,
+        options: [
+          { id: "reasoningEffort", value: "low" },
+          { id: "fastMode", value: true },
+        ],
+      },
+    ]) {
+      h.update({ modelSelection });
+      expect(getComposerDraftSnapshot(key)).toEqual(before);
+    }
+    h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
+    expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
+  });
+
+  it("drops chips and records for attachments a replace no longer keeps", () => {
+    const key = "new-task:draft-1";
+    const kept = {
+      type: "file" as const,
+      id: "kept-file",
+      name: "kept.txt",
+      mimeType: "text/plain",
+      sizeBytes: 1,
+      fileUri: "file:///kept.txt",
+    };
+    const dropped = {
+      type: "file" as const,
+      id: "dropped-file",
+      name: "dropped.txt",
+      mimeType: "text/plain",
+      sizeBytes: 1,
+      fileUri: "file:///dropped.txt",
+    };
+    appendComposerDraftAttachments(key, [kept, dropped], { appendReference: true });
+
+    const before = getComposerDraftSnapshot(key);
+    expect(before.text).toContain("dropped.txt");
+    expect(before.context?.records).toHaveLength(2);
+
+    replaceComposerDraftAttachments(key, [kept]);
+
+    const after = getComposerDraftSnapshot(key);
+    expect(after.attachments.map((attachment) => attachment.id)).toEqual([kept.id]);
+    expect(after.text).not.toContain("dropped.txt");
+    expect(after.context?.records.map((record) => record.contextId)).toEqual([
+      before.context?.records[0]?.contextId,
+    ]);
+  });
+
+  it("keeps over-limit recovery context reloadable without losing other drafts", () => {
+    const key = "environment-1:recovery";
+    const merged = mergeComposerDraftContentState(
+      { [key]: contextDraft(0, 200), other: DRAFT },
+      key,
+      contextDraft(200, 200),
+    );
+    expect(merged[key]?.context?.records).toHaveLength(400);
+    const reloaded = decodePersistedComposerState(
+      JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: merged })),
+    ).drafts;
+    expect(reloaded[key]).toEqual(merged[key]);
+    expect(reloaded.other).toEqual(DRAFT);
+  });
+
+  it("prunes unreferenced context during a content merge", () => {
+    const existing = contextDraft(0, 2);
+    const incoming = contextDraft(2, 2);
+    const merged = mergeComposerDraftContentState(
+      { key: { ...existing, text: "[Skill](t3-context://v1/skill/skill-0)" } },
+      "key",
+      { ...incoming, text: "[Skill](t3-context://v1/skill/skill-2)" },
+    );
+    expect(merged.key?.context?.records.map((record) => record.contextId)).toEqual([
+      "skill-0",
+      "skill-2",
+    ]);
+  });
+
+  it("restores and persists both full cloud and live context drafts", async () => {
+    const load = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => load.mockRestore());
+    await waitForComposerDraftsLoaded();
+    const key = "environment-1:restored";
+    appAtomRegistry.set(composerDraftsAtom, { [key]: contextDraft(0, 200) });
+    appAtomRegistry.set(composerCloudDraftsAtom, {
+      accountId: null,
+      signedOut: { account: { drafts: { [key]: contextDraft(200, 200) }, queuedMessages: [] } },
+    });
+    await restoreCloudComposerDrafts("account");
+    expect(getComposerDraftSnapshot(key).context?.records).toHaveLength(400);
+    const reloaded = decodePersistedComposerState(JSON.parse(composerDraftFileMocks.getDocument()));
+    expect(reloaded.drafts[key]?.context?.records).toHaveLength(400);
+    expect(reloaded.cloudDrafts.signedOut).toEqual({});
+  });
+
+  it.each([
+    { name: "notes.txt", mimeType: "text/plain" },
+    { name: "document-photo.png", mimeType: "image/png" },
+    { name: "recording.mp4", mimeType: "video/mp4" },
+  ])(
+    "removes $name after its last reference is deleted, while retaining native images",
+    async ({ name, mimeType }) => {
+      const outboxLoad = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+      onTestFinished(() => outboxLoad.mockRestore());
+      const cleanup = Promise.withResolvers<void>();
+      composerAttachmentCleanupMocks.remove.mockImplementationOnce(async () => {
+        cleanup.resolve();
+      });
+      const key = "environment-1:remove-context-files";
+      const file = {
+        id: "file-1",
+        type: "file" as const,
+        name,
+        mimeType,
+        sizeBytes: 4,
+        fileUri: `file:///${name}`,
+      };
+      const image = {
+        ...file,
+        id: "image-1",
+        type: "image" as const,
+        name: "image.png",
+        mimeType: "image/png",
+        fileUri: "file:///image.png",
+        previewUri: "file:///image.png",
+      };
+      appendComposerDraftAttachments(key, [file, image], { appendReference: true });
+      const fileLink = formatComposerContextReference(
+        getComposerDraftSnapshot(key).context!.records[0]!,
+      );
+      setComposerDraftText(key, `${fileLink} ${fileLink}`);
+      expect(getComposerDraftSnapshot(key).attachments).toEqual([file, image]);
+      setComposerDraftText(key, fileLink);
+      expect(getComposerDraftSnapshot(key).attachments).toEqual([file, image]);
+      expect(
+        countComposerDraftAttachmentsAfterSelection(key, {
+          text: fileLink,
+          start: 0,
+          end: fileLink.length,
+        }),
+      ).toBe(1);
+      setComposerDraftText(key, "plain text");
+      expect(getComposerDraftSnapshot(key).attachments).toEqual([image]);
+      await cleanup.promise;
+    },
+  );
+
+  it("rejects attachments atomically when no context slots remain", async () => {
+    const outboxLoad = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => outboxLoad.mockRestore());
+    const cleanup = Promise.withResolvers<void>();
+    composerAttachmentCleanupMocks.remove.mockImplementationOnce(async () => {
+      cleanup.resolve();
+    });
+    const key = "environment-1:full-context";
+    const records = Array.from({ length: 200 }, (_, index) => ({
+      version: 1 as const,
+      contextId: `ctx-${index}` as never,
+      kind: "skill" as const,
+      label: "Skill",
+      name: "skill",
+    }));
+    appAtomRegistry.set(composerDraftsAtom, {
+      [key]: {
+        text: records
+          .map((record) => `[Skill](t3-context://v1/skill/${record.contextId})`)
+          .join(" "),
+        context: { version: 1, records },
+        attachments: [],
+      },
+    });
+    const before = getComposerDraftSnapshot(key);
+    expect(
+      appendComposerDraftAttachments(
+        key,
+        [
+          {
+            id: "overflow",
+            type: "file",
+            name: "notes.txt",
+            mimeType: "text/plain",
+            sizeBytes: 4,
+            fileUri: "file:///overflow.txt",
+          },
+        ],
+        { appendReference: true },
+      ),
+    ).toBe(1);
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    await cleanup.promise;
+  });
+  it.each(["environment-1:thread", "environment-1:new-task:draft"])(
+    "preserves the captured paste selection across async writes in %s",
+    async (key) => {
+      const file = {
+        id: "paste",
+        type: "file" as const,
+        name: "pasted-text.txt",
+        mimeType: "text/plain",
+        sizeBytes: 40_000,
+        fileUri: "file:///paste.txt",
+      };
+      setComposerDraftText(key, "before selected after");
+      const insertion = captureComposerDraftInsertion(key, { start: 7, end: 15 });
+      const write = Promise.withResolvers<typeof file>();
+      const pending = write.promise.then((attachment) =>
+        appendComposerDraftAttachments(key, [attachment], { appendReference: true, insertion }),
+      );
+      rememberComposerDraftSelection(key, insertion.text, { start: 0, end: 6 });
+      rememberComposerDraftSelection("another-draft", "unrelated", { start: 0, end: 9 });
+      write.resolve(file);
+      expect(await pending).toBe(0);
+      const draft = getComposerDraftSnapshot(key);
+      expect(draft.text).toBe("before [pasted-text.txt](t3-context://v1/file/paste) after");
+      expect(draft.attachments).toEqual([file]);
+    },
+  );
+
+  it("preserves edits made while a paste is pending instead of deleting stale offsets", async () => {
+    const key = "environment-1:typing-during-paste";
+    setComposerDraftText(key, "old selection");
+    const insertion = captureComposerDraftInsertion(key, { start: 0, end: 13 });
+    const write = Promise.withResolvers<void>();
+    const pending = write.promise.then(() => insertComposerDraftText(key, " pasted", insertion));
+    setComposerDraftText(key, "keep newly typed text");
+    write.resolve();
+    await pending;
+    expect(getComposerDraftSnapshot(key).text).toBe("keep newly typed text pasted");
+  });
+
+  it.each(["attachment", "context", "imported context"])(
+    "releases a selected file when replaced by %s",
+    async (kind) => {
+      const outboxLoad = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+      onTestFinished(() => outboxLoad.mockRestore());
+      const cleanup = Promise.withResolvers<void>();
+      composerAttachmentCleanupMocks.remove.mockImplementationOnce(async () => {
+        cleanup.resolve();
+        return undefined;
+      });
+      const key = "environment-1:replace-file";
+      const files = Array.from({ length: 100 }, (_, index) => ({
+        id: `file-${index}`,
+        type: "file" as const,
+        name: `notes-${index}.txt`,
+        mimeType: "text/plain",
+        sizeBytes: 4,
+        fileUri: `file:///notes-${index}.txt`,
+      }));
+      appendComposerDraftAttachments(key, files, { appendReference: true });
+      const firstLink = "[notes-0.txt](t3-context://v1/file/file-0)";
+      const insertion = captureComposerDraftInsertion(key, { start: 0, end: firstLink.length });
+      expect(countComposerDraftAttachmentsAfterSelection(key, insertion)).toBe(99);
+      expect(getComposerDraftAfterSelection(key, insertion).context?.records).toHaveLength(99);
+      const replacement = { ...files[0]!, id: "replacement", fileUri: "file:///replacement.txt" };
+      if (kind === "attachment") {
+        expect(
+          appendComposerDraftAttachments(key, [replacement], { appendReference: true, insertion }),
+        ).toBe(0);
+      } else if (kind === "imported context") {
+        const record = {
+          version: 1 as const,
+          kind: "file" as const,
+          contextId: ComposerContextId.make("replacement"),
+          attachmentId: replacement.id,
+          label: replacement.name,
+          name: replacement.name,
+          mimeType: replacement.mimeType,
+          sizeBytes: replacement.sizeBytes,
+        };
+        expect(
+          insertComposerDraftContext(
+            key,
+            {
+              text: formatComposerContextReference(record),
+              context: { version: 1, records: [record] },
+              attachments: [replacement],
+            },
+            insertion,
+          ),
+        ).toBe(true);
+        expect(getComposerDraftSnapshot(key).attachments).toHaveLength(100);
+        expect(getComposerDraftSnapshot(key).context?.records).toContainEqual(record);
+        expect(getComposerDraftSnapshot(key).text).toBe(
+          `${formatComposerContextReference(record)}${insertion.text.slice(firstLink.length)}`,
+        );
+      } else {
+        insertComposerDraftContext(
+          key,
+          { text: "replacement", context: { version: 1, records: [] } },
+          insertion,
+        );
+      }
+      const draft = getComposerDraftSnapshot(key);
+      expect(draft.attachments.map((file) => file.id)).not.toContain("file-0");
+      expect(draft.attachments.slice(0, 99)).toEqual(files.slice(1));
+      expect(draft.context?.records.some((record) => record.contextId === "file-0")).toBe(false);
+      await cleanup.promise;
+      expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(files[0]!.fileUri);
+    },
+  );
+
+  it("rejects an imported file atomically when edits during import use up its replacement slot", async () => {
+    const outboxLoad = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
+    onTestFinished(() => outboxLoad.mockRestore());
+    const cleanup = Promise.withResolvers<void>();
+    composerAttachmentCleanupMocks.remove.mockImplementationOnce(async () => {
+      cleanup.resolve();
+      return undefined;
+    });
+    const key = "environment-1:concurrent-import";
+    const files = Array.from({ length: 100 }, (_, index) => ({
+      id: `existing-${index}`,
+      type: "file" as const,
+      name: `notes-${index}.txt`,
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      fileUri: `file:///notes-${index}.txt`,
+    }));
+    appendComposerDraftAttachments(key, files, { appendReference: true });
+    const firstLink = "[notes-0.txt](t3-context://v1/file/existing-0)";
+    const insertion = captureComposerDraftInsertion(key, { start: 0, end: firstLink.length });
+    setComposerDraftText(key, `New edit ${insertion.text}`);
+    const edited = getComposerDraftSnapshot(key);
+    const imported = { ...files[0]!, id: "imported", fileUri: "file:///imported.txt" };
+    const record = {
+      version: 1 as const,
+      kind: "file" as const,
+      contextId: ComposerContextId.make("imported"),
+      attachmentId: imported.id,
+      label: imported.name,
+      name: imported.name,
+      mimeType: imported.mimeType,
+      sizeBytes: imported.sizeBytes,
+    };
+    expect(
+      insertComposerDraftContext(
+        key,
+        {
+          text: formatComposerContextReference(record),
+          context: { version: 1, records: [record] },
+          attachments: [imported],
+        },
+        insertion,
+      ),
+    ).toBe(false);
+    expect(getComposerDraftSnapshot(key)).toEqual(edited);
+    await cleanup.promise;
+    expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(imported.fileUri);
+  });
+
+  it("retains a file when replacing only one of its repeated references", () => {
+    const key = "environment-1:repeat-reference";
+    const file = {
+      id: "repeat",
+      type: "file" as const,
+      name: "notes.txt",
+      mimeType: "text/plain",
+      sizeBytes: 4,
+      fileUri: "file:///repeat.txt",
+    };
+    appendComposerDraftAttachments(key, [file], { appendReference: true });
+    const link = getComposerDraftSnapshot(key).text;
+    setComposerDraftText(key, `${link} ${link}`);
+    const insertion = captureComposerDraftInsertion(key, { start: 0, end: link.length });
+    expect(countComposerDraftAttachmentsAfterSelection(key, insertion)).toBe(1);
+    insertComposerDraftContext(
+      key,
+      { text: "replaced", context: { version: 1, records: [] } },
+      insertion,
+    );
+    expect(getComposerDraftSnapshot(key).attachments).toEqual([file]);
+    expect(getComposerDraftSnapshot(key).text).toBe(`replaced ${link}`);
+  });
+
+  it("inserts context at the saved caret and retains its payload through persistence and restore", () => {
+    const draftKey = "context-environment:context-thread";
+    const record = {
+      version: 1 as const,
+      kind: "terminal" as const,
+      contextId: ComposerContextId.make("context-terminal"),
+      label: "Build output",
+      terminalId: "main",
+      terminalLabel: "Terminal",
+      lineStart: 1,
+      lineEnd: 1,
+      text: "Build failed",
+    };
+    const reference = "[Build output](t3-context://v1/terminal/context-terminal)";
+    setComposerDraftText(draftKey, "Fix this next");
+    rememberComposerDraftSelection(draftKey, "Fix this next", { start: 4, end: 8 });
+    insertComposerDraftContext(draftKey, {
+      text: reference,
+      context: { version: 1, records: [record] },
+    });
+    const draft = getComposerDraftSnapshot(draftKey);
+    expect(draft.text).toBe(`Fix ${reference} next`);
+    const decoded = decodePersistedComposerState(
+      JSON.parse(JSON.stringify({ schemaVersion: 1, drafts: { [draftKey]: draft } })),
+    ).drafts[draftKey];
+    expect(decoded?.context?.records).toEqual([record]);
+    const restored = mergeComposerDraftContentState(
+      { [draftKey]: { text: "Additional work", attachments: [] } },
+      draftKey,
+      decoded!,
+    );
+    expect(restored[draftKey]?.text).toContain(reference);
+    expect(restored[draftKey]?.context?.records).toEqual([record]);
+    expect(clearComposerDraftContentState(restored, draftKey)[draftKey]?.context).toBeUndefined();
+    setComposerDraftText(draftKey, "Fix next");
+    expect(getComposerDraftSnapshot(draftKey).context).toBeUndefined();
+  });
+
+  it("keeps each draft's caret when another composer moves its own caret", () => {
+    const threadKey = "caret-environment:caret-thread";
+    const newTaskKey = "caret-environment:new-task:caret-draft";
+    setComposerDraftText(threadKey, "Fix this next");
+    setComposerDraftText(newTaskKey, "Another task");
+    rememberComposerDraftSelection(threadKey, "Fix this next", { start: 4, end: 8 });
+    rememberComposerDraftSelection(newTaskKey, "Another task", { start: 2, end: 2 });
+    insertComposerDraftContext(threadKey, {
+      text: "[Build output](t3-context://v1/terminal/caret-terminal)",
+      context: {
+        version: 1,
+        records: [
+          {
+            version: 1,
+            kind: "terminal",
+            contextId: ComposerContextId.make("caret-terminal"),
+            label: "Build output",
+            terminalId: "main",
+            terminalLabel: "Terminal",
+            lineStart: 1,
+            lineEnd: 1,
+            text: "Build failed",
+          },
+        ],
+      },
+    });
+    expect(getComposerDraftSnapshot(threadKey).text).toBe(
+      "Fix [Build output](t3-context://v1/terminal/caret-terminal) next",
+    );
   });
 
   it("releases videos rejected by the live draft limit and keeps accepted files", async () => {
@@ -298,7 +1047,6 @@ describe("mobile composer drafts", () => {
       makeAttachment("incoming-2").fileUri,
     );
 
-    // Restore paths bypass the cap so a failed send never drops its files.
     const overflowRejected = appendComposerDraftAttachments(
       draftKey,
       [makeAttachment("restored-1")],
@@ -357,7 +1105,6 @@ describe("mobile composer drafts", () => {
     await releaseUnusedComposerAttachmentFiles([image]);
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
 
-    // A queued outbox message must keep the bytes alive after the draft clears.
     appAtomRegistry.set(composerDraftsAtom, {});
     appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {
       "environment-1:thread-1": [
@@ -496,29 +1243,6 @@ describe("mobile composer drafts", () => {
     expect(getComposerDraftSnapshot(key).attachments).toHaveLength(2);
   });
 
-  it("cleans up an unreferenced image upload even when there is no local file URI", async () => {
-    const outboxLoad = vi.spyOn(threadOutboxManager, "load").mockResolvedValue(true);
-    onTestFinished(() => outboxLoad.mockRestore());
-    const environmentId = EnvironmentId.make("environment-1");
-    await releaseUnusedComposerAttachmentFiles([
-      {
-        id: "photo",
-        type: "image",
-        name: "photo.png",
-        mimeType: "image/png",
-        sizeBytes: 3,
-        dataUrl: "data:image/png;base64,YWJj",
-        previewUri: "file:///photo.png",
-        uploadedAttachmentId: "pending-photo",
-        uploadEnvironmentId: environmentId,
-      },
-    ]);
-    expect(composerAttachmentCleanupMocks.releaseUploads).toHaveBeenCalledWith(environmentId, [
-      "pending-photo",
-    ]);
-    expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
-  });
-
   it.each(["file", "image"] as const)(
     "keeps signed-out %s attachments through cleanup and restart, and restores only the owning account",
     async (type) => {
@@ -560,7 +1284,7 @@ describe("mobile composer drafts", () => {
       expect(appAtomRegistry.get(composerDraftsAtom)).toEqual({
         "direct-environment:thread-1": DRAFT,
       });
-      // The registry can remove the active outbox and drafts after the backup lands.
+
       appAtomRegistry.set(threadOutboxManager.queuedMessagesByThreadKeyAtom, {});
       await clearComposerDraftsEnvironment(environmentId);
       await releaseUnusedComposerAttachmentFiles([file]);
@@ -577,8 +1301,34 @@ describe("mobile composer drafts", () => {
       const enqueue = vi.spyOn(threadOutboxManager, "enqueue").mockResolvedValue();
       onTestFinished(() => enqueue.mockRestore());
       await restoreCloudComposerDrafts("account-a");
-      expect(getComposerDraftSnapshot(key)).toEqual({ text: "Unsent notes", attachments: [file] });
-      expect(getComposerDraftSnapshot("pending-task:queued-1").text).toBe("Edited queued task");
+      expect(getComposerDraftSnapshot(key)).toEqual(
+        type === "image"
+          ? { text: "Unsent notes", attachments: [file] }
+          : {
+              text: "Unsent notes [notes.pdf](t3-context://v1/file/local-notes) ",
+              attachments: [file],
+              context: {
+                version: 1,
+                records: [
+                  {
+                    version: 1,
+                    contextId: file.id,
+                    kind: "file",
+                    label: file.name,
+                    attachmentId: file.id,
+                    name: file.name,
+                    mimeType: file.mimeType,
+                    sizeBytes: file.sizeBytes,
+                  },
+                ],
+              },
+            },
+      );
+      expect(getComposerDraftSnapshot("pending-task:queued-1").text).toBe(
+        type === "image"
+          ? "Edited queued task"
+          : "Edited queued task [notes.pdf](t3-context://v1/file/local-notes) ",
+      );
       expect(enqueue).toHaveBeenCalledExactlyOnceWith(queued);
       expect(appAtomRegistry.get(composerCloudDraftsAtom).signedOut).toEqual({});
       const persisted = decodePersistedComposerState(
@@ -985,32 +1735,9 @@ describe("mobile composer drafts", () => {
     }
   });
 
-  it("rejects persisted images without image bytes or a file URI", () => {
-    expect(() =>
-      decodePersistedComposerDrafts({
-        schemaVersion: 1,
-        drafts: {
-          "environment-1:thread-1": {
-            text: "Saved image",
-            attachments: [
-              {
-                id: "image-1",
-                type: "image",
-                name: "photo.png",
-                mimeType: "image/png",
-                sizeBytes: 3,
-                previewUri: "file:///photo.png",
-              },
-            ],
-          },
-        },
-      }),
-    ).toThrow();
-  });
-
   it("hydrates selector state even when the message content is empty", () => {
-    expect(
-      decodePersistedComposerDrafts({
+    const hydrated = Object.entries(
+      decodePersistedComposerState({
         schemaVersion: 1,
         drafts: {
           "new-task:environment-1:project-1": {
@@ -1030,50 +1757,33 @@ describe("mobile composer drafts", () => {
             },
           },
         },
-      }),
-    ).toEqual({
-      "new-task:environment-1:project-1": {
-        text: "",
-        attachments: [],
-        modelSelection: {
-          instanceId: "codex",
-          model: "gpt-5.4",
-          options: [{ id: "reasoningEffort", value: "xhigh" }],
-        },
-        runtimeMode: "approval-required",
-        interactionMode: "plan",
-        workspaceSelection: {
-          mode: "worktree",
-          branch: "main",
-          worktreePath: null,
-        },
+      }).drafts,
+    );
+    expect(hydrated).toHaveLength(1);
+    const [key, draft] = hydrated[0]!;
+
+    expect(key).toMatch(/^new-task:[0-9a-z-]+$/);
+    expect(draft).toEqual({
+      text: "",
+      attachments: [],
+      modelSelection: {
+        instanceId: "codex",
+        model: "gpt-5.4",
+        options: [{ id: "reasoningEffort", value: "xhigh" }],
+      },
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+      workspaceSelection: {
+        mode: "worktree",
+        branch: "main",
+        worktreePath: null,
+      },
+      project: {
+        environmentId: "environment-1",
+        projectId: "project-1",
+        createdAt: expect.any(String),
       },
     });
-  });
-
-  it("keeps legacy content-only drafts and rejects invalid selector state", () => {
-    expect(
-      decodePersistedComposerDrafts({
-        schemaVersion: 1,
-        drafts: {
-          "environment-1:thread-1": DRAFT,
-        },
-      }),
-    ).toEqual({
-      "environment-1:thread-1": DRAFT,
-    });
-
-    expect(() =>
-      decodePersistedComposerDrafts({
-        schemaVersion: 1,
-        drafts: {
-          "environment-1:thread-1": {
-            ...DRAFT,
-            runtimeMode: "sometimes-safe",
-          },
-        },
-      }),
-    ).toThrow();
   });
 
   it("keeps share-import receipts on otherwise contentless new-task drafts", () => {
@@ -1082,10 +1792,8 @@ describe("mobile composer drafts", () => {
       attachments: [],
       importedShareIds: ["share-1"],
     };
-    // The stale-model strip must not touch receipt-bearing drafts, and the
-    // empty filter must keep them — or the same share would re-import after
-    // restart.
-    expect(
+
+    const stripped = Object.values(
       decodePersistedComposerState({
         schemaVersion: 1,
         drafts: {
@@ -1098,78 +1806,145 @@ describe("mobile composer drafts", () => {
           },
         },
       }).drafts,
-    ).toEqual({
-      "new-task:environment-1:project-1": {
-        text: "",
-        attachments: [],
-        importedShareIds: ["share-1"],
-      },
+    );
+    expect(stripped).toHaveLength(1);
+    expect(stripped[0]).toMatchObject({
+      text: "",
+      attachments: [],
+      importedShareIds: ["share-1"],
+      project: { environmentId: "environment-1", projectId: "project-1" },
     });
+    expect(stripped[0]?.modelSelection).toBeUndefined();
 
-    expect(
+    const kept = Object.values(
       decodePersistedComposerState({
         schemaVersion: 1,
         drafts: { "new-task:environment-1:project-1": receiptDraft },
       }).drafts,
-    ).toEqual({ "new-task:environment-1:project-1": receiptDraft });
+    );
+    expect(kept).toHaveLength(1);
+    expect(kept[0]).toMatchObject(receiptDraft);
   });
 
-  it("hydrates the global sticky model selection", () => {
-    expect(
-      decodePersistedComposerState({
-        schemaVersion: 1,
-        drafts: {},
-        stickyModelSelection: {
-          instanceId: "codex",
-          model: "gpt-5.6-sol",
-        },
-      }).stickyModelSelection,
-    ).toEqual({
-      instanceId: "codex",
-      model: "gpt-5.6-sol",
+  it("migrates project-keyed new-task drafts to id keys with the project stamped in", () => {
+    const now = "2026-09-05T12:00:00.000Z";
+    const [key, draft] = migrateLegacyNewTaskDraft(
+      "new-task:environment-1:project-1",
+      { text: "keep me", attachments: [] },
+      now,
+    );
+
+    expect(key).toMatch(/^new-task:[0-9a-z-]+$/);
+    expect(draft).toEqual({
+      text: "keep me",
+      attachments: [],
+      project: {
+        environmentId: EnvironmentId.make("environment-1"),
+        projectId: ProjectId.make("project-1"),
+        createdAt: now,
+      },
     });
+
+    const stamped: ComposerDraft = {
+      text: "x",
+      attachments: [],
+      project: {
+        environmentId: EnvironmentId.make("environment-1"),
+        projectId: ProjectId.make("project-1"),
+        createdAt: now,
+      },
+    };
+    expect(migrateLegacyNewTaskDraft("new-task:some-id", stamped, now)).toEqual([
+      "new-task:some-id",
+      stamped,
+    ]);
+    expect(migrateLegacyNewTaskDraft("environment-1:thread-1", DRAFT, now)).toEqual([
+      "environment-1:thread-1",
+      DRAFT,
+    ]);
+    expect(migrateLegacyNewTaskDraft("pending-task:message-1", DRAFT, now)).toEqual([
+      "pending-task:message-1",
+      DRAFT,
+    ]);
   });
 
-  it("waits for hydration before persisting the latest composer state", async () => {
-    vi.useFakeTimers();
+  it("keeps a freshly minted new-task draft bound until content arrives, then lists it per project", () => {
+    const project = {
+      environmentId: EnvironmentId.make("environment-1"),
+      projectId: ProjectId.make("project-1"),
+    };
+    const first = createNewTaskDraft(project);
+    const second = createNewTaskDraft(project);
+    expect(first).not.toBe(second);
+
+    expect(appAtomRegistry.get(composerDraftsAtom)[first]?.project).toMatchObject(project);
+
+    setComposerDraftText(first, "first idea");
+    setComposerDraftText(second, "second idea");
+    expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), project)).toEqual(
+      expect.arrayContaining([first, second]),
+    );
+
+    clearComposerDraftContent(first, { clearModelSelection: true, clearWorkspaceSelection: true });
+    expect(appAtomRegistry.get(composerDraftsAtom)[first]).toBeUndefined();
+    expect(getComposerDraftSnapshot(second).text).toBe("second idea");
+  });
+
+  it("retargets a new-task draft to another project without losing its text", () => {
+    const from = {
+      environmentId: EnvironmentId.make("environment-1"),
+      projectId: ProjectId.make("project-1"),
+    };
+    const to = {
+      environmentId: EnvironmentId.make("environment-2"),
+      projectId: ProjectId.make("project-2"),
+    };
+    const key = createNewTaskDraft(from);
+    setComposerDraftText(key, "moving house");
+    appAtomRegistry.set(composerDraftsAtom, {
+      ...appAtomRegistry.get(composerDraftsAtom),
+      [key]: {
+        ...getComposerDraftSnapshot(key),
+        runtimeMode: "approval-required",
+        workspaceSelection: { mode: "worktree", branch: "feature/a", worktreePath: null },
+      },
+    });
+    const createdAt = getComposerDraftSnapshot(key).project?.createdAt;
+
+    retargetNewTaskDraft(key, to);
+
+    const moved = getComposerDraftSnapshot(key);
+    expect(moved.text).toBe("moving house");
+    expect(moved.runtimeMode).toBe("approval-required");
+
+    expect(moved.workspaceSelection).toBeUndefined();
+    expect(moved.project).toEqual({ ...to, createdAt });
+    expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), from)).toEqual([]);
+    expect(findNewTaskDraftKeys(appAtomRegistry.get(composerDraftsAtom), to)).toEqual([key]);
+  });
+
+  it("merges persisted option memory without replacing newer choices", async () => {
     composerDraftFileMocks.setDocument({
       schemaVersion: 1,
-      drafts: {
-        "environment-1:thread-1": DRAFT,
-      },
-      stickyModelSelection: {
-        instanceId: "codex",
-        model: "gpt-5.6-sol",
-      },
-    });
-    composerDraftFileMocks.blockRead();
-    composerDraftFileMocks.resetWrites();
-
-    ensureComposerDraftsLoaded();
-    await Promise.resolve();
-    // The read is blocked, hydration is pending.
-    setComposerDraftText("new-task:environment-1:project-1", "New prompt");
-    await vi.advanceTimersByTimeAsync(200);
-
-    // Write should still be deferred — hydration has not resolved.
-    expect(composerDraftFileMocks.getWrites()).toHaveLength(0);
-
-    composerDraftFileMocks.releaseRead();
-    // Let the loadPromise settle and chain into the deferred persist.
-    await vi.runAllTimersAsync();
-
-    expect(JSON.parse(composerDraftFileMocks.getWrites()[0]!)).toEqual({
-      schemaVersion: 1,
-      drafts: {
-        "environment-1:thread-1": DRAFT,
-        "new-task:environment-1:project-1": {
-          text: "New prompt",
-          attachments: [],
+      drafts: {},
+      modelOptionMemory: {
+        pi: {
+          "xai/grok-4.6": [{ id: "thinking", value: "high" }],
+          "openai/gpt-5.4": [{ id: "thinking", value: "medium" }],
         },
       },
-      stickyModelSelection: {
-        instanceId: "codex",
-        model: "gpt-5.6-sol",
+    });
+    appAtomRegistry.set(modelOptionMemoryAtom, {
+      pi: { "xai/grok-4.6": [{ id: "thinking", value: "xhigh" }] },
+    });
+
+    ensureComposerDraftsLoaded();
+    await waitForComposerDraftsLoaded();
+
+    expect(appAtomRegistry.get(modelOptionMemoryAtom)).toEqual({
+      pi: {
+        "xai/grok-4.6": [{ id: "thinking", value: "xhigh" }],
+        "openai/gpt-5.4": [{ id: "thinking", value: "medium" }],
       },
     });
   });
@@ -1191,13 +1966,12 @@ describe("mobile composer drafts", () => {
 
     ensureComposerDraftsLoaded();
     await Promise.resolve();
-    // An edit lands before hydration finishes; its debounced write is gated
-    // behind the blocked read.
+
     setComposerDraftText("new-task:environment-1:project-1", "New prompt");
 
     const flush = flushComposerDrafts();
     await vi.advanceTimersByTimeAsync(200);
-    // The flush must not have written the pre-hydration snapshot over disk.
+
     expect(composerDraftFileMocks.getWrites()).toHaveLength(0);
 
     composerDraftFileMocks.releaseRead();
@@ -1247,27 +2021,6 @@ describe("mobile composer drafts", () => {
     },
   );
 
-  it("retries a failed debounced read on final flush without dropping saved drafts or new edits", async () => {
-    vi.useFakeTimers();
-    composerDraftFileMocks.setDocument({
-      schemaVersion: 1,
-      drafts: { "environment-1:saved": DRAFT },
-    });
-    const original = composerDraftFileMocks.getDocument();
-    composerDraftFileMocks.setReadError(new Error("storage unavailable"));
-    setComposerDraftText("environment-1:new", "New edits");
-    await vi.advanceTimersByTimeAsync(200);
-    expect(composerDraftFileMocks.getDocument()).toBe(original);
-
-    composerDraftFileMocks.setReadError(null);
-    await flushComposerDrafts();
-
-    expect(JSON.parse(composerDraftFileMocks.getDocument()).drafts).toEqual({
-      "environment-1:saved": DRAFT,
-      "environment-1:new": { text: "New edits", attachments: [] },
-    });
-  });
-
   it("serializes environment cleanup after an older queued write", async () => {
     vi.useFakeTimers();
     composerDraftFileMocks.setDocument({ schemaVersion: 1, drafts: {} });
@@ -1299,7 +2052,7 @@ describe("mobile composer drafts", () => {
 
     const clear = clearComposerDraftsEnvironment(EnvironmentId.make("environment-1"));
     await Promise.resolve();
-    // Cleanup write is queued behind the still-blocked debounced write.
+
     expect(composerDraftFileMocks.getWrites()).toHaveLength(0);
 
     releaseFirstWrite();
@@ -1346,92 +2099,54 @@ describe("mobile composer drafts", () => {
     });
   });
 
-  it("drops draft-local model and workspace selections after sending a new task", () => {
-    const draftKey = "new-task:environment-1:project-1";
-    const draft: ComposerDraft = {
-      text: "send this",
-      attachments: [],
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("codex"),
-        model: "gpt-5.4",
-      },
-      workspaceSelection: {
-        mode: "worktree",
-        branch: "main",
-        worktreePath: null,
-        startFromOrigin: false,
-      },
+  it("drops another environment's upload stamp when a draft moves across machines", () => {
+    const uploadedElsewhere: DraftComposerAttachment = {
+      id: "image-1",
+      type: "image",
+      name: "screen.png",
+      mimeType: "image/png",
+      sizeBytes: 1,
+      previewUri: "file:///drafts/screen.png",
+      fileUri: "file:///drafts/screen.png",
+      uploadedAttachmentId: "upload-1",
+      uploadEnvironmentId: EnvironmentId.make("environment-1"),
     };
-
-    expect(
-      clearComposerDraftContentState({ [draftKey]: draft }, draftKey, {
-        clearModelSelection: true,
-        clearWorkspaceSelection: true,
-      }),
-    ).toEqual({});
-  });
-
-  it("reads the latest selector state synchronously for send", () => {
-    const draftKey = "environment-1:thread-1";
-    const selectedDraft: ComposerDraft = {
-      text: "send this",
-      attachments: [],
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("codex"),
-        model: "gpt-5.4",
-        options: [{ id: "reasoningEffort", value: "xhigh" }],
-      },
+    const uploadedOnTarget: DraftComposerAttachment = {
+      ...uploadedElsewhere,
+      id: "image-2",
+      uploadedAttachmentId: "upload-2",
+      uploadEnvironmentId: EnvironmentId.make("environment-2"),
     };
-    appAtomRegistry.set(composerDraftsAtom, { [draftKey]: selectedDraft });
-
-    expect(getComposerDraftSnapshot(draftKey)).toEqual(selectedDraft);
-  });
-
-  it("carries unfinished content to a newly selected project without overwriting its settings", () => {
-    const sourceKey = "new-task:environment-1:project-1";
-    const targetKey = "new-task:environment-1:project-2";
-    const source: ComposerDraft = {
-      text: "Keep this task",
-      attachments: [],
-      importedShareIds: ["share-1"],
-      workspaceSelection: {
-        mode: "worktree",
-        branch: "feature/source",
-        worktreePath: null,
-      },
-    };
-    const target: ComposerDraft = {
-      text: "",
-      attachments: [],
-      runtimeMode: "approval-required",
-    };
-
-    expect(
-      copyComposerDraftContentState(
-        { [sourceKey]: source, [targetKey]: target },
-        sourceKey,
-        targetKey,
-      ),
-    ).toEqual({
-      [sourceKey]: source,
-      [targetKey]: {
-        ...target,
-        text: source.text,
-        attachments: source.attachments,
-        importedShareIds: source.importedShareIds,
+    const key = createNewTaskDraft({
+      environmentId: EnvironmentId.make("environment-1"),
+      projectId: ProjectId.make("project-1"),
+    });
+    appAtomRegistry.set(composerDraftsAtom, {
+      ...appAtomRegistry.get(composerDraftsAtom),
+      [key]: {
+        ...getComposerDraftSnapshot(key),
+        text: "Ship it",
+        attachments: [uploadedElsewhere, uploadedOnTarget],
       },
     });
-  });
 
-  it("does not overwrite unfinished content already stored for the selected project", () => {
-    const sourceKey = "new-task:environment-1:project-1";
-    const targetKey = "new-task:environment-1:project-2";
-    const drafts: Record<string, ComposerDraft> = {
-      [sourceKey]: { text: "Source task", attachments: [] },
-      [targetKey]: { text: "Target task", attachments: [] },
-    };
+    retargetNewTaskDraft(key, {
+      environmentId: EnvironmentId.make("environment-2"),
+      projectId: ProjectId.make("project-2"),
+    });
 
-    expect(copyComposerDraftContentState(drafts, sourceKey, targetKey)).toBe(drafts);
+    expect(getComposerDraftSnapshot(key).attachments).toEqual([
+      {
+        id: "image-1",
+        type: "image",
+        name: "screen.png",
+        mimeType: "image/png",
+        sizeBytes: 1,
+        previewUri: "file:///drafts/screen.png",
+        fileUri: "file:///drafts/screen.png",
+      },
+      uploadedOnTarget,
+    ]);
   });
 
   it("merges shared content into a project draft without duplicating retries", () => {
@@ -1467,6 +2182,44 @@ describe("mobile composer drafts", () => {
       [draftKey]: { ...merged[draftKey]!, text: "User edited the imported context" },
     };
     expect(mergeComposerDraftContentState(edited, draftKey, content)).toBe(edited);
+  });
+
+  it("shows a shared non-image file as a composer chip", () => {
+    const draftKey = "new-task:environment-1:project-1";
+    const sharedFile = {
+      id: "share-1:file:0",
+      type: "file" as const,
+      name: "backup.json",
+      mimeType: "application/json",
+      sizeBytes: 41,
+      fileUri: "file:///documents/backup.json",
+    };
+
+    const existingFile = { ...sharedFile, id: "existing-file", name: "notes.txt" };
+
+    const merged = mergeComposerDraftContentState(
+      { [draftKey]: { text: "", attachments: [existingFile] } },
+      draftKey,
+      { text: "", attachments: [sharedFile], sourceShareId: "share-1" },
+    )[draftKey]!;
+
+    expect(merged.attachments).toEqual([existingFile, sharedFile]);
+    const references = collectComposerContextReferences(merged.text);
+    expect(references).toHaveLength(1);
+    expect(merged.context?.records).toEqual([
+      expect.objectContaining({
+        kind: "file",
+        contextId: references[0]!.contextId,
+        attachmentId: sharedFile.id,
+      }),
+    ]);
+
+    // A recovery merge carries its own text; a chip appended to it would
+    // break the duplicate-text check when the merge is retried.
+    const recovered = { text: "Retry this", attachments: [sharedFile] };
+    const once = mergeComposerDraftContentState({}, draftKey, recovered);
+    expect(once[draftKey]?.text).toBe("Retry this");
+    expect(mergeComposerDraftContentState(once, draftKey, recovered)).toBe(once);
   });
 
   it("preserves existing images when shared content exceeds the draft attachment limit", () => {
@@ -1522,20 +2275,63 @@ describe("mobile composer drafts", () => {
     const environmentId = EnvironmentId.make("environment-cloud");
     const retainedEnvironmentId = EnvironmentId.make("environment-local");
 
+    const cloudDraft: ComposerDraft = {
+      ...DRAFT,
+      project: {
+        environmentId,
+        projectId: ProjectId.make("project-cloud"),
+        createdAt: "2026-09-05T00:00:00.000Z",
+      },
+    };
+    const localDraft: ComposerDraft = {
+      ...DRAFT,
+      project: {
+        environmentId: retainedEnvironmentId,
+        projectId: ProjectId.make("project-local"),
+        createdAt: "2026-09-05T00:00:00.000Z",
+      },
+    };
+
     expect(
       removeComposerDraftsForEnvironment(
         {
           [`${environmentId}:thread-cloud`]: DRAFT,
-          [`new-task:${environmentId}:project-cloud`]: DRAFT,
+          "new-task:cloud-draft": cloudDraft,
           [`${retainedEnvironmentId}:thread-local`]: DRAFT,
-          [`new-task:${retainedEnvironmentId}:project-local`]: DRAFT,
+          "new-task:local-draft": localDraft,
         },
         environmentId,
       ),
     ).toEqual({
       [`${retainedEnvironmentId}:thread-local`]: DRAFT,
-      [`new-task:${retainedEnvironmentId}:project-local`]: DRAFT,
+      "new-task:local-draft": localDraft,
     });
+  });
+
+  it("aborts operations running for drafts an environment removal drops", async () => {
+    const environmentId = EnvironmentId.make("environment-removed");
+    composerDraftFileMocks.setDocument({ schemaVersion: 1, drafts: {} });
+    appAtomRegistry.set(composerDraftsAtom, {
+      "new-task:removed-draft": {
+        ...DRAFT,
+        project: {
+          environmentId,
+          projectId: ProjectId.make("project-removed"),
+          createdAt: "2026-09-05T00:00:00.000Z",
+        },
+      },
+      "environment-kept:thread-kept": DRAFT,
+    });
+    const newTask = startComposerDraftOperation("new-task:removed-draft");
+    const emptyThread = startComposerDraftOperation(`${environmentId}:thread-empty`);
+    const kept = startComposerDraftOperation("environment-kept:thread-kept");
+
+    await clearComposerDraftsEnvironment(environmentId);
+
+    expect(newTask.signal.aborted).toBe(true);
+    expect(emptyThread.signal.aborted).toBe(true);
+    expect(kept.signal.aborted).toBe(false);
+    kept.finish();
   });
 
   it("lands a still-debounced draft write when flushed", async () => {
@@ -1583,34 +2379,6 @@ describe("mobile composer drafts", () => {
     ).toEqual({});
   });
 
-  it("persists an async merge rollback with the sticky model selection", async () => {
-    const draftKey = "environment-1:thread-1";
-    const snapshot: ComposerDraft = { text: "typed before", attachments: [] };
-    const merged: ComposerDraft = {
-      text: "typed before\n\nqueued text",
-      attachments: [],
-    };
-    composerDraftFileMocks.setDocument({
-      schemaVersion: 1,
-      drafts: { [draftKey]: merged },
-      stickyModelSelection: {
-        instanceId: "codex",
-        model: "gpt-5.6-sol",
-      },
-    });
-
-    await undoComposerDraftMerge(draftKey, snapshot, merged);
-
-    expect(JSON.parse(composerDraftFileMocks.getDocument())).toEqual({
-      schemaVersion: 1,
-      drafts: { [draftKey]: snapshot },
-      stickyModelSelection: {
-        instanceId: "codex",
-        model: "gpt-5.6-sol",
-      },
-    });
-  });
-
   it("returns merge-written settings to the snapshot but keeps user-edited ones", () => {
     const draftKey = "environment-1:thread-1";
     const snapshot: ComposerDraft = {
@@ -1625,8 +2393,7 @@ describe("mobile composer drafts", () => {
       runtimeMode: "full-access",
       interactionMode: "default",
     };
-    // The user edited the text (forcing the partial undo) and also switched
-    // interaction mode, but never touched the merge-written runtime mode.
+
     const edited: ComposerDraft = {
       text: "typed EDITED before\n\nqueued text",
       attachments: [],
@@ -1670,7 +2437,7 @@ describe("mobile composer drafts", () => {
       text: "typed before\n\nqueued text",
       attachments: [keptAttachment, insertedAttachment],
     };
-    // The user rewrote the leading text and attached a file mid-recovery.
+
     const edited: ComposerDraft = {
       text: "typed EDITED before\n\nqueued text",
       attachments: [keptAttachment, insertedAttachment, userAttachment],
@@ -1685,8 +2452,6 @@ describe("mobile composer drafts", () => {
       },
     );
 
-    // Edits that broke the merged suffix keep their text untouched; only the
-    // inserted attachments still come out.
     const rewritten: ComposerDraft = {
       text: "totally rewritten",
       attachments: [insertedAttachment],
@@ -1735,8 +2500,7 @@ describe("mobile composer drafts", () => {
     });
     const first = fileFor("file-first");
     const reowned = fileFor("file-reowned");
-    // A restore re-owns the second file while the first deletion is in
-    // flight, after the sweep already decided both were unused.
+
     composerAttachmentCleanupMocks.remove.mockImplementationOnce(async () => {
       appAtomRegistry.set(composerDraftsAtom, {
         "environment-1:thread-1": { text: "restored", attachments: [reowned] },
@@ -1748,7 +2512,91 @@ describe("mobile composer drafts", () => {
     expect(composerAttachmentCleanupMocks.remove.mock.calls).toEqual([[first.fileUri]]);
   });
 
-  // Uses a fresh module instance (hydration is one-shot), so it stays last.
+  it("keeps attachment files and uploads after a recovered message leaves an incomplete outbox", async () => {
+    vi.resetModules();
+    const drafts = await import("./use-composer-drafts");
+    const { threadOutboxManager: manager } = await import("./thread-outbox");
+    const { expoThreadOutboxStorage: storage, ThreadOutboxStorageError } =
+      await import("./thread-outbox-storage");
+    const { removeThreadOutboxMessage } = await import("./thread-outbox-removal");
+    const { appAtomRegistry: registry } = await import("./atom-registry");
+    onTestFinished(() => registry.dispose());
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    onTestFinished(() => warning.mockRestore());
+    const file = {
+      id: "file-partial-outbox",
+      type: "file" as const,
+      name: "shared.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 42,
+      fileUri: "file:///documents/t3-composer-attachments/shared.pdf",
+      uploadEnvironmentId: EnvironmentId.make("environment-1"),
+      uploadedAttachmentId: "pending-partial-outbox",
+    };
+    const readable = {
+      environmentId: EnvironmentId.make("environment-1"),
+      threadId: ThreadId.make("thread-1"),
+      messageId: MessageId.make("message-readable"),
+      commandId: CommandId.make("command-readable"),
+      text: "Send the readable message",
+      attachments: [file],
+      createdAt: "2026-09-04T00:00:00.000Z",
+    };
+    const saved = new Map([[readable.messageId, readable]]);
+    let unreadable = true;
+    const load = vi.spyOn(storage, "load").mockImplementation(async () => ({
+      messages: [...saved.values()],
+      errors: unreadable
+        ? [
+            new ThreadOutboxStorageError({
+              operation: "read-message",
+              environmentId: null,
+              threadId: null,
+              messageId: null,
+              fileName: "unreadable.json",
+              cause: new Error("unreadable record"),
+            }),
+          ]
+        : [],
+    }));
+    const remove = vi.spyOn(storage, "remove").mockImplementation(async (message) => {
+      saved.delete(message.messageId);
+    });
+    onTestFinished(() => {
+      load.mockRestore();
+      remove.mockRestore();
+    });
+
+    await expect(manager.load()).resolves.toBe(false);
+    await expect(manager.confirmQueued(readable)).resolves.toBe(true);
+    await expect(removeThreadOutboxMessage(readable)).resolves.toBe(true);
+    await drafts.releaseUnusedComposerAttachmentFiles([file]);
+    expect(registry.get(manager.queuedMessagesByThreadKeyAtom)).toEqual({});
+    expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+    expect(composerAttachmentCleanupMocks.releaseUploads).not.toHaveBeenCalled();
+
+    const recovered = {
+      ...readable,
+      environmentId: EnvironmentId.make("environment-2"),
+      messageId: MessageId.make("message-recovered"),
+      commandId: CommandId.make("command-recovered"),
+    };
+    saved.set(recovered.messageId, recovered);
+    unreadable = false;
+    await expect(manager.load()).resolves.toBe(true);
+    await drafts.releaseUnusedComposerAttachmentFiles([file]);
+    expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
+    expect(composerAttachmentCleanupMocks.releaseUploads).not.toHaveBeenCalled();
+
+    await removeThreadOutboxMessage(recovered);
+    await drafts.releaseUnusedComposerAttachmentFiles([file]);
+    expect(composerAttachmentCleanupMocks.remove).toHaveBeenCalledWith(file.fileUri);
+    expect(composerAttachmentCleanupMocks.releaseUploads).toHaveBeenCalledWith(
+      file.uploadEnvironmentId,
+      [file.uploadedAttachmentId],
+    );
+  });
+
   it("hydrates persisted drafts before a cold-start sweep deletes their files", async () => {
     const file = {
       id: "file-cold-start",
@@ -1771,7 +2619,25 @@ describe("mobile composer drafts", () => {
     await fresh.releaseUnusedComposerAttachmentFiles([file]);
 
     expect(freshRegistry.get(fresh.composerDraftsAtom)).toEqual({
-      "environment-1:thread-1": { text: "Persisted draft", attachments: [file] },
+      "environment-1:thread-1": {
+        text: "Persisted draft [report.pdf](t3-context://v1/file/file-cold-start) ",
+        attachments: [file],
+        context: {
+          version: 1,
+          records: [
+            {
+              version: 1,
+              contextId: file.id,
+              kind: "file",
+              label: file.name,
+              attachmentId: file.id,
+              name: file.name,
+              mimeType: file.mimeType,
+              sizeBytes: file.sizeBytes,
+            },
+          ],
+        },
+      },
     });
     expect(composerAttachmentCleanupMocks.remove).not.toHaveBeenCalled();
   });

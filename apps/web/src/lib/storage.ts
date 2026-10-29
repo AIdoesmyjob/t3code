@@ -26,7 +26,7 @@ export function createMemoryStorage(): StateStorage {
   };
 }
 
-export function isStateStorage(
+function isStateStorage(
   storage: Partial<StateStorage> | null | undefined,
 ): storage is StateStorage {
   return (
@@ -42,7 +42,6 @@ export function resolveStorage(storage: Partial<StateStorage> | null | undefined
   return isStateStorage(storage) ? storage : createMemoryStorage();
 }
 
-/** Keep the latest value and serialize it when the debounce fires or `flush` runs. */
 export function createDeferredStorage<TValue>(
   baseStorage: Partial<StateStorage> | null | undefined,
   serialize: (value: TValue) => string,

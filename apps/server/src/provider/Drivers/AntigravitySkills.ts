@@ -7,6 +7,33 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { parse as parseYamlDocument } from "yaml";
 
+/** Match Python os.path.expanduser: USERPROFILE, then HOMEDRIVE+HOMEPATH on Windows; HOME elsewhere. */
+export function resolveAntigravityUserHome(
+  platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
+  home: string,
+): string {
+  if (platform === "win32") {
+    if (environment.USERPROFILE) return environment.USERPROFILE;
+    if (environment.HOMEDRIVE && environment.HOMEPATH) {
+      return `${environment.HOMEDRIVE}${environment.HOMEPATH}`;
+    }
+    return home;
+  }
+  return environment.HOME || home;
+}
+
+/** Link private GEMINI_HOME skills to ~/.gemini; ~/.agents/skills is ignored because .agents/skills is project-only. */
+export function antigravityUserSkillDirectories(
+  path: Path.Path,
+  geminiHome: string,
+): readonly [configSkills: string, cliSkills: string] {
+  return [
+    path.join(geminiHome, "config", "skills"),
+    path.join(geminiHome, "antigravity-cli", "skills"),
+  ];
+}
+
 const MAX_SKILL_BYTES = 1_000_000;
 const MAX_SCAN_BYTES = 8_000_000;
 const MAX_SCAN_ENTRIES = 10_000;
@@ -17,7 +44,7 @@ const SkillFrontmatter = Schema.Struct({
 });
 const decodeSkillFrontmatter = Schema.decodeUnknownSync(SkillFrontmatter);
 
-export class AntigravitySkillsProbeError extends Schema.TaggedErrorClass<AntigravitySkillsProbeError>()(
+export class AntigravitySkillsProbeError extends Schema.TaggedError<AntigravitySkillsProbeError>()(
   "AntigravitySkillsProbeError",
   {
     reason: Schema.Literals(["scan-budget-exhausted", "filesystem-error"]),
@@ -45,7 +72,7 @@ const readIfPresent = <A, R>(
     Effect.catchTags({
       PlatformError: (cause) =>
         cause.reason._tag === "NotFound"
-          ? Effect.succeed(undefined)
+          ? Effect.undefined
           : Effect.fail(
               new AntigravitySkillsProbeError({ reason: "filesystem-error", path, cause }),
             ),
@@ -79,7 +106,6 @@ function skillPathSortKey(entry: string) {
   );
 }
 
-/** Read only regular skill files, with a byte limit that applies during the read. */
 const readSkill = Effect.fn("readAntigravitySkill")(function* (
   skillPath: string,
   budget: ScanBudget,
@@ -111,14 +137,10 @@ const readSkill = Effect.fn("readAntigravitySkill")(function* (
   return bytes.toString("utf8");
 });
 
-/**
- * Match the official ACP's explicit skill roots. The first valid same-name skill
- * wins. Each root loads its own SKILL.md or those in its immediate subdirectories.
- * Read failures remain typed so workspace snapshots do not cache partial results.
- */
+/** Keep read errors typed so workspace snapshots cannot cache partial results. */
 export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(function* (input: {
   readonly cwd: string;
-  readonly profileDirectory: string;
+  readonly userHome: string;
 }): Effect.fn.Return<
   ReadonlyArray<ServerProviderSkill>,
   AntigravitySkillsProbeError,
@@ -126,13 +148,14 @@ export const discoverAntigravitySkills = Effect.fn("discoverAntigravitySkills")(
 > {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const [configSkills, cliSkills] = antigravityUserSkillDirectories(
+    path,
+    path.join(input.userHome, ".gemini"),
+  );
   const roots = [
-    { directory: path.resolve(input.profileDirectory, "config", "skills"), scope: "user" },
+    { directory: configSkills, scope: "user" },
     { directory: path.resolve(input.cwd, ".gemini", "skills"), scope: "project" },
-    {
-      directory: path.resolve(input.profileDirectory, "antigravity-cli", "skills"),
-      scope: "user",
-    },
+    { directory: cliSkills, scope: "user" },
     { directory: path.resolve(input.cwd, ".agents", "skills"), scope: "project" },
     { directory: path.resolve(input.cwd, ".agent", "skills"), scope: "project" },
   ];

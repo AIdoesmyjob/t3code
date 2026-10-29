@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type { ComposerFileAttachment } from "../../composerDraftStore";
-import {
-  attachVideoThumbnail,
-  buildExpandedImagePreview,
-  resolveMarkdownMediaPreview,
-} from "./ExpandedImagePreview";
+import { buildExpandedImagePreview, resolveMarkdownMediaPreview } from "./ExpandedImagePreview";
 
 describe("resolveMarkdownMediaPreview", () => {
   afterEach(() => {
@@ -42,36 +37,24 @@ describe("resolveMarkdownMediaPreview", () => {
 });
 
 describe("buildExpandedImagePreview", () => {
-  it("builds a video preview for a local video attachment", () => {
-    const file = new File([new Uint8Array([1, 2, 3])], "demo.mp4", { type: "video/mp4" });
-    const attachment: ComposerFileAttachment = {
-      type: "file",
-      id: "video-1",
-      name: file.name,
-      mimeType: file.type,
-      sizeBytes: file.size,
-      file,
-    };
-
-    const preview = buildExpandedImagePreview([attachment], attachment.id);
-
-    expect(preview).toMatchObject({
-      images: [{ name: "demo.mp4", type: "video" }],
-      index: 0,
+  it("keeps MIME type for stored images without a filename extension", () => {
+    const preview = buildExpandedImagePreview(
+      [
+        {
+          type: "image",
+          id: "heic-1",
+          name: "photo",
+          mimeType: "image/heic",
+          sizeBytes: 3,
+          previewUrl: "blob:heic",
+        },
+      ],
+      "heic-1",
+    );
+    expect(preview?.images[0]).toMatchObject({
+      name: "photo",
+      mimeType: "image/heic",
+      src: "blob:heic",
     });
-    expect(preview?.images[0]?.src).toMatch(/^blob:/);
-    URL.revokeObjectURL(preview?.images[0]?.src ?? "");
-  });
-
-  it("releases a video thumbnail URL when detached", async () => {
-    const video = { src: "" } as HTMLVideoElement;
-    const file = new File([new Uint8Array([1, 2, 3])], "demo.mp4", { type: "video/mp4" });
-
-    const detach = attachVideoThumbnail(video, file);
-    const url = video.src;
-
-    expect((await fetch(url)).ok).toBe(true);
-    detach();
-    await expect(fetch(url)).rejects.toThrow();
   });
 });
