@@ -1,11 +1,6 @@
 import { isPublicFaviconHost } from "./hostClassification.ts";
 
-/**
- * Mirrors Codex's generic Browser Use fallback: ask the page origin for its
- * conventional favicon and let the image element fall back to a browser glyph.
- * Chrome-backed tools can pass their tab's explicit favicon URL separately.
- */
-export function faviconUrlForPage(rawUrl: string | null | undefined, _size = 32): string | null {
+function faviconUrlForPage(rawUrl: string | null | undefined, _size = 32): string | null {
   if (!rawUrl || rawUrl.length > 4096) return null;
   try {
     const pageUrl = new URL(rawUrl);
@@ -40,7 +35,7 @@ function themedFaviconUrlForPage(
 }
 
 /** Accepts image URLs supplied by a trusted provider event. */
-export function explicitFaviconUrl(rawUrl: string | null | undefined): string | null {
+function explicitFaviconUrl(rawUrl: string | null | undefined): string | null {
   if (!rawUrl || rawUrl.length > 4096) return null;
   try {
     const url = new URL(rawUrl);
@@ -52,12 +47,6 @@ export function explicitFaviconUrl(rawUrl: string | null | undefined): string | 
   }
 }
 
-/**
- * Chooses a website icon for the app's resolved theme. Provider-supplied
- * variants mirror Codex's Chrome-selected favicon path. A small site-owned
- * fallback table covers websites whose conventional favicon is illegible in
- * one appearance without recoloring full-color icons.
- */
 export function toolActivityFaviconUrl(
   icon: {
     readonly pageUrl: string;
@@ -82,15 +71,14 @@ export function toolActivityFaviconUrl(
   );
 }
 
-/** Return a public favicon URL without disclosing private or reserved hosts. */
 export function faviconUrlForOrigin(rawUrl: string | null | undefined, size = 32): string | null {
   if (!rawUrl) return null;
   try {
     const url = new URL(rawUrl);
-    if (!url.host) return null;
+    if (!url.hostname) return null;
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     if (!isPublicFaviconHost(url.hostname)) return null;
-    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.host)}&sz=${size}`;
+    return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(url.hostname)}&sz=${size}`;
   } catch {
     return null;
   }

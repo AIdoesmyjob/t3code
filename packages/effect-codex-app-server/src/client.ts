@@ -1,13 +1,15 @@
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stdio from "effect/Stdio";
 import * as Stream from "effect/Stream";
-import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as CodexRpc from "./_generated/meta.gen.ts";
+import * as CodexSchema from "./_generated/schema.gen.ts";
 import * as CodexError from "./errors.ts";
 import * as CodexProtocol from "./protocol.ts";
 import {
@@ -39,6 +41,7 @@ export class CodexAppServerClient extends Context.Service<
   CodexAppServerClient,
   {
     readonly raw: CodexAppServerClientRaw;
+    readonly awaitTermination: Effect.Effect<never, CodexError.CodexAppServerError>;
     readonly request: <M extends CodexRpc.ClientRequestMethod>(
       method: M,
       payload: CodexRpc.ClientRequestParamsByMethod[M],
@@ -84,12 +87,22 @@ type ServerNotificationHandler = (
   payload: unknown,
 ) => Effect.Effect<void, CodexError.CodexAppServerError>;
 
+const V2TurnStartParamsWithCollaborationMode = CodexSchema.V2TurnStartParams.pipe(
+  Schema.fieldsAssign({
+    collaborationMode: Schema.optionalKey(CodexSchema.ClientRequest__CollaborationMode),
+    additionalContext: Schema.optionalKey(
+      Schema.Record(Schema.String, CodexSchema.V2TurnStartParams__AdditionalContextEntry),
+    ),
+  }),
+);
+
 export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make")(function* (
   stdio: Stdio.Stdio,
   options: CodexAppServerClientOptions = {},
   terminationError?: Effect.Effect<CodexError.CodexAppServerError>,
 ): Effect.fn.Return<CodexAppServerClient["Service"], never, Scope.Scope> {
   const requestHandlers = new Map<string, ServerRequestHandler>();
+  const termination = yield* Deferred.make<never, CodexError.CodexAppServerError>();
   const notificationHandlers = new Map<string, Array<ServerNotificationHandler>>();
   let unknownRequestHandler:
     | ((method: string, params: unknown) => Effect.Effect<unknown, CodexError.CodexAppServerError>)
@@ -117,7 +130,10 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     method: M,
   ):
     | Schema.Codec<CodexRpc.ClientRequestParamsByMethod[M], CodexRpc.ClientRequestParamsByMethod[M]>
-    | undefined => CodexRpc.CLIENT_REQUEST_PARAMS[method] as never;
+    | undefined =>
+    method === "turn/start"
+      ? (V2TurnStartParamsWithCollaborationMode as never)
+      : (CodexRpc.CLIENT_REQUEST_PARAMS[method] as never);
 
   const getClientRequestResponseSchema = <M extends CodexRpc.ClientRequestMethod>(
     method: M,
@@ -153,14 +169,12 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
         Effect.flatMap((decoded) =>
           Effect.forEach(handlers, (handler) => handler(decoded), { discard: true }),
         ),
-        Effect.catch(() => Effect.void),
+        Effect.ignore,
       );
     }
 
     return unknownNotificationHandler
-      ? unknownNotificationHandler(notification.method, notification.params).pipe(
-          Effect.catch(() => Effect.void),
-        )
+      ? unknownNotificationHandler(notification.method, notification.params).pipe(Effect.ignore)
       : Effect.void;
   };
 
@@ -192,6 +206,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logger ? { logger: options.logger } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
+    onTermination: (error) => Deferred.fail(termination, error).pipe(Effect.asVoid),
   });
 
   const request = <M extends CodexRpc.ClientRequestMethod>(
@@ -219,6 +234,7 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     );
 
   return CodexAppServerClient.of({
+    awaitTermination: Deferred.await(termination),
     raw: {
       notifications: transport.incomingNotifications,
       requests: transport.incomingRequests,
@@ -229,31 +245,38 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     },
     request,
     notify,
-    handleServerRequest: (method, handler) =>
-      Effect.sync(() => {
-        requestHandlers.set(method, handler as ServerRequestHandler);
-      }),
-    handleServerNotification: (method, handler) =>
-      Effect.sync(() => {
-        const current = notificationHandlers.get(method) ?? [];
-        current.push(handler as ServerNotificationHandler);
-        notificationHandlers.set(method, current);
-      }),
-    handleUnknownServerRequest: (handler) =>
-      Effect.sync(() => {
-        unknownRequestHandler = handler;
-      }),
-    handleUnknownServerNotification: (handler) =>
-      Effect.sync(() => {
+    handleServerRequest: Effect.fn("CodexAppServerClient.handleServerRequest")(
+      function (method, handler) {
+        return Effect.sync(() => {
+          requestHandlers.set(method, handler as ServerRequestHandler);
+        });
+      },
+    ),
+    handleServerNotification: Effect.fn("CodexAppServerClient.handleServerNotification")(
+      function (method, handler) {
+        return Effect.sync(() => {
+          const current = notificationHandlers.get(method) ?? [];
+          current.push(handler as ServerNotificationHandler);
+          notificationHandlers.set(method, current);
+        });
+      },
+    ),
+    handleUnknownServerRequest: Effect.fn("CodexAppServerClient.handleUnknownServerRequest")(
+      function (handler) {
+        return Effect.sync(() => {
+          unknownRequestHandler = handler;
+        });
+      },
+    ),
+    handleUnknownServerNotification: Effect.fn(
+      "CodexAppServerClient.handleUnknownServerNotification",
+    )(function (handler) {
+      return Effect.sync(() => {
         unknownNotificationHandler = handler;
-      }),
+      });
+    }),
   });
 });
-
-export const layer = (
-  stdio: Stdio.Stdio,
-  options: CodexAppServerClientOptions = {},
-): Layer.Layer<CodexAppServerClient> => Layer.effect(CodexAppServerClient, make(stdio, options));
 
 export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,

@@ -5,33 +5,11 @@ import {
   buildFileDiffContentVersion,
   buildFileDiffIdentityKey,
   buildFileDiffRenderKey,
-  buildPatchCacheKey,
   getDiffLineStat,
   getRenderablePatch,
+  resolveFileDiffPath,
+  resolveFileDiffPreviousPath,
 } from "./diffRendering";
-
-describe("buildPatchCacheKey", () => {
-  it("normalizes outer whitespace before hashing", () => {
-    const patch = "diff --git a/a.ts b/a.ts\n+console.log('hello')";
-
-    expect(buildPatchCacheKey(`\n${patch}\n`)).toBe(buildPatchCacheKey(patch));
-  });
-
-  it("changes when diff content changes", () => {
-    const before = "diff --git a/a.ts b/a.ts\n+console.log('hello')";
-    const after = "diff --git a/a.ts b/a.ts\n+console.log('hello world')";
-
-    expect(buildPatchCacheKey(before)).not.toBe(buildPatchCacheKey(after));
-  });
-
-  it("changes when cache scope changes", () => {
-    const patch = "diff --git a/a.ts b/a.ts\n+console.log('hello')";
-
-    expect(buildPatchCacheKey(patch, "diff-panel:light")).not.toBe(
-      buildPatchCacheKey(patch, "diff-panel:dark"),
-    );
-  });
-});
 
 describe("getRenderablePatch", () => {
   it("hides indentation changes around inserted JSX without moving review lines", () => {
@@ -161,6 +139,34 @@ describe("getRenderablePatch", () => {
       additions: sign === "+" ? 1 : 0,
       deletions: sign === "-" ? 1 : 0,
     });
+  });
+
+  it.each([
+    ["a/example.ts", "a/example.ts", "change"],
+    ["b/example.ts", "b/example.ts", "change"],
+    ["a/before.ts", "b/after.ts", "rename-changed"],
+  ])("preserves repository paths from %s to %s", (previousPath, path, type) => {
+    const parsed = getRenderablePatch(
+      [
+        `diff --git a/${previousPath} b/${path}`,
+        ...(previousPath === path
+          ? []
+          : ["similarity index 50%", `rename from ${previousPath}`, `rename to ${path}`]),
+        `--- a/${previousPath}`,
+        `+++ b/${path}`,
+        "@@ -1 +1 @@",
+        "-before",
+        "+after",
+      ].join("\n"),
+    );
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") return;
+    const file = parsed.files[0];
+    expect(file).toBeDefined();
+    if (!file) return;
+    expect(resolveFileDiffPath(file)).toBe(path);
+    expect(resolveFileDiffPreviousPath(file)).toBe(previousPath);
+    expect(buildFileDiffIdentityKey(file)).toBe(`${previousPath}\0${path}\0${type}`);
   });
 
   it("compacts partial hunk render offsets for virtualized review diffs", () => {
@@ -308,32 +314,50 @@ describe("diff file reconciliation", () => {
   });
 });
 
-describe("getDiffLineStat", () => {
-  it("totals additions and deletions across every file and hunk", () => {
-    const patch = [
-      "diff --git a/example.ts b/example.ts",
-      "--- a/example.ts",
-      "+++ b/example.ts",
-      "@@ -1,2 +1,3 @@",
+describe("a file whose name a patch header cannot carry plainly", () => {
+  const quotedPatch = (written: string) =>
+    [
+      `diff --git "a/${written}" "b/${written}"`,
+      "index 1111111..2222222 100644",
+      `--- "a/${written}"`,
+      `+++ "b/${written}"`,
+      "@@ -1 +1 @@",
       "-before",
       "+after",
-      "+added",
-      " context",
-      "@@ -10,2 +11,1 @@",
-      "-removed",
-      " context",
-      "diff --git a/README.md b/README.md",
-      "--- a/README.md",
-      "+++ b/README.md",
-      "@@ -1 +1,2 @@",
-      " title",
-      "+description",
+      "",
     ].join("\n");
 
-    const parsed = getRenderablePatch(patch);
+  const pathOf = (patch: string) => {
+    const parsed = getRenderablePatch(patch, "review");
+    expect(parsed?.kind).toBe("files");
+    if (parsed?.kind !== "files") throw new Error("patch did not parse as files");
+    const file = parsed.files[0];
+    expect(file).toBeDefined();
+    if (!file) throw new Error("patch carried no file");
+    return resolveFileDiffPath(file);
+  };
+
+  it("reads the octal a host with core.quotePath on writes for a name outside ASCII", () => {
+    expect(pathOf(quotedPatch("caf\\303\\251/r\\303\\251sum\\303\\251.ts"))).toBe("café/résumé.ts");
+  });
+
+  it("reads both sides of a rename under the names they really have", () => {
+    const patch = [
+      'diff --git "a/old\\tname.ts" "b/new\\tname.ts"',
+      "similarity index 90%",
+      'rename from "old\\tname.ts"',
+      'rename to "new\\tname.ts"',
+      "",
+    ].join("\n");
+
+    const parsed = getRenderablePatch(patch, "review");
     expect(parsed?.kind).toBe("files");
     if (parsed?.kind !== "files") return;
+    const file = parsed.files[0];
+    expect(file).toBeDefined();
+    if (!file) return;
 
-    expect(getDiffLineStat(parsed.files)).toEqual({ additions: 3, deletions: 2 });
+    expect(resolveFileDiffPath(file)).toBe("new\tname.ts");
+    expect(resolveFileDiffPreviousPath(file)).toBe("old\tname.ts");
   });
 });

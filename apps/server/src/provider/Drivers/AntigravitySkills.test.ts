@@ -5,6 +5,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import { discoverAntigravitySkills } from "./AntigravitySkills.ts";
+import { symlinksSupported } from "@t3tools/shared/testing/symlinks";
 
 const writeSkill = Effect.fn("writeSkill")(function* (directory: string, contents: string) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -23,20 +24,56 @@ const makeWorkspace = Effect.fn("makeWorkspace")(function* () {
   });
   return {
     cwd: path.join(temporaryDirectory, "workspace"),
-    profileDirectory: path.join(temporaryDirectory, "profile"),
+    userHome: path.join(temporaryDirectory, "home"),
   };
 });
 
 it.layer(NodeServices.layer)("discoverAntigravitySkills", (it) => {
+  it.effect("does not read user skills from a nested project or from ~/.agents", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const input = yield* makeWorkspace();
+      const nested = { ...input, cwd: path.join(input.userHome, "AI", "Projects", "Something") };
+      const skillPath = yield* writeSkill(
+        path.join(input.userHome, ".gemini", "config", "skills", "review"),
+        "---\nname: review\ndescription: Review changes.\n---\n",
+      );
+      yield* writeSkill(
+        path.join(input.userHome, ".agents", "skills", "ignored"),
+        "---\nname: ignored\n---\n",
+      );
+
+      assert.deepEqual(yield* discoverAntigravitySkills(nested), [
+        {
+          name: "review",
+          description: "Review changes.",
+          path: skillPath,
+          scope: "user",
+          enabled: true,
+        },
+      ]);
+      assert.deepEqual(
+        (yield* discoverAntigravitySkills({ ...input, cwd: input.userHome })).map((skill) => [
+          skill.name,
+          skill.scope,
+        ]),
+        [
+          ["ignored", "project"],
+          ["review", "user"],
+        ],
+      );
+    }),
+  );
+
   it.effect("reads skill names, descriptions and paths from the current native roots", () =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const input = yield* makeWorkspace();
       const roots = [
-        { directory: path.join(input.profileDirectory, "config", "skills"), scope: "user" },
+        { directory: path.join(input.userHome, ".gemini", "config", "skills"), scope: "user" },
         { directory: path.join(input.cwd, ".gemini", "skills"), scope: "project" },
         {
-          directory: path.join(input.profileDirectory, "antigravity-cli", "skills"),
+          directory: path.join(input.userHome, ".gemini", "antigravity-cli", "skills"),
           scope: "user",
         },
         { directory: path.join(input.cwd, ".agents", "skills"), scope: "project" },
@@ -56,43 +93,15 @@ it.layer(NodeServices.layer)("discoverAntigravitySkills", (it) => {
     }),
   );
 
-  it.effect("returns no skills when the native roots are missing", () =>
-    Effect.gen(function* () {
-      const input = yield* makeWorkspace();
-      assert.deepEqual(yield* discoverAntigravitySkills(input), []);
-    }),
-  );
-
-  it.effect("discovers skills from the legacy workspace root", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const input = yield* makeWorkspace();
-      const skillPath = yield* writeSkill(
-        path.join(input.cwd, ".agent", "skills", "review"),
-        "---\nname: review\ndescription: Review changes.\n---\n",
-      );
-
-      assert.deepEqual(yield* discoverAntigravitySkills(input), [
-        {
-          name: "review",
-          description: "Review changes.",
-          path: skillPath,
-          scope: "project",
-          enabled: true,
-        },
-      ]);
-    }),
-  );
-
   it.effect("uses native root order for duplicate names", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const input = yield* makeWorkspace();
       const roots = [
-        path.join(input.profileDirectory, "config", "skills"),
+        path.join(input.userHome, ".gemini", "config", "skills"),
         path.join(input.cwd, ".gemini", "skills"),
-        path.join(input.profileDirectory, "antigravity-cli", "skills"),
+        path.join(input.userHome, ".gemini", "antigravity-cli", "skills"),
         path.join(input.cwd, ".agents", "skills"),
         path.join(input.cwd, ".agent", "skills"),
       ];
@@ -217,7 +226,7 @@ it.layer(NodeServices.layer)("discoverAntigravitySkills", (it) => {
       const input = yield* makeWorkspace();
       const root = path.join(input.cwd, ".agents", "skills");
       yield* writeSkill(
-        path.join(input.profileDirectory, "config", "skills", "review"),
+        path.join(input.userHome, ".gemini", "config", "skills", "review"),
         "---\nname: [invalid\n---\n",
       );
       const nativeOrder = [" space-copy", "!-copy", "ø-copy", "a-copy"];
@@ -239,27 +248,29 @@ it.layer(NodeServices.layer)("discoverAntigravitySkills", (it) => {
     }),
   );
 
-  it.effect("follows directory symlinks used to install shared skills", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const input = yield* makeWorkspace();
-      const sourceDirectory = path.join(input.profileDirectory, "shared-review");
-      yield* writeSkill(sourceDirectory, "---\nname: review\n---\n");
-      const root = path.join(input.cwd, ".agents", "skills");
-      const linkedDirectory = path.join(root, "review");
-      yield* fileSystem.makeDirectory(root, { recursive: true });
-      yield* fileSystem.symlink(sourceDirectory, linkedDirectory);
+  it.effect.skipIf(!symlinksSupported)(
+    "follows directory symlinks used to install shared skills",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const input = yield* makeWorkspace();
+        const sourceDirectory = path.join(input.userHome, "shared-review");
+        yield* writeSkill(sourceDirectory, "---\nname: review\n---\n");
+        const root = path.join(input.cwd, ".agents", "skills");
+        const linkedDirectory = path.join(root, "review");
+        yield* fileSystem.makeDirectory(root, { recursive: true });
+        yield* fileSystem.symlink(sourceDirectory, linkedDirectory);
 
-      assert.deepEqual(yield* discoverAntigravitySkills(input), [
-        {
-          name: "review",
-          path: path.join(linkedDirectory, "SKILL.md"),
-          scope: "project",
-          enabled: true,
-        },
-      ]);
-    }),
+        assert.deepEqual(yield* discoverAntigravitySkills(input), [
+          {
+            name: "review",
+            path: path.join(linkedDirectory, "SKILL.md"),
+            scope: "project",
+            enabled: true,
+          },
+        ]);
+      }),
   );
 
   it.effect("rejects an oversized skill instead of returning an incomplete catalog", () =>

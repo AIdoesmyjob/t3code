@@ -1,11 +1,13 @@
 import {
   type ModelCapabilities,
+  type ModelSelection,
   type ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderOptionSelection,
   type ScopedThreadRef,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import type { EffortDisplay } from "@t3tools/contracts/settings";
 import {
   buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentValue,
@@ -13,16 +15,20 @@ import {
   isClaudeUltrathinkPrompt,
   normalizeModelSlug,
 } from "@t3tools/shared/model";
-import type { VariantProps } from "class-variance-authority";
 import type { ReactNode } from "react";
 
-import type { buttonVariants } from "../ui/button";
 import type { DraftId } from "../../composerDraftStore";
 import { getProviderModelCapabilities } from "../../providerModels";
 import type { ComposerControlSize } from "./ComposerControl";
-import { shouldRenderTraitsControls, TraitsMenuContent, TraitsPicker } from "./TraitsPicker";
+import {
+  getReasoningTraitStep,
+  shouldRenderTraitsControls,
+  TraitsMenuContent,
+  TraitsPicker,
+  type PromptUltrathink,
+} from "./TraitsPicker";
 
-export type ComposerProviderStateInput = {
+type ComposerProviderStateInput = {
   provider: ProviderDriverKind;
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
@@ -31,9 +37,9 @@ export type ComposerProviderStateInput = {
   planModeEnabled: boolean;
 };
 
-export type ComposerPromptInjectionState = "none" | "ultrathink";
+type ComposerPromptInjectionState = "none" | "ultrathink";
 
-export type ComposerProviderState = {
+type ComposerProviderState = {
   provider: ProviderDriverKind;
   promptEffort: string | null;
   modelOptionsForDispatch: ReadonlyArray<ProviderOptionSelection> | undefined;
@@ -50,27 +56,25 @@ type TraitsRenderInput = {
   model: string;
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
-  prompt: string;
-  onPromptChange: (prompt: string) => void;
+  reportedModelSelection?: ModelSelection | null | undefined;
+  promptUltrathink: PromptUltrathink;
+  onPromptEdit: (edit: (prompt: string) => string) => void;
   planModeEnabled: boolean;
   size?: ComposerControlSize;
   hidden?: boolean;
-  triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
   isComposerOwned?: boolean;
+  effortDisplay?: EffortDisplay;
+  extraMenuContent?: ReactNode;
+  extraMenuOwnsModeShortcut?: boolean;
+  extraMenuHint?: string;
 };
 
 export function getComposerPromptInjectionState(prompt: string): ComposerPromptInjectionState {
   return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
 }
 
-/**
- * Cursor ACP can report `fastMode: true` as the provider default. T3 only
- * treats Fast as selected when the user chose it (draft/sticky/settings).
- * Otherwise inject an explicit `false` so new chats stay Normal and the
- * send path can overwrite a prior Fast session — descriptor defaults are
- * otherwise omitted by `buildExplicitProviderOptionSelectionsFromDescriptors`.
- */
+/** Cursor ACP can default Fast to true; T3 requires a user selection. */
 export function withImplicitFastModeDefault(
   caps: ModelCapabilities,
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
@@ -161,6 +165,58 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   };
 }
 
+/** Expanded caret positions stay on the same character across Ultrathink prefix changes. */
+export function getComposerReasoningStep(input: {
+  provider: ProviderDriverKind;
+  instanceId: ProviderInstanceId;
+  model: string;
+  models: ReadonlyArray<ServerProviderModel>;
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+  reportedModelSelection?: ModelSelection | null | undefined;
+  prompt: string;
+  cursor: number;
+  planModeEnabled: boolean;
+  direction: 1 | -1;
+}): {
+  prompt: string;
+  cursor: number;
+  modelOptions?: ReadonlyArray<ProviderOptionSelection>;
+} | null {
+  const { prompt, cursor } = input;
+  const { selections } = resolveComposerOptionSelections(
+    input.models,
+    input.model,
+    input.provider,
+    input.modelOptions,
+    input.planModeEnabled,
+  );
+  const step = getReasoningTraitStep({
+    provider: input.provider,
+    instanceId: input.instanceId,
+    model: input.model,
+    models: input.models,
+    modelOptions: selections,
+    reportedModelSelection: input.reportedModelSelection,
+    prompt,
+    planModeEnabled: input.planModeEnabled,
+    direction: input.direction,
+  });
+  if (!step) return null;
+  const modelOptions = "modelOptions" in step ? { modelOptions: step.modelOptions } : {};
+  if (step.prompt === prompt) return { prompt, cursor, ...modelOptions };
+  // Adding the prefix also trims the prompt.
+  const keptStart = "modelOptions" in step ? 0 : step.prompt.length - prompt.trim().length;
+  const offset =
+    "modelOptions" in step
+      ? step.prompt.length - prompt.length
+      : keptStart - (prompt.length - prompt.trimStart().length);
+  return {
+    prompt: step.prompt,
+    cursor: Math.min(step.prompt.length, Math.max(keptStart, cursor + offset)),
+    ...modelOptions,
+  };
+}
+
 function renderTraitsControl(
   Component: typeof TraitsMenuContent | typeof TraitsPicker,
   input: TraitsRenderInput,
@@ -173,14 +229,18 @@ function renderTraitsControl(
     model,
     models,
     modelOptions,
-    prompt,
-    onPromptChange,
+    reportedModelSelection,
+    promptUltrathink,
+    onPromptEdit,
     planModeEnabled,
     size,
     hidden,
-    triggerVariant,
     triggerClassName,
     isComposerOwned,
+    effortDisplay,
+    extraMenuContent,
+    extraMenuOwnsModeShortcut,
+    extraMenuHint,
   } = input;
   const hasTarget = threadRef !== undefined || draftId !== undefined;
   const { selections: resolvedModelOptions } = resolveComposerOptionSelections(
@@ -197,7 +257,7 @@ function renderTraitsControl(
       models,
       model,
       modelOptions: resolvedModelOptions,
-      prompt,
+      promptUltrathink,
       planModeEnabled,
     })
   ) {
@@ -212,14 +272,18 @@ function renderTraitsControl(
       {...(draftId ? { draftId } : {})}
       model={model}
       modelOptions={resolvedModelOptions}
-      prompt={prompt}
-      onPromptChange={onPromptChange}
+      reportedModelSelection={reportedModelSelection}
+      promptUltrathink={promptUltrathink}
+      onPromptEdit={onPromptEdit}
       planModeEnabled={planModeEnabled}
       {...(size !== undefined ? { size } : {})}
       {...(hidden !== undefined ? { hidden } : {})}
-      {...(triggerVariant !== undefined ? { triggerVariant } : {})}
       {...(triggerClassName !== undefined ? { triggerClassName } : {})}
       {...(isComposerOwned ? { isComposerOwned } : {})}
+      {...(effortDisplay ? { effortDisplay } : {})}
+      {...(extraMenuContent ? { extraMenuContent } : {})}
+      {...(extraMenuOwnsModeShortcut ? { extraMenuOwnsModeShortcut } : {})}
+      {...(extraMenuHint ? { extraMenuHint } : {})}
     />
   );
 }

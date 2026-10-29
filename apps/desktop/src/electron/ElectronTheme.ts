@@ -7,7 +7,7 @@ import * as Scope from "effect/Scope";
 
 import * as Electron from "electron";
 
-export class ElectronThemeSetSourceError extends Schema.TaggedErrorClass<ElectronThemeSetSourceError>()(
+export class ElectronThemeSetSourceError extends Schema.TaggedError<ElectronThemeSetSourceError>()(
   "ElectronThemeSetSourceError",
   {
     source: DesktopThemeSchema,
@@ -19,8 +19,6 @@ export class ElectronThemeSetSourceError extends Schema.TaggedErrorClass<Electro
   }
 }
 
-export const isElectronThemeSetSourceError = Schema.is(ElectronThemeSetSourceError);
-
 export class ElectronTheme extends Context.Service<
   ElectronTheme,
   {
@@ -30,17 +28,19 @@ export class ElectronTheme extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronTheme") {}
 
+/** @public */
 export const make = ElectronTheme.of({
   shouldUseDarkColors: Effect.sync(() => Electron.nativeTheme.shouldUseDarkColors),
-  setSource: (theme) =>
-    Effect.try({
+  setSource: Effect.fn("ElectronTheme.setSource")(function (theme) {
+    return Effect.try({
       try: () => {
         Electron.nativeTheme.themeSource = theme;
       },
       catch: (cause) => new ElectronThemeSetSourceError({ source: theme, cause }),
-    }),
-  onUpdated: (listener) =>
-    Effect.acquireRelease(
+    });
+  }),
+  onUpdated: Effect.fn("ElectronTheme.onUpdated")(function (listener) {
+    return Effect.acquireRelease(
       Effect.suspend(() => {
         Electron.nativeTheme.on("updated", listener);
         return Effect.void;
@@ -50,7 +50,8 @@ export const make = ElectronTheme.of({
           Electron.nativeTheme.removeListener("updated", listener);
           return Effect.void;
         }),
-    ),
+    );
+  }),
 });
 
 export const layer = Layer.succeed(ElectronTheme, make);

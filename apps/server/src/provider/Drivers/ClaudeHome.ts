@@ -1,33 +1,30 @@
-import * as NodeOS from "node:os";
-
 import type { ClaudeSettings } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 
-import { expandHomePath } from "../../pathExpansion.ts";
+import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
-/**
- * Resolve the Claude config directory the CLI would use: the instance's
- * `homePath` (exported as `CLAUDE_CONFIG_DIR`), then an inherited
- * `CLAUDE_CONFIG_DIR`, then Claude's default `~/.claude`. Empty must not
- * fall back to bare `$HOME` — that leftover from the old HOME override
- * produced a different continuation group than an explicit `~/.claude`.
- */
+const quotePath = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+
 export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   environment?: NodeJS.ProcessEnv,
 ): Effect.fn.Return<string, never, Path.Path> {
   const path = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   const homePath = config.homePath.trim();
   if (homePath.length > 0) {
-    return path.resolve(expandHomePath(homePath));
+    return path.resolve(expandHomePath(homePath, home));
   }
   // Inherited env vars are not shell-expanded, so a literal `~` stays literal.
   const inherited = environment?.CLAUDE_CONFIG_DIR?.trim() ?? "";
   if (inherited.length > 0) {
     return path.resolve(inherited);
   }
-  return path.resolve(path.join(NodeOS.homedir(), ".claude"));
+  return path.resolve(path.join(home, ".claude"));
 });
 
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
@@ -40,14 +37,22 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   const resolvedHomePath = yield* resolveClaudeHomePath(config);
   return {
     ...resolvedBaseEnv,
-    // Isolate this instance's config via CLAUDE_CONFIG_DIR rather than HOME.
-    // Overriding HOME also relocates the macOS login keychain lookup
-    // ($HOME/Library/Keychains), so the spawned CLI can't find its stored
-    // OAuth credentials and reports "Not logged in". CLAUDE_CONFIG_DIR points
-    // Claude Code at its config dir directly while leaving HOME (and the
-    // keychain) intact.
+    // Changing HOME hides macOS Keychain credentials; use CLAUDE_CONFIG_DIR to keep login access.
     CLAUDE_CONFIG_DIR: resolvedHomePath,
   };
+});
+
+/** managed-mcp.json excludes other MCP config and forbids --strict-mcp-config; omit the flag when present. */
+export const hasClaudeManagedMcpConfig = Effect.fn("hasClaudeManagedMcpConfig")(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const platform = yield* HostProcess.Platform;
+  const managedMcpConfigPath =
+    platform === "darwin"
+      ? "/Library/Application Support/ClaudeCode/managed-mcp.json"
+      : platform === "win32"
+        ? "C:\\Program Files\\ClaudeCode\\managed-mcp.json"
+        : "/etc/claude-code/managed-mcp.json";
+  return yield* fileSystem.exists(managedMcpConfigPath).pipe(Effect.orElseSucceed(() => false));
 });
 
 export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationGroupKey")(
@@ -70,3 +75,15 @@ export const makeClaudeCapabilitiesCacheKey = Effect.fn("makeClaudeCapabilitiesC
     return `${config.binaryPath}\0${resolvedHomePath}\0${cwd ?? ""}`;
   },
 );
+
+/** Separate spawn env from login commands to preserve literal paths, including relative inherited values. */
+export const claudeSignedOutMessage = (input: {
+  readonly configDir: string | undefined;
+  readonly cwd: string;
+}): string => {
+  const configuration =
+    input.configDir !== undefined
+      ? ` from ${quotePath(input.cwd)}, with CLAUDE_CONFIG_DIR set to ${quotePath(input.configDir)}`
+      : "";
+  return `Claude could not authenticate. For subscription login, run \`claude auth login\` on this environment's machine${configuration}, then start a new thread. For API-key authentication, check this instance's configured credentials.`;
+};
