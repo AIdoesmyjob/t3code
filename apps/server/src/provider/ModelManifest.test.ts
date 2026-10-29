@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ProviderDriverKind } from "@t3tools/contracts";
+import { DEFAULT_MODEL_BY_PROVIDER, ProviderDriverKind } from "@t3tools/contracts";
 import * as ModelCatalog from "@t3tools/provider-core/server/ModelCatalog";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -12,8 +12,57 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ModelManifest from "./ModelManifest.ts";
+import { resolveClaudeModelCatalog, resolveClaudeModelSlug } from "./ClaudeModelCatalog.ts";
 
 describe("resolveProviderCatalog", () => {
+  it("keeps Fable as the Claude chat default and preserves selectable Opus selections", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const providerCatalog = ModelManifest.resolveProviderCatalog(
+      ModelManifest.BUNDLED_MODEL_MANIFEST,
+      claude,
+    );
+    const catalog = resolveClaudeModelCatalog(providerCatalog ?? undefined);
+    assert.strictEqual(
+      resolveClaudeModelSlug(catalog, DEFAULT_MODEL_BY_PROVIDER[claude] ?? ""),
+      "claude-fable-5-1",
+    );
+    assert.strictEqual(providerCatalog?.defaultChatModel, "claude-fable-5-1");
+    assert.include(providerCatalog?.models.map((model) => model.slug) ?? [], "claude-opus-5-5");
+    assert.strictEqual(resolveClaudeModelSlug(catalog, "claude-opus-5-5"), "claude-opus-5-5");
+    assert.deepStrictEqual(
+      catalog.models.filter(({ model }) => model.isDefault).map(({ model }) => model.slug),
+      ["claude-fable-5-1"],
+    );
+  });
+
+  it("keeps other provider defaults and falls back when a Claude catalog lacks Fable", () => {
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const upstream = upstreamClaudeManifest();
+    const source = upstream.providers!.claudeAgent!;
+    const withoutFable = {
+      ...upstream,
+      providers: {
+        claudeAgent: {
+          ...source,
+          models: source.models.filter((model) => model.slug !== "claude-fable-5-1"),
+        },
+      },
+    };
+    const fallback = ModelManifest.resolveProviderCatalog(withoutFable, claude);
+    assert.strictEqual(fallback?.defaultChatModel, "claude-opus-5-5");
+    assert.deepStrictEqual(
+      resolveClaudeModelCatalog(fallback ?? undefined)
+        .models.filter(({ model }) => model.isDefault)
+        .map(({ model }) => model.slug),
+      ["claude-opus-5-5"],
+    );
+    const other = ModelManifest.resolveProviderCatalog(
+      { ...upstream, providers: { synthetic: source } },
+      ProviderDriverKind.make("synthetic"),
+    );
+    assert.strictEqual(other?.defaultChatModel, "claude-opus-5-5");
+  });
+
   it.each([
     { releasedAt: "2026-01-01", now: "2026-01-01T00:00:00Z", badge: "new" },
     { releasedAt: "2026-01-01", now: "2026-01-07T23:59:59.999Z", badge: "new" },
@@ -142,6 +191,18 @@ describe("resolveProviderCatalog", () => {
 
 const REMOTE_UPDATED_AT = "2099-01-01T00:00:00Z";
 
+const upstreamClaudeManifest = (): ModelManifest.ModelManifestData => ({
+  ...ModelManifest.BUNDLED_MODEL_MANIFEST,
+  updatedAt: REMOTE_UPDATED_AT,
+  providers: {
+    ...ModelManifest.BUNDLED_MODEL_MANIFEST.providers,
+    claudeAgent: {
+      ...ModelManifest.BUNDLED_MODEL_MANIFEST.providers!.claudeAgent!,
+      defaults: { chat: "claude-opus-5-5" },
+    },
+  },
+});
+
 const REMOTE_MANIFEST: ModelManifest.ModelManifestData = {
   version: 1,
   updatedAt: REMOTE_UPDATED_AT,
@@ -265,6 +326,38 @@ const layerService = (input: {
   );
 
 describe("ModelManifest service", () => {
+  it.live("preserves the Claude default across refreshed and cached upstream manifests", () => {
+    const upstream = upstreamClaudeManifest();
+    const claude = ProviderDriverKind.make("claudeAgent");
+    const assertDefault = (manifest: ModelManifest.ModelManifestData) => {
+      // Store upstream data unchanged; apply preference only at the validated catalog boundary.
+      assert.strictEqual(manifest.providers?.claudeAgent?.defaults?.chat, "claude-opus-5-5");
+      const resolved = ModelManifest.resolveProviderCatalog(manifest, claude);
+      assert.strictEqual(resolved?.defaultChatModel, "claude-fable-5-1");
+      const catalog = resolveClaudeModelCatalog(resolved ?? undefined);
+      assert.deepStrictEqual(
+        catalog.models.filter(({ model }) => model.isDefault).map(({ model }) => model.slug),
+        ["claude-fable-5-1"],
+      );
+      assert.include(resolved?.models.map((model) => model.slug) ?? [], "claude-opus-5-5");
+      assert.strictEqual(resolveClaudeModelSlug(catalog, "claude-opus-5-5"), "claude-opus-5-5");
+    };
+    return Effect.gen(function* () {
+      const service = yield* ModelManifest.make;
+      assertDefault(yield* service.refresh);
+      const rebooted = yield* ModelManifest.make;
+      assertDefault(yield* rebooted.current);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        layerService({
+          prefix: "model-manifest-claude-default-test",
+          response: () => Response.json(upstream),
+        }),
+      ),
+    );
+  });
+
   it.live("prefers a fetched manifest over the bundle and caches it to disk", () =>
     Effect.gen(function* () {
       const service = yield* ModelManifest.make;

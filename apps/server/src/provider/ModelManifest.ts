@@ -1,4 +1,5 @@
 import {
+  DEFAULT_MODEL_BY_PROVIDER,
   ModelCapabilities,
   TrimmedNonEmptyString,
   type ProviderDriverKind,
@@ -149,7 +150,14 @@ export function resolveProviderCatalog(
 
   if (catalog.defaults?.chat !== undefined && !seen.has(catalog.defaults.chat)) return null;
 
-  return { models, defaultChatModel: catalog.defaults?.chat };
+  // Preserve the deployed Claude preference across bundled, cached and refreshed catalogs.
+  const preferredDefault =
+    driverKind === "claudeAgent" ? DEFAULT_MODEL_BY_PROVIDER[driverKind] : undefined;
+  const defaultChatModel =
+    preferredDefault !== undefined && seen.has(preferredDefault)
+      ? preferredDefault
+      : catalog.defaults?.chat;
+  return { models, defaultChatModel };
 }
 
 const ManifestCacheFile = Schema.Struct({

@@ -154,7 +154,7 @@
     },
     "claudeAgent": {
       "defaults": {
-        "chat": "claude-opus-5-5"
+        "chat": "claude-fable-5-1"
       },
       "profiles": {
         "fable-5": {
