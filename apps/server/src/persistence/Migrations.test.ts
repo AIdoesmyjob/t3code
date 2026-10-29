@@ -1,7 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { migrationManifest, runMigrations } from "./Migrations.ts";
@@ -75,6 +78,54 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect(
+    "upgrades populated rebuild state from 67 without losing messages or creating links",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runMigrations({ toMigrationInclusive: 67 });
+        const payload = JSON.stringify({ text: "delegation migration receipt", createdBy: "user" });
+        yield* sql`
+        INSERT INTO orchestration_v2_projection_messages (
+          message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
+        ) VALUES (
+          'rebuild-message', 'rebuild-thread', NULL, NULL, 'user', 0,
+          '2026-10-29T00:00:00.000Z', '2026-10-29T00:00:00.000Z', ${payload}
+        )
+      `;
+
+        yield* runMigrations();
+
+        assert.deepStrictEqual(yield* history, migrationManifest);
+        const messages = yield* sql<{ readonly payload: string }>`
+        SELECT payload_json AS payload FROM orchestration_v2_projection_messages
+        WHERE message_id = 'rebuild-message'
+      `;
+        assert.deepStrictEqual(messages, [{ payload }]);
+        const indexed = yield* sql<{ readonly messageId: string }>`
+        SELECT messages.message_id AS "messageId"
+        FROM orchestration_v2_message_search AS search
+        INNER JOIN orchestration_v2_projection_messages AS messages ON messages.rowid = search.rowid
+        WHERE orchestration_v2_message_search MATCH '"delegation"'
+      `;
+        assert.deepStrictEqual(indexed, [{ messageId: "rebuild-message" }]);
+        assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, []);
+        const fences = yield* sql<{ readonly name: string; readonly dflt_value: string | null }>`
+        SELECT name, dflt_value FROM pragma_table_info('peer_environment_links') WHERE name = 'fenced'
+      `;
+        assert.deepStrictEqual(fences, [{ name: "fenced", dflt_value: "0" }]);
+        const indexes = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND name IN (
+          'orchestration_v2_projection_turn_items_stop_request_idx',
+          'orchestration_v2_projection_turn_items_waiting_link_idx'
+        ) ORDER BY name
+      `;
+        assert.strictEqual(indexes.length, 2);
+        assert.deepStrictEqual(yield* runMigrations(), []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect.each([30, 54])("still starts with a site-local migration at id %s", (id) =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -123,3 +174,20 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 });
+
+// The npm launcher reads the highest migration id from these file names.
+it.effect("registers every migration file", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = path.join(import.meta.dirname, "Migrations");
+    const files = (yield* fs.readDirectory(dir)).flatMap((name) => {
+      const match = /^(\d+)_(\w+)\.ts$/.exec(name);
+      return match ? [[Number(match[1]), match[2]] as const] : [];
+    });
+    assert.deepStrictEqual(
+      files.toSorted(([a], [b]) => a - b),
+      migrationManifest,
+    );
+  }).pipe(Effect.provide(NodeServices.layer)),
+);

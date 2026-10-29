@@ -1,7 +1,7 @@
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
-import { remarkKeepWindowsPaths } from "./markdownPipeline.ts";
+import { remarkKeepWindowsPaths } from "./markdownWindowsPaths.ts";
 import { parseFileUrlHref } from "./fileLinks.ts";
 import { safeDecodeURIComponent } from "./markdownLinks.ts";
 import {
