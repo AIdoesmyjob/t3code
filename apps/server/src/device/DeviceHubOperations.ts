@@ -4,6 +4,8 @@ import {
   DeviceOperationError,
   type DevicePlatform,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -13,6 +15,17 @@ import type { DeviceHostReady, DeviceOperations, HostDevice } from "./DeviceHost
 
 const BOOT_TIMEOUT = Duration.minutes(3);
 const SCREENSHOT_TIMEOUT = Duration.seconds(20);
+const DETAIL_LIMIT = 300;
+
+const boundedDetail = (text: string) => {
+  const clean = text.replace(/\s+/g, " ").trim();
+  return clean.length > DETAIL_LIMIT ? `${clean.slice(0, DETAIL_LIMIT - 1)}…` : clean;
+};
+
+class ScreenshotRejected extends Data.TaggedError("ScreenshotRejected")<{
+  readonly status: number;
+  readonly body: string;
+}> {}
 
 const HubDevice = Schema.Struct({
   id: Schema.String,
@@ -219,7 +232,7 @@ export const makeDeviceHubOperations = (options: {
     },
   );
 
-  const screenshot: DeviceOperations["screenshot"] = (device) =>
+  const screenshotOnce = (device: HostDevice) =>
     httpClient
       .execute(
         HttpClientRequest.post(
@@ -227,21 +240,56 @@ export const makeDeviceHubOperations = (options: {
         ),
       )
       .pipe(
-        Effect.flatMap(HttpClientResponse.filterStatusOk),
-        Effect.flatMap((response) => response.arrayBuffer),
-        Effect.map((buffer) => new Uint8Array(buffer)),
+        Effect.flatMap((response) =>
+          Effect.gen(function* () {
+            if (response.status >= 200 && response.status < 300) {
+              return new Uint8Array(yield* response.arrayBuffer);
+            }
+            // The hub explains failures (e.g. its capture helper crashing) in the body.
+            const body = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+            return yield* new ScreenshotRejected({
+              status: response.status,
+              body: body.slice(0, DETAIL_LIMIT * 4),
+            });
+          }),
+        ),
         Effect.scoped,
         Effect.timeout(SCREENSHOT_TIMEOUT),
-        Effect.mapError(
-          (cause) =>
-            new DeviceOperationError({
-              operation: "screenshot",
-              reason: "request_failed",
-              cause,
-            }),
+        Effect.mapError((cause) =>
+          cause instanceof ScreenshotRejected
+            ? {
+                retryable: cause.status >= 500,
+                error: new DeviceOperationError({
+                  operation: "screenshot",
+                  reason: "hub_rejected",
+                  detail: boundedDetail(
+                    `Hub responded ${cause.status}${cause.body.trim() ? `: ${cause.body}` : "."}`,
+                  ),
+                  cause,
+                }),
+              }
+            : {
+                retryable: true,
+                error: new DeviceOperationError({
+                  operation: "screenshot",
+                  reason: "request_failed",
+                  detail: Cause.isTimeoutError(cause)
+                    ? `The hub did not answer within ${Duration.format(SCREENSHOT_TIMEOUT)}.`
+                    : boundedDetail(String(cause.message)),
+                  cause,
+                }),
+              },
         ),
-        Effect.withSpan("DeviceHubOperations.screenshot"),
       );
+
+  // The first capture after a boot can time out while the hub starts its stream
+  // helper, so transport failures and hub 5xx get one more attempt; 4xx do not.
+  const screenshot: DeviceOperations["screenshot"] = (device) =>
+    screenshotOnce(device).pipe(
+      Effect.retry({ times: 1, while: (failure) => failure.retryable }),
+      Effect.mapError((failure) => failure.error),
+      Effect.withSpan("DeviceHubOperations.screenshot"),
+    );
 
   return { list, boot, attach, shutdown, screenshot };
 };

@@ -139,6 +139,30 @@ if (process.env.AGENT_DEVICE_DAEMON_BASE_URL) process.exit(2);`,
           ).rejects.toThrow("Call device_open first"),
         );
       }
+      // Help topics are informational: the CLI's own --help points agents at `help <topic>`.
+      const helpEntry = path.join(dir, "help-cli.mjs");
+      yield* fs.writeFileString(helpEntry, "console.log(JSON.stringify(process.argv.slice(2)));");
+      const helpShim = path.join(dir, "help-shim");
+      yield* fs.makeDirectory(helpShim);
+      const helpShimDir = yield* ensureAgentDeviceShim({
+        entryPath: helpEntry,
+        stateDir: helpShim,
+      });
+      for (const args of [["help"], ["--help"], ["help", "cdp"], ["help", "workflow"]]) {
+        const result = yield* Effect.promise(() =>
+          exec(process.execPath, [path.join(helpShimDir, "agent-device-launcher.mjs"), ...args]),
+        );
+        expect(JSON.parse(result.stdout)).toEqual(args);
+      }
+      yield* Effect.promise(() =>
+        expect(
+          exec(process.execPath, [
+            path.join(helpShimDir, "agent-device-launcher.mjs"),
+            "--help",
+            "snapshot",
+          ]),
+        ).rejects.toThrow("Call device_open first"),
+      );
     }).pipe(
       Effect.scoped,
       Effect.provideService(HostProcess.IsExecutable, true),

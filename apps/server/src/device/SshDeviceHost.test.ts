@@ -2,11 +2,13 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Net from "@t3tools/shared/Net";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -182,4 +184,23 @@ it.effect("preserves installed status after probes and cleans failed agent activ
     yield* host.stop;
     expect(forwards).toBe(0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("reconnects only after consecutive failed health probes", () =>
+  Effect.gen(function* () {
+    // Two misses, a success, then three misses: only the third miss in a row ends the wait.
+    const results = [false, false, true, false, false, false];
+    let probes = 0;
+    const fiber = yield* SshDeviceHost.waitUntilUnhealthy(
+      Effect.sync(() => results[probes++] ?? true),
+    ).pipe(Effect.forkChild);
+    for (let tick = 1; tick <= 5; tick++) {
+      yield* TestClock.adjust("10 seconds");
+      expect(probes).toBe(tick);
+      expect(fiber.pollUnsafe()).toBeUndefined();
+    }
+    yield* TestClock.adjust("10 seconds");
+    yield* Fiber.join(fiber);
+    expect(probes).toBe(6);
+  }),
 );

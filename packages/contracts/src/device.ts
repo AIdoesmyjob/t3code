@@ -514,6 +514,8 @@ export class DeviceOperationError extends Schema.TaggedError<DeviceOperationErro
       "hub_rejected",
     ]),
     exitCode: Schema.optional(Schema.Number),
+    /** Short, bounded explanation from the device side (e.g. a hub error body). */
+    detail: Schema.optional(Schema.String),
     cause: Schema.Defect(),
   },
 ) {
@@ -525,7 +527,7 @@ export class DeviceOperationError extends Schema.TaggedError<DeviceOperationErro
       settings_failed: "Could not read or save device settings.",
       hub_rejected: "The device hub could not complete the request.",
     }[this.reason];
-    return `Device ${this.operation} failed: ${explanation}`;
+    return `Device ${this.operation} failed: ${explanation}${this.detail ? ` ${this.detail}` : ""}`;
   }
 }
 

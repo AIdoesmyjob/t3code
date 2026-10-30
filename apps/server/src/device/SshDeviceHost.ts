@@ -9,6 +9,7 @@ import { runSshCommand, baseSshArgs, resolveSshCommand } from "@t3tools/ssh/comm
 import * as NetService from "@t3tools/shared/Net";
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
 import * as Crypto from "effect/Crypto";
+import * as Duration from "effect/Duration";
 import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -42,6 +43,27 @@ const Started = Schema.Struct({
     serveSimCli: Schema.NullOr(Schema.String),
   }),
 });
+const HEALTH_PROBE_INTERVAL = Duration.seconds(10);
+const HEALTH_PROBE_TIMEOUT = Duration.seconds(8);
+const HEALTH_FAILURES_BEFORE_RECONNECT = 3;
+
+/**
+ * Completes once `probe` has failed several times in a row. A remote host under
+ * memory pressure can miss a single probe; tearing the tunnel down for that
+ * flaps the panel and fails in-flight agent commands, so one success resets the count.
+ */
+export const waitUntilUnhealthy = Effect.fn("SshDeviceHost.waitUntilUnhealthy")(function* (
+  probe: Effect.Effect<boolean>,
+  options: { readonly interval?: Duration.Input; readonly failures?: number } = {},
+) {
+  const threshold = options.failures ?? HEALTH_FAILURES_BEFORE_RECONNECT;
+  let consecutive = 0;
+  while (consecutive < threshold) {
+    yield* Effect.sleep(options.interval ?? HEALTH_PROBE_INTERVAL);
+    consecutive = (yield* probe) ? 0 : consecutive + 1;
+  }
+});
+
 const decodeProbe = Schema.decodeUnknownEffect(Schema.fromJsonString(Probe));
 const decodeStarted = Schema.decodeUnknownEffect(Schema.fromJsonString(Started));
 const targetFor = (config: SshDeviceHostConfig) => ({
@@ -355,24 +377,27 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     ready = next;
     yield* onStatus("ready");
     // Reconnect also repairs helpers that died while SSH itself stayed connected.
-    const unhealthy = Effect.gen(function* () {
-      while (true) {
-        yield* Effect.sleep("10 seconds");
-        const alive = yield* http.get(`${next.hub.origin}/readyz`).pipe(
-          Effect.timeout("5 seconds"),
-          Effect.map((r) => r.status === 200),
-          Effect.orElseSucceed(() => false),
-        );
-        const daemonAlive = next.agentDevice
-          ? yield* http.get(`${next.agentDevice!.baseUrl}/health`).pipe(
-              Effect.timeout("5 seconds"),
-              Effect.map((r) => r.status === 200),
-              Effect.orElseSucceed(() => false),
-            )
-          : true;
-        if (!alive || !daemonAlive) return;
-      }
-    });
+    const probeOk = (url: string) =>
+      http.get(url).pipe(
+        Effect.timeout(HEALTH_PROBE_TIMEOUT),
+        Effect.map((r) => r.status === 200),
+        Effect.orElseSucceed(() => false),
+      );
+    const unhealthy = waitUntilUnhealthy(
+      Effect.all(
+        [
+          probeOk(`${next.hub.origin}/readyz`),
+          next.agentDevice ? probeOk(`${next.agentDevice.baseUrl}/health`) : Effect.succeed(true),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.map(([hub, daemon]) => hub && daemon)),
+    ).pipe(
+      Effect.tap(() =>
+        Effect.logWarning("Device host stopped answering health probes; reconnecting", {
+          hostId: config.id,
+        }),
+      ),
+    );
     yield* Effect.gen(function* () {
       yield* Effect.raceFirst(child.exitCode.pipe(Effect.ignore), unhealthy);
       if (stopped || connectionScope !== scope) return;

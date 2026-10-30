@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   DeviceHostUnavailableError,
   DeviceId,
+  DeviceOperationError,
   EnvironmentId,
   ProviderInstanceId,
   ThreadId,
@@ -226,6 +227,63 @@ it.effect("rejects unavailable agent access before booting or opening a device",
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
         Layer.provide(layerUnavailable),
+        Layer.provide(layerProjectsMock),
+        Layer.provide(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-device-toolkit-test-" }),
+        ),
+        Layer.provide(NodeServices.layer),
+      ),
+    ),
+  );
+});
+
+it.effect("explains why a device screenshot failed", () => {
+  const layerFailing = Layer.mock(DeviceService.DeviceService)({
+    sessionsForThread: () =>
+      Effect.succeed([
+        {
+          threadId,
+          hostId: "local",
+          deviceId: DeviceId.make("UDID-1"),
+          platform: "ios" as const,
+          openedAt: "2026-09-08T00:00:00.000Z",
+        },
+      ]),
+    screenshot: () =>
+      Effect.fail(
+        new DeviceOperationError({
+          operation: "screenshot",
+          reason: "hub_rejected",
+          detail: "Hub responded 500: scrcpy exited with code 134",
+          cause: null,
+        }),
+      ),
+  });
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const result = yield* server
+      .callTool({ name: "device_screenshot", arguments: { deviceId: "UDID-1" } })
+      .pipe(
+        Effect.provideService(McpInvocationContext.McpInvocationContext, invocation(["device"])),
+        Effect.provideService(McpSchema.McpServerClient, client),
+      );
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([
+      {
+        type: "text",
+        text: "Device screenshot failed: The device hub could not complete the request. Hub responded 500: scrcpy exited with code 134",
+      },
+    ]);
+    expect(result.structuredContent).toMatchObject({
+      error: { _tag: "DeviceOperationError", message: expect.stringContaining("code 134") },
+    });
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      McpHttpServer.layerDeviceToolkit.pipe(
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
+        Layer.provide(layerFailing),
         Layer.provide(layerProjectsMock),
         Layer.provide(
           ServerConfig.layerTest(process.cwd(), { prefix: "t3-mcp-device-toolkit-test-" }),
