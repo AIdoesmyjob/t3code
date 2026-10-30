@@ -14,6 +14,7 @@ import type * as Types from "effect/Types";
 import { AiError, McpProtocol, McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
+  DeviceToolError,
   OrchestratorMcpFailure,
   PreviewAutomationError,
   type RunId,
@@ -733,10 +734,15 @@ const registerDeviceScreenshot = Effect.fn("McpHttpServer.registerDeviceScreensh
         Effect.provideService(ThreadManagementService.ThreadManagementService, threads),
       ),
     "screenshot",
-    "Device screenshot failed.",
+    // Device errors carry the cause (e.g. the hub's own explanation) the agent needs to act on.
+    (error) =>
+      isDeviceToolError(error) || isOrchestratorMcpFailure(error)
+        ? error.message
+        : "Device screenshot failed.",
   );
 });
 
+const isDeviceToolError = Schema.is(DeviceToolError);
 const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const registerHtmlPreview = Effect.fn("McpHttpServer.registerHtmlPreview")(function* () {
