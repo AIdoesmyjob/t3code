@@ -1,5 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off - native inference and IPC cleanup need killable Promise boundaries outside the Effect runtime.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeModule from "node:module";
+import * as NodeSea from "node:sea";
+import * as NodeURL from "node:url";
+import * as NodeVM from "node:vm";
 import type { SpeechStreamText } from "@t3tools/contracts";
 
 // Inline the small child entry so the packaged CLI does not need a separate worker artifact.
@@ -86,18 +90,40 @@ type Reply = {
   readonly preview?: SpeechStreamText | null;
 };
 
-export async function listNativeSpeechGpuDevices(
-  moduleUrl = import.meta.resolve("transcribe-cpp"),
-) {
-  const script = `const { getAvailableBackends } = await import(process.argv[1]);
-    process.send(getAvailableBackends().filter((device) =>
-      device.deviceType === "gpu" || device.deviceType === "igpu").map((device) => ({
-        id: JSON.stringify([device.kind, device.deviceId ?? device.name]),
-        name: device.description || device.name,
-      })));`;
+const deviceProbeEntry = (moduleUrl: string) => `
+  const { getAvailableBackends } = await import(${JSON.stringify(moduleUrl)});
+  process.send(getAvailableBackends().filter((device) =>
+    device.deviceType === "gpu" || device.deviceType === "igpu").map((device) => ({
+      id: JSON.stringify([device.kind, device.deviceId ?? device.name]),
+      name: device.description || device.name,
+    })));`;
+
+function transcribeModuleUrl() {
+  // transcribe-cpp is import-only, and SEA has no import.meta.resolve.
+  const packageJson = NodeModule.findPackageJSON("transcribe-cpp", import.meta.url);
+  if (packageJson === undefined) throw new Error("The speech runtime package is missing.");
+  return new URL("./dist/index.js", NodeURL.pathToFileURL(packageJson)).href;
+}
+
+export async function runNativeSpeechWorker(mode: string | undefined, moduleUrl?: string) {
+  if (!process.send) throw new Error("The speech worker requires an IPC channel.");
+  if (mode !== "model" && (mode !== "devices" || moduleUrl === undefined)) {
+    throw new Error("Invalid speech worker mode.");
+  }
+  // SEA's own import callback only loads built-ins; the fixed worker needs the normal ESM loader.
+  const source = mode === "model" ? entry : deviceProbeEntry(moduleUrl!);
+  await new NodeVM.Script(`(async () => {${source}\n})()`, {
+    filename: `${process.execPath}.speech-worker.js`,
+    importModuleDynamically: NodeVM.constants.USE_MAIN_CONTEXT_DEFAULT_LOADER,
+  }).runInThisContext();
+}
+
+export async function listNativeSpeechGpuDevices(moduleUrl = transcribeModuleUrl()) {
   const child = NodeChildProcess.spawn(
     process.execPath,
-    ["--input-type=module", "-e", script, moduleUrl],
+    NodeSea.isSea()
+      ? ["__speech-worker", "devices", moduleUrl]
+      : ["--input-type=module", "-e", deviceProbeEntry(moduleUrl)],
     {
       stdio: ["ignore", "ignore", "inherit", "ipc"],
       env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
@@ -133,15 +159,19 @@ export async function listNativeSpeechGpuDevices(
 export async function loadNativeSpeechModel(
   path: string,
   signal: AbortSignal,
-  moduleUrl = import.meta.resolve("transcribe-cpp"),
+  moduleUrl = transcribeModuleUrl(),
   acceleration = "auto",
 ) {
   signal.throwIfAborted();
-  const child = NodeChildProcess.spawn(process.execPath, ["--input-type=module", "-e", entry], {
-    stdio: ["ignore", "ignore", "inherit", "ipc"],
-    serialization: "advanced",
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
-  });
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    NodeSea.isSea() ? ["__speech-worker", "model"] : ["--input-type=module", "-e", entry],
+    {
+      stdio: ["ignore", "ignore", "inherit", "ipc"],
+      serialization: "advanced",
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+    },
+  );
   let stopped = false;
   let pending: ReturnType<typeof Promise.withResolvers<Reply>> | undefined;
   const exited = Promise.withResolvers<void>();
@@ -206,7 +236,7 @@ export async function loadNativeSpeechModel(
       kind: "load",
       path,
       moduleUrl,
-      koffiModuleUrl: import.meta.resolve("transcribe-cpp"),
+      koffiModuleUrl: transcribeModuleUrl(),
       acceleration,
     });
     supportsStreaming = loaded.supportsStreaming === true;

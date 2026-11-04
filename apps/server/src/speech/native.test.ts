@@ -1,4 +1,7 @@
+// @effect-diagnostics nodeBuiltinImport:off - Node IPC is the native speech worker protocol under test.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeModule from "node:module";
+import * as NodeURL from "node:url";
 import { expect, it } from "vite-plus/test";
 import { listNativeSpeechGpuDevices, loadNativeSpeechModel } from "./native.ts";
 
@@ -13,6 +16,29 @@ it("ignores unrelated device probe messages and returns GPU devices", async () =
   await expect(listNativeSpeechGpuDevices(moduleUrl)).resolves.toEqual([
     { id: '["vulkan","gpu-1"]', name: "Test GPU" },
   ]);
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    [
+      NodeURL.fileURLToPath(new URL("../bin.ts", import.meta.url)),
+      "__speech-worker",
+      "devices",
+      moduleUrl,
+    ],
+    { stdio: ["ignore", "ignore", "inherit", "ipc"] },
+  );
+  try {
+    const devices = await new Promise<unknown[]>((resolve, reject) => {
+      child.on("message", (message) => {
+        if (Array.isArray(message)) resolve(message);
+      });
+      child.once("error", reject);
+      child.once("exit", (code) => reject(new Error(`Speech CLI worker exited (${code}).`)));
+    });
+    expect(devices).toEqual([{ id: '["vulkan","gpu-1"]', name: "Test GPU" }]);
+  } finally {
+    if (child.connected) child.disconnect();
+    child.kill("SIGKILL");
+  }
 });
 
 const fixture = (transcribe: string) =>

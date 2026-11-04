@@ -1,13 +1,23 @@
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { it } from "@effect/vitest";
 import { expect } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { SpeechStreamEvent } from "@t3tools/contracts";
-import type { SpeechService, SpeechStream } from "./SpeechService.ts";
-import { runSpeechSocket } from "./stream.ts";
+import * as HttpClient from "effect/http/HttpClient";
+import {
+  AuthSessionId,
+  AuthOrchestrationOperateScope,
+  AuthOrchestrationReadScope,
+  SPEECH_STREAM_PATH,
+  SpeechStreamEvent,
+} from "@t3tools/contracts";
+import { SpeechService, type SpeechStream } from "./SpeechService.ts";
+import { runSpeechSocket, speechStreamRouteLayer } from "./stream.ts";
+import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import type * as NetAddress from "effect/net/NetAddress";
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(SpeechStreamEvent));
@@ -57,6 +67,132 @@ const withServer = Effect.fn("test.speech.withServer")(function* (
   const url = `ws://${host}:${address.port}/ws/voice`;
   yield* Effect.promise(() => run(url));
 });
+
+const routeSession = {
+  sessionId: Schema.decodeSync(AuthSessionId)("speech-session"),
+  subject: "speech-test",
+  method: "bearer-access-token" as const,
+  scopes: [AuthOrchestrationOperateScope],
+  proofKeyThumbprint: "speech-proof-key",
+};
+
+const withAuthenticatedServer = Effect.fn("test.speech.withAuthenticatedServer")(function* <E, R>(
+  startStream: SpeechService["Service"]["startStream"],
+  awaitInvalidation: SessionStore.SessionStore["Service"]["awaitInvalidation"],
+  run: (url: string) => Effect.Effect<void, E, R>,
+) {
+  const routes = speechStreamRouteLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+          authenticateWebSocketUpgrade: (request, use) => {
+            expect(use).toBe("media");
+            const credential = new URL(request.url, "http://localhost").searchParams.get(
+              "credential",
+            );
+            if (!credential)
+              return Effect.fail(new EnvironmentAuth.ServerAuthMissingCredentialError());
+            return Effect.succeed({
+              ...routeSession,
+              scopes: credential === "read" ? [AuthOrchestrationReadScope] : routeSession.scopes,
+            });
+          },
+        }),
+        Layer.mock(SessionStore.SessionStore)({
+          cookieName: "speech-test",
+          legacyCookieName: undefined,
+          awaitInvalidation,
+        }),
+        Layer.mock(SpeechService)({ startStream }),
+      ),
+    ),
+  );
+  yield* Layer.build(HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }));
+  const server = yield* HttpServer.HttpServer;
+  const address = server.address as NetAddress.InetAddress;
+  const host = address._tag === "InetAddressV6" ? "[::1]" : "127.0.0.1";
+  yield* run(`http://${host}:${address.port}${SPEECH_STREAM_PATH}`);
+});
+
+it.live("rejects speech upgrades without an authenticated operating session", () => {
+  let started = false;
+  return withAuthenticatedServer(
+    () =>
+      Effect.sync(() => {
+        started = true;
+      }).pipe(Effect.andThen(Effect.die("must not start"))),
+    () => Effect.die("must not subscribe"),
+    (url) =>
+      Effect.gen(function* () {
+        expect((yield* HttpClient.get(url)).status).toBe(401);
+        expect((yield* HttpClient.get(`${url}?credential=read`)).status).toBe(403);
+        expect(started).toBe(false);
+      }),
+  ).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.mergeAll(NodeHttpServer.layerTest, NodeHttpClient.layerUndici)),
+  );
+});
+
+it.live("releases active speech inference when its session is revoked or cannot be verified", () =>
+  Effect.gen(function* () {
+    for (const verificationFailure of [false, true]) {
+      const invalidated = Promise.withResolvers<void>();
+      const feeding = Promise.withResolvers<void>();
+      const interrupted = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      const watched: unknown[][] = [];
+      const stream: SpeechStream = {
+        feed: () =>
+          Effect.sync(() => feeding.resolve()).pipe(
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() => Effect.sync(() => interrupted.resolve())),
+          ),
+        finish: Effect.die("revoked streams must not finish"),
+      };
+      yield* withAuthenticatedServer(
+        () =>
+          Effect.acquireRelease(Effect.succeed(stream), () =>
+            Effect.sync(() => released.resolve()),
+          ),
+        (sessionId, proofKeyThumbprint) => {
+          watched.push([sessionId, proofKeyThumbprint]);
+          return Effect.promise(() => invalidated.promise).pipe(
+            Effect.andThen(
+              verificationFailure
+                ? Effect.fail(
+                    new SessionStore.SessionCredentialVerificationError({
+                      sessionId,
+                      cause: new Error("test credential store failure"),
+                    }),
+                  )
+                : Effect.void,
+            ),
+          );
+        },
+        (url) =>
+          Effect.promise(async () => {
+            const connection = client(`${url.replace(/^http/, "ws")}?credential=operate`);
+            const closed = new Promise<void>((resolve) =>
+              connection.socket.addEventListener("close", () => resolve(), { once: true }),
+            );
+            try {
+              expect(await connection.next()).toEqual({ type: "ready" });
+              connection.socket.send(new Float32Array([0.25]));
+              await feeding.promise;
+              invalidated.resolve();
+              await interrupted.promise;
+              await released.promise;
+              await closed;
+              expect(watched).toEqual([[routeSession.sessionId, routeSession.proofKeyThumbprint]]);
+            } finally {
+              connection.socket.close();
+            }
+          }),
+      ).pipe(Effect.scoped, Effect.provide(NodeHttpServer.layerTest));
+    }
+  }).pipe(Effect.scoped),
+);
 
 it.live("acknowledges binary audio and returns the finalized transcript over a real socket", () => {
   const closed = Promise.withResolvers<void>();

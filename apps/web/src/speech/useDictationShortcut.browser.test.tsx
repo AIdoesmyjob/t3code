@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { DEFAULT_RESOLVED_KEYBINDINGS, isMacPlatform } from "@t3tools/shared/keybindings";
 import type { VoiceInputState } from "@t3tools/client-runtime/voice-input";
 
 import { act, render } from "../../test/render";
@@ -61,7 +61,8 @@ const key = (type: "keydown" | "keyup", value = "v") =>
     new KeyboardEvent(type, {
       key: value,
       code: value === "v" ? "KeyV" : "Escape",
-      ctrlKey: value === "v",
+      ctrlKey: value === "v" && !isMacPlatform(navigator.platform),
+      metaKey: value === "v" && isMacPlatform(navigator.platform),
       altKey: value === "v",
       bubbles: true,
       cancelable: true,

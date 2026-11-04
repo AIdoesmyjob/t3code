@@ -13,6 +13,7 @@ import * as Scope from "effect/Scope";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as Socket from "effect/socket/Socket";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
+import * as SessionStore from "../auth/SessionStore.ts";
 import * as SpeechService from "./SpeechService.ts";
 
 const decodeCommand = Schema.decodeUnknownSync(Schema.fromJsonString(SpeechStreamCommand));
@@ -93,6 +94,7 @@ export const runSpeechSocket = Effect.fn("speech.runSocket")(function* (
 export const speechStreamRouteLayer = Layer.unwrap(
   Effect.gen(function* () {
     const auth = yield* EnvironmentAuth.EnvironmentAuth;
+    const sessions = yield* SessionStore.SessionStore;
     const speech = yield* SpeechService.SpeechService;
     return HttpRouter.add(
       "GET",
@@ -109,7 +111,16 @@ export const speechStreamRouteLayer = Layer.unwrap(
           .get("projectName")
           ?.slice(0, 200);
         const socket = yield* request.upgrade;
-        yield* runSpeechSocket(socket, speech, projectName).pipe(Effect.scoped);
+        yield* Effect.raceFirst(
+          runSpeechSocket(socket, speech, projectName).pipe(Effect.scoped),
+          sessions
+            .awaitInvalidation(session.success.sessionId, session.success.proofKeyThumbprint)
+            .pipe(
+              Effect.catch(() =>
+                Effect.logWarning("Speech session verification failed; closing stream."),
+              ),
+            ),
+        );
         return HttpServerResponse.empty();
       }),
     );
