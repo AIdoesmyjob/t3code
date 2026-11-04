@@ -94,6 +94,7 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
       gitState.selectedThreadBranches.length > 0
         ? gitState.selectedThreadBranches
         : await gitActions.refreshSelectedThreadBranches();
+    if (branches === null) return;
     const newBranchName = resolveAutoFeatureBranchName(
       Arr.filterMap(branches, (branch) =>
         branch.isRemote ? Result.failVoid : Result.succeed(branch.name),
@@ -152,9 +153,7 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
         >
           <View className="android:gap-2 android:rounded-[20px] android:bg-card android:p-3 ios:items-center ios:gap-1 ios:px-5 ios:pb-3 ios:pt-4">
             {Platform.OS !== "android" ? (
-              <Text className="text-xs font-t3-bold tracking-[1px] uppercase text-foreground-muted">
-                Confirm
-              </Text>
+              <Text className="text-xs font-t3-bold text-foreground-muted">Confirm</Text>
             ) : null}
             <Text className="android:text-xl android:font-t3-medium ios:text-center ios:text-3xl ios:font-t3-bold">
               {copy?.title ?? "Run action on default branch?"}

@@ -61,7 +61,7 @@ export function ProviderSetupSection(props: ProviderSetupSectionProps) {
               {props.environmentLabel}
             </span>
             {!props.enabled && !props.readOnly ? (
-              <Button size="sm" variant="outline" onClick={props.onEnable}>
+              <Button size="sm" variant="secondary" onClick={props.onEnable}>
                 Enable Antigravity
               </Button>
             ) : null}
@@ -132,21 +132,23 @@ function ProviderSetupActions({
   const queryError = authQuery.error ?? installQuery.error;
   const actionsDisabled = pendingLabel !== null || queryError !== null;
   const installationStatusMessage =
-    installation?.phase === "downloading"
-      ? `Downloading ${(installation.downloadedBytes / 1_000_000).toFixed(1)} MB${installation.totalBytes === null ? "" : ` of ${(installation.totalBytes / 1_000_000).toFixed(1)} MB`}.`
-      : installation?.phase === "extracting"
-        ? "Extracting Antigravity."
-        : installation?.phase === "verifying"
-          ? "Checking the downloaded runtime."
-          : installed
-            ? "Installed."
-            : usesCustomBinary
-              ? enabled
-                ? "The configured Antigravity runtime is unavailable."
-                : "The configured Antigravity runtime has not been checked."
-              : installation?.totalBytes
-                ? `${Math.ceil(installation.totalBytes / 1_000_000)} MB download.`
-                : "Not installed.";
+    installation === null
+      ? "Checking the Antigravity runtime."
+      : installation?.phase === "downloading"
+        ? `Downloading ${(installation.downloadedBytes / 1_000_000).toFixed(1)} MB${installation.totalBytes === null ? "" : ` of ${(installation.totalBytes / 1_000_000).toFixed(1)} MB`}.`
+        : installation?.phase === "extracting"
+          ? "Extracting Antigravity."
+          : installation?.phase === "verifying"
+            ? "Checking the downloaded runtime."
+            : installed
+              ? "Installed."
+              : usesCustomBinary
+                ? enabled
+                  ? "The configured Antigravity runtime is unavailable."
+                  : "The configured Antigravity runtime has not been checked."
+                : installation?.totalBytes
+                  ? `${Math.ceil(installation.totalBytes / 1_000_000)} MB download.`
+                  : "Not installed.";
 
   async function runCommand<A, E>(
     label: string,
@@ -241,7 +243,7 @@ function ProviderSetupActions({
                 {installActive && installation.operationId ? (
                   <Button
                     size="sm"
-                    variant="outline"
+                    variant="secondary"
                     disabled={actionsDisabled}
                     onClick={() => {
                       const operationId = installation.operationId;
@@ -256,8 +258,8 @@ function ProviderSetupActions({
                 ) : !installActive && provider.setup?.canInstall ? (
                   <Button
                     size="sm"
-                    variant="outline"
-                    disabled={actionsDisabled || installation === null || authActive}
+                    variant="secondary"
+                    disabled={actionsDisabled || authActive}
                     onClick={() =>
                       void runCommand("Starting installation", () => startInstall(target))
                     }
@@ -315,7 +317,7 @@ function ProviderSetupActions({
           {queryError ? (
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               className="w-fit"
               onClick={() => {
                 authQuery.refresh();

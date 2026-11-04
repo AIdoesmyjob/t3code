@@ -10,6 +10,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import { ChevronDown, ChevronUp } from "lucide";
 import { GlobeIcon, LoaderCircleIcon, SquareIcon } from "lucide-react";
 import { type MouseEvent, useState } from "react";
 
@@ -21,6 +22,7 @@ import { useEnvironment } from "../../state/environments";
 import { previewEnvironment } from "../../state/preview";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { MorphIcon } from "../MorphIcon";
 import { openDiscoveredPort } from "../preview/openDiscoveredPort";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -28,13 +30,21 @@ import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { THREAD_DETAILS_PANEL_ICON_CLASS } from "./threadDetailsPanelStyles";
 
+const SERVER_PAGE_COUNT = 4;
+
 const serverKey = (server: DiscoveredLocalServer) => `${server.pid}:${server.port}`;
 
-/** Web servers the thread's terminals and agent started. Hidden while none run. */
-export function ThreadServersPanel(props: {
+interface ThreadServersPanelProps {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-}) {
+}
+
+/** Local servers the thread's terminals and agent started. Includes a quiet state while none run. */
+export function ThreadServersPanel(props: ThreadServersPanelProps) {
+  return <ThreadServersList key={`${props.environmentId}:${props.threadId}`} {...props} />;
+}
+
+function ThreadServersList(props: ThreadServersPanelProps) {
   const servers = useThreadDiscoveredPorts(props);
   const canOpen = useEnvironmentScope(props.environmentId, AuthPreviewOperateScope);
   const canStop = useAtomValue(
@@ -48,10 +58,11 @@ export function ThreadServersPanel(props: {
     label: "thread server stop",
   });
   const [stoppingKey, setStoppingKey] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(SERVER_PAGE_COUNT);
 
-  if (servers.length === 0) return null;
   const externalClickLabel = isMacPlatform(navigator.platform) ? "⌘-click" : "Ctrl-click";
   const threadRef = scopeThreadRef(props.environmentId, props.threadId);
+  const hiddenCount = Math.max(0, servers.length - visibleCount);
 
   const reportFailure = (title: string, error: unknown) => {
     toastManager.add(
@@ -94,13 +105,27 @@ export function ThreadServersPanel(props: {
   };
 
   return (
-    <ThreadDetailsSection headingId="thread-details-servers-heading" title="Servers">
+    <ThreadDetailsSection
+      title="Servers"
+      empty={servers.length === 0}
+      summary={servers.length ? `${servers.length} running` : "None running"}
+    >
+      {servers.length === 0 ? (
+        <div className="flex h-9 items-center gap-2.5 px-2.5 text-caption text-muted-foreground">
+          <GlobeIcon className="size-4" />
+          No servers running
+        </div>
+      ) : null}
       <ul className="m-0 list-none p-0">
-        {servers.map((server) => {
+        {servers.slice(0, visibleCount).map((server, index) => {
           const key = serverKey(server);
           const stoppable = canStop && supportsStop && server.pid !== null;
           return (
-            <li key={key} className="group relative flex items-center rounded-lg">
+            <li
+              key={key}
+              data-thread-details-server-overflow={index >= SERVER_PAGE_COUNT || undefined}
+              className="group relative flex items-center rounded-lg"
+            >
               <Tooltip>
                 <TooltipTrigger
                   delay={200}
@@ -116,16 +141,17 @@ export function ThreadServersPanel(props: {
                     />
                   }
                 >
-                  <GlobeIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+                  <span className="relative shrink-0">
+                    <GlobeIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
+                    <span className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-success" />
+                  </span>
                   {/* The end padding keeps text clear of the stop button. */}
                   <span className={cn("flex min-w-0 flex-1 flex-col gap-0.5", stoppable && "pe-6")}>
-                    <span className="truncate text-sm font-medium leading-4 text-foreground/85">
+                    <span className="truncate text-label leading-4 text-foreground">
                       localhost:{server.port}
                     </span>
-                    <span className="truncate text-2xs font-normal leading-4 text-muted-foreground">
-                      {[server.terminal === null ? "Agent" : "Terminal", server.processName]
-                        .filter(Boolean)
-                        .join(" · ")}
+                    <span className="truncate text-caption leading-4 text-muted-foreground">
+                      {server.processName ?? (server.terminal === null ? "Agent" : "Terminal")}
                     </span>
                   </span>
                 </TooltipTrigger>
@@ -134,7 +160,7 @@ export function ThreadServersPanel(props: {
                 </TooltipPopup>
               </Tooltip>
               {stoppable ? (
-                <div className="pointer-events-none absolute right-1 top-1/2 -translate-y-1/2 opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100">
+                <div className="absolute right-1 top-1/2 -translate-y-1/2">
                   <Tooltip>
                     <TooltipTrigger
                       render={
@@ -152,7 +178,7 @@ export function ThreadServersPanel(props: {
                       {stoppingKey === key ? (
                         <LoaderCircleIcon aria-hidden className="size-3 animate-spin" />
                       ) : (
-                        <SquareIcon aria-hidden className="size-3 fill-current" />
+                        <SquareIcon aria-hidden className="size-3.5" />
                       )}
                     </TooltipTrigger>
                     <TooltipPopup side="left">Stop server</TooltipPopup>
@@ -163,6 +189,25 @@ export function ThreadServersPanel(props: {
           );
         })}
       </ul>
+      {servers.length > SERVER_PAGE_COUNT ? (
+        <ThreadDetailsControl
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            setVisibleCount(hiddenCount > 0 ? visibleCount + SERVER_PAGE_COUNT : SERVER_PAGE_COUNT)
+          }
+          part="row"
+          tone="muted"
+          className="w-full active:scale-100"
+        >
+          <MorphIcon
+            aria-hidden
+            className="size-4 shrink-0"
+            icon={hiddenCount > 0 ? ChevronDown : ChevronUp}
+          />
+          {hiddenCount > 0 ? `Show ${Math.min(hiddenCount, SERVER_PAGE_COUNT)} more` : "Show less"}
+        </ThreadDetailsControl>
+      ) : null}
     </ThreadDetailsSection>
   );
 }

@@ -1,6 +1,7 @@
 import { useNavigate, type AnyRouter } from "@tanstack/react-router";
 
 import { GUEST_PAGE_PATH } from "../../guestPage";
+import { withoutAssistantCitationHash } from "../../lib/assistantCitationNavigation";
 
 /** Settings and Usage open as modals over the last main-app view. */
 export function isAppModalPage(pathname: string) {
@@ -8,7 +9,7 @@ export function isAppModalPage(pathname: string) {
 }
 
 export function isSidebarUtilityPage(pathname: string) {
-  return pathname.startsWith("/projects/") || pathname === "/pull-requests";
+  return pathname.startsWith("/projects/");
 }
 
 // Pages the root route always renders without the app shell, so they are never
@@ -16,16 +17,43 @@ export function isSidebarUtilityPage(pathname: string) {
 // are still recorded; they are real app URLs, so returning to one is harmless.
 const SHELL_LESS_PATHS = new Set(["/pair", "/connect", "/connect-agent", GUEST_PAGE_PATH]);
 
-let mainAppHref: string | null = null;
+const MAIN_APP_HREF_KEY = "t3code:main-app-href";
+
+function readMainAppHref() {
+  try {
+    const href = window.sessionStorage.getItem(MAIN_APP_HREF_KEY);
+    return href?.startsWith("/") &&
+      !href.startsWith("//") &&
+      !isAppModalPage(href.split(/[?#]/, 1)[0] ?? "")
+      ? href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+let mainAppHref = readMainAppHref();
+
+export function getMainAppHref() {
+  return mainAppHref;
+}
+
 let appModalReturnHref: string | null = null;
 
 /** Remembers where Settings, Usage, and the utility pages lead back to. */
 export function startMainAppLocationTracking(router: AnyRouter): () => void {
   const record = () => {
-    const { pathname, href } = router.state.location;
+    const { pathname } = router.state.location;
     if (isAppModalPage(pathname) || SHELL_LESS_PATHS.has(pathname)) return;
+    const href = withoutAssistantCitationHash(router.state.location.href);
     appModalReturnHref = href;
-    if (!isSidebarUtilityPage(pathname)) mainAppHref = href;
+    if (isSidebarUtilityPage(pathname)) return;
+    mainAppHref = href;
+    try {
+      window.sessionStorage.setItem(MAIN_APP_HREF_KEY, href);
+    } catch {
+      // The in-memory return location still works when storage is unavailable.
+    }
   };
   record();
   return router.subscribe("onResolved", record);

@@ -6,11 +6,20 @@ import {
 } from "@t3tools/contracts";
 import { useState, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
 import "~/index.css";
 import { act, render } from "../../../test/render";
+
+vi.mock("~/speech/useTextFieldSpeech", () => ({
+  useTextFieldSpeech: () => ({
+    blocksSubmission: false,
+    freezesEditor: false,
+    setup: { open: false },
+  }),
+  TextFieldSpeechControls: () => null,
+}));
 
 const mocks = vi.hoisted(() => ({ observeSource: vi.fn(), dispose: vi.fn() }));
 vi.mock(import("./AssistantCitationSource"), async (importOriginal) => ({
@@ -84,11 +93,7 @@ async function removeSource() {
 }
 
 async function clickButton(label: string) {
-  const button = [...document.querySelectorAll("button")].find(
-    (element) => element.textContent?.trim() === label,
-  );
-  expect(button, `button ${label}`).toBeDefined();
-  await act(async () => button!.click());
+  await page.getByRole("button", { name: label, exact: true }).click();
 }
 
 describe("citation comment source disappearance", () => {

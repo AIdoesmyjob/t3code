@@ -469,11 +469,16 @@ export function partitionPullRequestsWithPriority<Entry extends PullRequestListE
       others.push(entry);
     }
   }
-  const byRecency = (left: Entry, right: Entry) => right.updatedAt.localeCompare(left.updatedAt);
   return (
     [
-      { key: "authored", entries: [...authoredByKey.values()].toSorted(byRecency) },
-      { key: "reviewRequested", entries: [...reviewByKey.values()].toSorted(byRecency) },
+      {
+        key: "authored",
+        entries: [...authoredByKey.values()].toSorted(comparePullRequestsByRecency),
+      },
+      {
+        key: "reviewRequested",
+        entries: [...reviewByKey.values()].toSorted(comparePullRequestsByRecency),
+      },
       { key: "others", entries: others },
     ] as const
   )
@@ -564,7 +569,7 @@ export function mergePullRequestLists(
   return {
     viewers,
     providers: [...providers.values()],
-    entries: entries.toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+    entries: entries.toSorted(comparePullRequestsByRecency),
     errors,
     truncated,
     nextCursors,
@@ -660,7 +665,7 @@ export function rankPullRequestMatches<Entry extends PullRequestListEntry>(
   if (query.trim().length === 0) return entries;
   return entries.toSorted((left, right) => {
     const byScore = scorePullRequestMatch(right, query) - scorePullRequestMatch(left, query);
-    return byScore !== 0 ? byScore : right.updatedAt.localeCompare(left.updatedAt);
+    return byScore !== 0 ? byScore : comparePullRequestsByRecency(left, right);
   });
 }
 
@@ -681,24 +686,29 @@ export function rankPullRequestsByMergeReadiness<Entry extends PullRequestListEn
     if (byTier !== 0) return byTier;
     const measured = Number(hasMeasuredSize(right)) - Number(hasMeasuredSize(left));
     const sized = left.additions + left.deletions - (right.additions + right.deletions);
-    return measured || sized || right.updatedAt.localeCompare(left.updatedAt);
+    return measured || sized || comparePullRequestsByRecency(left, right);
   });
+}
+
+export function comparePullRequestsByRecency(
+  left: PullRequestListEntry,
+  right: PullRequestListEntry,
+) {
+  const leftUpdated = toSortableTimestamp(left.updatedAt);
+  const rightUpdated = toSortableTimestamp(right.updatedAt);
+  const measured = Number(leftUpdated === null) - Number(rightUpdated === null);
+  if (measured !== 0) return measured;
+  if (leftUpdated === null || rightUpdated === null) return 0;
+  return rightUpdated - leftUpdated;
 }
 
 function rankByTierThenRecency<Entry extends PullRequestListEntry>(
   entries: ReadonlyArray<Entry>,
   tier: (entry: Entry) => number,
 ): ReadonlyArray<Entry> {
-  const timestamp = (entry: Entry) => toSortableTimestamp(entry.updatedAt);
   return entries.toSorted((left, right) => {
     const byTier = tier(left) - tier(right);
-    if (byTier !== 0) return byTier;
-    const leftUpdated = timestamp(left);
-    const rightUpdated = timestamp(right);
-    const measured = Number(leftUpdated === null) - Number(rightUpdated === null);
-    if (measured !== 0) return measured;
-    if (leftUpdated === null || rightUpdated === null) return 0;
-    return rightUpdated - leftUpdated;
+    return byTier !== 0 ? byTier : comparePullRequestsByRecency(left, right);
   });
 }
 
@@ -881,6 +891,49 @@ export function settlePullRequestOverrides<Entry extends PullRequestListEntry>(
     if (!agrees && !outranked) kept.set(key, override);
   }
   return kept.size === overrides.size ? overrides : kept;
+}
+
+export type PullRequestListItem<Entry extends ScopedEntry> =
+  | { readonly kind: "row"; readonly entry: Entry }
+  | { readonly kind: "stack"; readonly key: string; readonly entries: ReadonlyArray<Entry> };
+
+/**
+ * Folds the rows of one native stack into a single item where the first of them sat, its layers
+ * bottom first. A stack with one row shown stays a plain row: there is nothing to fold.
+ */
+export function clusterPullRequestStacks<Entry extends ScopedEntry>(
+  entries: ReadonlyArray<Entry>,
+): ReadonlyArray<PullRequestListItem<Entry>> {
+  const members = new Map<string, Entry[]>();
+  const stackKeyOf = (entry: Entry) =>
+    entry.stack === undefined
+      ? null
+      : `${entry.environmentId ?? ""}:${entry.host}:${entry.repository}#stack${entry.stack.number}`;
+  for (const entry of entries) {
+    const key = stackKeyOf(entry);
+    if (key === null) continue;
+    const list = members.get(key);
+    if (list) list.push(entry);
+    else members.set(key, [entry]);
+  }
+  const items: PullRequestListItem<Entry>[] = [];
+  const placed = new Set<string>();
+  for (const entry of entries) {
+    const key = stackKeyOf(entry);
+    const stack = key === null ? undefined : members.get(key);
+    if (key === null || stack === undefined || stack.length < 2) {
+      items.push({ kind: "row", entry });
+      continue;
+    }
+    if (placed.has(key)) continue;
+    placed.add(key);
+    items.push({
+      kind: "stack",
+      key,
+      entries: stack.toSorted((a, b) => (a.stack?.position ?? 0) - (b.stack?.position ?? 0)),
+    });
+  }
+  return items;
 }
 
 export type PullRequestQuickAction = "close" | "merge" | "ready" | "reopen";

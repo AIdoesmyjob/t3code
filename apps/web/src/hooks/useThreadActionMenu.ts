@@ -10,6 +10,7 @@ import {
 import { canSnooze, effectiveSnoozed } from "@t3tools/client-runtime/state/thread-settled";
 import {
   AuthOrchestrationOperateScope,
+  type ContextMenuItem,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -35,6 +36,7 @@ import {
 } from "../state/entities";
 import { usePrimaryEnvironmentId } from "../state/environments";
 import { readLocalApi } from "../localApi";
+import { configuredHostedAppUrl } from "../hostedPairing";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKey,
@@ -61,9 +63,21 @@ export function useThreadActionMenu(input: {
   readonly threadRef: ScopedThreadRef | null;
   readonly projectCwd: string | null;
   readonly onStartRename: () => void;
+  readonly onFind?: ((threadRef: ScopedThreadRef) => void) | undefined;
   readonly canShareWithGuest: boolean;
+  /** Tab actions prepended to the thread menu, read when it opens. */
+  readonly leadingItems?: () => readonly ContextMenuItem<string>[];
+  readonly onLeadingAction?: (id: string) => void;
 }) {
-  const { threadRef, projectCwd, onStartRename, canShareWithGuest } = input;
+  const {
+    threadRef,
+    projectCwd,
+    onStartRename,
+    onFind,
+    canShareWithGuest,
+    leadingItems,
+    onLeadingAction,
+  } = input;
   const router = useRouter();
   const projects = useProjects();
   const primaryEnvironmentId = usePrimaryEnvironmentId();
@@ -133,6 +147,7 @@ export function useThreadActionMenu(input: {
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
       const items = buildThreadActionMenuItems({
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
+        canFind: onFind !== undefined,
         branch: thread.branch ?? null,
         projectFilter: null,
         isPinned: thread.pinnedAt != null,
@@ -147,9 +162,24 @@ export function useThreadActionMenu(input: {
         canShareWithGuest,
         canTurnIntoProject: canTurnThreadIntoProject(threadRef),
       });
-      const clicked = await settlePromise(() => api.contextMenu.show(items, position));
+      const leading = leadingItems?.() ?? [];
+      const leadingIds = new Set(leading.map((item) => item.id));
+      const menuItems: ContextMenuItem<string>[] =
+        leading.length > 0
+          ? [
+              ...leading,
+              ...items.map((item, index) =>
+                index === 0 ? { ...item, separatorBefore: true } : item,
+              ),
+            ]
+          : [...items];
+      const clicked = await settlePromise(() => api.contextMenu.show(menuItems, position));
       if (clicked._tag === "Failure" || clicked.value === null) return;
-      const action: ThreadActionMenuId = clicked.value;
+      if (leadingIds.has(clicked.value)) {
+        onLeadingAction?.(clicked.value);
+        return;
+      }
+      const action = clicked.value as ThreadActionMenuId;
       if (
         threadActionRequiresOperate(action) &&
         !readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope)
@@ -187,6 +217,9 @@ export function useThreadActionMenu(input: {
         }
       };
       switch (action) {
+        case "find":
+          onFind?.(threadRef);
+          return;
         case "project-settings": {
           const project = projects.find(
             (candidate) =>
@@ -290,7 +323,9 @@ export function useThreadActionMenu(input: {
           }
           return;
         case "copy-thread":
-          void copyThreadReference(threadChipCopyTarget(threadRef, thread.title));
+          void copyThreadReference(
+            threadChipCopyTarget(threadRef, thread.title, configuredHostedAppUrl()),
+          );
           return;
         case "copy-thread-id":
           copyThreadIdToClipboard(thread.id, { threadId: thread.id });
@@ -320,11 +355,12 @@ export function useThreadActionMenu(input: {
           if (confirmThreadDelete) {
             const confirmed = await settlePromise(() =>
               api.dialogs.confirm(
-                [
-                  `Delete thread "${thread.title}"?`,
-                  "This permanently clears conversation history for this thread.",
-                ].join("\n"),
-                { variant: "destructive" },
+                `This deletes "${thread.title}" and its chat history. You can't undo this.`,
+                {
+                  variant: "destructive",
+                  title: "Delete thread?",
+                  confirmLabel: "Delete thread",
+                },
               ),
             );
             if (confirmed._tag === "Failure" || !confirmed.value) return;

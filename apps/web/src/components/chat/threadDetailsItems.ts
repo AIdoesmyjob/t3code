@@ -11,7 +11,9 @@ export const THREAD_DETAILS_ITEMS = [
   { id: "servers", label: "Servers", defaultVisible: true },
   { id: "automations", label: "Automations", defaultVisible: true },
   { id: "lineage", label: "Lineage", defaultVisible: true },
-  { id: "usage", label: "Usage", defaultVisible: false },
+  { id: "sideChats", label: "Side chats", defaultVisible: true },
+  { id: "usage", label: "Usage limits", defaultVisible: true },
+  { id: "context", label: "Context window", defaultVisible: true },
 ] as const;
 
 export type ThreadDetailsItemId = (typeof THREAD_DETAILS_ITEMS)[number]["id"];
@@ -23,18 +25,13 @@ type ThreadDetailsItemSettings = Pick<
   "threadDetailsItems" | "threadDetailsUsageEnabled"
 >;
 
-// People who turned on the retired Labs toggle keep Usage until they change it here.
-function defaultVisible(item: ThreadDetailsItem, settings: ThreadDetailsItemSettings) {
-  return item.id === "usage" ? settings.threadDetailsUsageEnabled : item.defaultVisible;
-}
-
 export function resolveThreadDetailsVisibility(
   settings: ThreadDetailsItemSettings,
 ): ThreadDetailsVisibility {
   return Object.fromEntries(
     THREAD_DETAILS_ITEMS.map((item) => [
       item.id,
-      settings.threadDetailsItems[item.id] ?? defaultVisible(item, settings),
+      settings.threadDetailsItems[item.id] ?? item.defaultVisible,
     ]),
   ) as Record<ThreadDetailsItemId, boolean>;
 }
@@ -46,14 +43,14 @@ export function setThreadDetailsItem(
   visible: boolean,
 ): ClientSettings["threadDetailsItems"] {
   const { [item.id]: _previous, ...rest } = settings.threadDetailsItems;
-  return visible === defaultVisible(item, settings) ? rest : { ...rest, [item.id]: visible };
+  return visible === item.defaultVisible ? rest : { ...rest, [item.id]: visible };
 }
 
 export function isDefaultThreadDetailsVisibility(visibility: ThreadDetailsVisibility) {
   return THREAD_DETAILS_ITEMS.every((item) => visibility[item.id] === item.defaultVisible);
 }
 
-/** Also clears the retired Labs flag, so Usage returns to off. */
+/** Restore the canvas defaults and clear the retired Labs flag. */
 export const RESET_THREAD_DETAILS_ITEMS = {
   threadDetailsItems: {},
   threadDetailsUsageEnabled: false,

@@ -1,6 +1,7 @@
 import {
   EnvironmentId,
   GUEST_MESSAGE_MAX_LENGTH,
+  GUEST_HISTORY_ROUTE,
   GUEST_NAME_MAX_LENGTH,
   GUEST_ROUTE_PREFIX,
   GUEST_SHARE_PARAM,
@@ -8,6 +9,7 @@ import {
   type GuestRedeemRequest,
   type GuestShareView,
   type GuestThreadModel,
+  OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2ThreadProjection,
   type ThreadGuestMessage,
   type ThreadGuestMessageStatus,
@@ -46,7 +48,7 @@ import { GuestMessageAttachments } from "../chat/GuestMessageAttachments";
 import { HostImageUrlContext } from "../chat/hostImageUrl";
 import { PierreEntryIcon } from "../chat/PierreEntryIcon";
 import { GuestMessageName, guestBubbleClassName } from "../chat/guestMessageStyle";
-import { MessagesTimeline } from "../chat/MessagesTimeline";
+import { MessagesTimeline, type MessagesTimelineHistoryControls } from "../chat/MessagesTimeline";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { getDisplayModelName, getTriggerDisplayModelName } from "../chat/providerIconUtils";
 import { ScrollToEndButton } from "../chat/TimelineOverlays";
@@ -55,6 +57,7 @@ import { useTimelineFollow } from "../chat/useTimelineFollow";
 import { GuestHtmlRender } from "./GuestHtmlRender";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
 import {
   applyGuestStreamEvent,
   formatGuestExpiry,
@@ -131,6 +134,32 @@ function takeGuestEntry(): GuestEntry {
 }
 
 const decodeErrorBody = Schema.decodeUnknownOption(Schema.Struct({ message: Schema.String }));
+const decodeHistoryPage = Schema.decodeUnknownOption(
+  Schema.toCodecJson(OrchestrationV2ThreadHistoryPage),
+);
+
+/** Resolves to the page, or to a message the guest can read. */
+async function fetchGuestHistoryPage(
+  shareId: string,
+  cursor: string,
+): Promise<OrchestrationV2ThreadHistoryPage | string> {
+  const failed = "Could not load earlier turns. Try again.";
+  try {
+    const response = await fetch(
+      `${GUEST_HISTORY_ROUTE}?${GUEST_SHARE_PARAM}=${encodeURIComponent(shareId)}&cursor=${encodeURIComponent(cursor)}`,
+    );
+    const json: unknown = await response.json().catch(() => null);
+    if (!response.ok) {
+      return Option.match(decodeErrorBody(json), {
+        onNone: () => failed,
+        onSome: ({ message }) => message,
+      });
+    }
+    return Option.getOrElse(decodeHistoryPage(json), () => failed);
+  } catch {
+    return "Could not reach the server.";
+  }
+}
 
 /** Resolves to null on success, or to a message the guest can read. */
 async function postGuest(
@@ -241,6 +270,32 @@ function GuestSession({ shareId }: { readonly shareId: string }) {
   // missing, invalid, or ended session. Network drops reconnect on their own.
   const [rejected, setRejected] = useState(false);
 
+  const [historyLoad, setHistoryLoad] = useState<{
+    readonly cursor: string;
+    readonly error: string | null;
+  } | null>(null);
+  const historyCursor = stream.historyCursor;
+  // A load for an older cursor is stale: a page or a reconnect snapshot moved the cursor on.
+  const currentLoad = historyLoad?.cursor === historyCursor ? historyLoad : null;
+  const loadingHistory = currentLoad !== null && currentLoad.error === null;
+  const historyError = currentLoad?.error ?? null;
+  const loadEarlier = async () => {
+    if (historyCursor === null || loadingHistory) return;
+    setHistoryLoad({ cursor: historyCursor, error: null });
+    const result = await fetchGuestHistoryPage(shareId, historyCursor);
+    if (typeof result === "string") setHistoryLoad({ cursor: historyCursor, error: result });
+    else dispatch({ type: "history-page", cursor: historyCursor, page: result });
+  };
+  const historyControls: MessagesTimelineHistoryControls | undefined =
+    historyCursor === null
+      ? undefined
+      : {
+          hasMoreHistory: true,
+          loading: loadingHistory,
+          error: historyError,
+          onLoadEarlier: () => void loadEarlier(),
+        };
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- sets document.title to the shared thread's title
   useEffect(() => {
     if (stream.view) document.title = stream.view.title;
@@ -273,6 +328,7 @@ function GuestSession({ shareId }: { readonly shareId: string }) {
         view={stream.view}
         projection={stream.projection}
         awaitingRowIds={stream.awaitingRowIds}
+        historyControls={historyControls}
       />
     );
   }
@@ -288,8 +344,8 @@ function GuestSession({ shareId }: { readonly shareId: string }) {
 function Notice({ title, detail }: { readonly title: string; readonly detail?: string }) {
   return (
     <div className="m-auto flex max-w-sm flex-col gap-1 p-6 text-center">
-      <p className="text-sm font-medium">{title}</p>
-      {detail ? <p className="text-xs text-muted-foreground">{detail}</p> : null}
+      <p className="text-label">{title}</p>
+      {detail ? <p className="text-meta text-muted-foreground">{detail}</p> : null}
     </div>
   );
 }
@@ -316,8 +372,8 @@ function NameForm({
   };
   return (
     <form className="m-auto flex w-full max-w-xs flex-col gap-3 p-6" onSubmit={submit}>
-      <h1 className="text-base font-medium">Join a shared thread</h1>
-      <label className="flex flex-col gap-1.5 text-sm" htmlFor="guest-name">
+      <h1 className="text-title">Join a shared thread</h1>
+      <label className="flex flex-col gap-1.5 text-body" htmlFor="guest-name">
         Your name
         <Input
           id="guest-name"
@@ -329,14 +385,14 @@ function NameForm({
         />
       </label>
       {error !== null ? (
-        <p role="alert" className="text-sm text-destructive">
+        <p role="alert" className="text-body text-destructive">
           {error}
         </p>
       ) : null}
       <Button type="submit" disabled={submitting || name.trim() === ""}>
         Join
       </Button>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-meta text-muted-foreground">
         The owner sees your name and approves each message before the agent gets it.
       </p>
     </form>
@@ -358,10 +414,12 @@ function GuestThread({
   view: { shareId, title, expiresAt, messages, model },
   projection,
   awaitingRowIds,
+  historyControls,
 }: {
   readonly view: GuestShareView;
   readonly projection: OrchestrationV2ThreadProjection;
   readonly awaitingRowIds: GuestStreamState["awaitingRowIds"];
+  readonly historyControls: MessagesTimelineHistoryControls | undefined;
 }) {
   // No ":" so the timeline finds no environment thread behind the key.
   const threadKey = `guest-${shareId}`;
@@ -443,7 +501,7 @@ function GuestThread({
   return (
     <>
       <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2.5">
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium">{title}</h1>
+        <h1 className="min-w-0 flex-1 truncate text-label">{title}</h1>
         <ExpiryLabel expiresAt={expiresAt} />
       </header>
       <div className="relative min-h-0 flex-1">
@@ -467,6 +525,7 @@ function GuestThread({
             onFileDownload={openFile}
             renderHtmlRender={renderHtmlRender}
             turnItemSource={turnItemSource}
+            historyControls={historyControls}
             activeThreadEnvironmentId={GUEST_ENVIRONMENT_ID}
             markdownCwd={undefined}
             resolvedTheme={resolvedTheme}
@@ -495,7 +554,7 @@ function GuestThread({
         </HostImageUrlContext>
         {follow.showScrollToBottom ? (
           <ScrollToEndButton
-            summary={null}
+            summary={[]}
             bottom={4}
             onScrollToEnd={() => follow.scrollToEnd(true)}
           />
@@ -511,14 +570,14 @@ function GuestThread({
 function ExpiryLabel({ expiresAt }: { readonly expiresAt: string }) {
   const nowMinute = useNowMinute();
   return (
-    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+    <span className="shrink-0 text-meta text-muted-foreground tabular-nums">
       {formatGuestExpiry(expiresAt, Date.parse(`${nowMinute}Z`))}
     </span>
   );
 }
 
 const BUBBLE =
-  "flex min-w-0 max-w-[80%] flex-col gap-2 rounded-2xl p-3 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]";
+  "flex min-w-0 max-w-[80%] flex-col gap-2 rounded-pane p-3 text-body whitespace-pre-wrap [overflow-wrap:anywhere]";
 
 const openInNewTab = (url: string) => window.open(url, "_blank", "noopener,noreferrer");
 /** Guests have no image viewer; the browser shows the picture in its own tab. */
@@ -556,7 +615,7 @@ function UnplacedGuestMessage({
         />
         {message.text ? <span>{message.text}</span> : null}
       </div>
-      <p className="me-1 text-2xs text-muted-foreground">{STATUS_LABEL[message.status]}</p>
+      <p className="me-1 text-caption text-muted-foreground">{STATUS_LABEL[message.status]}</p>
     </div>
   );
 }
@@ -671,7 +730,7 @@ function GuestComposer({
   };
   return (
     <form
-      className="flex flex-col gap-2 rounded-3xl border border-border bg-card px-4 pt-3 pb-2.5 shadow-composer dark:shadow-composer-dark"
+      className="surface-composer flex flex-col gap-2 rounded-pane px-4 pt-3 pb-2.5 text-prompt"
       onSubmit={(event) => {
         event.preventDefault();
         void send();
@@ -697,10 +756,10 @@ function GuestComposer({
                   <StagedImage file={staged.file} />
                 </span>
               ) : (
-                <span className="flex min-w-0 items-center gap-2 ps-2 text-sm">
+                <span className="flex min-w-0 items-center gap-2 ps-2 text-body">
                   <PierreEntryIcon pathValue={staged.file.name} kind="file" theme={resolvedTheme} />
                   <span className="max-w-40 truncate">{staged.file.name}</span>
-                  <span className="shrink-0 text-xs text-muted-foreground">
+                  <span className="shrink-0 text-meta text-muted-foreground">
                     {formatAttachmentSize(staged.file.size)}
                   </span>
                 </span>
@@ -720,7 +779,8 @@ function GuestComposer({
           ))}
         </ul>
       ) : null}
-      <textarea
+      <Textarea
+        unstyled
         aria-label="Message"
         placeholder="Message"
         rows={2}
@@ -729,7 +789,6 @@ function GuestComposer({
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
-        className="max-h-60 min-h-12 w-full resize-none bg-transparent text-sm outline-none field-sizing-content placeholder:text-placeholder"
       />
       <div className="flex items-center gap-3">
         <input
@@ -749,22 +808,23 @@ function GuestComposer({
         </ComposerControl>
         <GuestModelLabel model={model} />
         {error !== null ? (
-          <p role="alert" className="min-w-0 flex-1 text-xs text-destructive">
+          <p role="alert" className="min-w-0 flex-1 text-meta text-destructive">
             {error}
           </p>
         ) : (
-          <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          <p className="min-w-0 flex-1 truncate text-meta text-muted-foreground">
             The owner approves each message
           </p>
         )}
-        <button
+        <Button
+          variant="pill"
+          size="icon"
           type="submit"
           aria-label="Send"
           disabled={sending || (text.trim() === "" && files.length === 0)}
-          className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full bg-message-action text-message-action-foreground shadow-xs hover:bg-message-action-hover focus-visible:outline-2 focus-visible:outline-ring disabled:pointer-events-none disabled:opacity-64"
         >
           <ArrowUpIcon aria-hidden className="size-4" />
-        </button>
+        </Button>
       </div>
     </form>
   );

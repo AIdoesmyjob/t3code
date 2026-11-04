@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { SessionPermissions } from "./SessionPermissions";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -15,6 +16,7 @@ import {
   type DesktopServerExposureState,
   type DesktopWslState,
   type EnvironmentId,
+  managedCapabilityDenial,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import {
@@ -30,12 +32,13 @@ import {
   isWslSettingsRowVisible,
   missingTailscaleEndpointDescription,
   resolveLocalVersionStatusLabel,
+  resolveTailscaleServeBaseUrl,
 } from "./ConnectionsSettings.logic";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import { ManagedByOrganization } from "../ManagedPolicy";
 import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
 import { searchableSetting } from "./settingsSearch";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
-import { FoldedSettingsSection } from "./FoldedSettingsSection";
 import { LinkedEnvironmentsSettings } from "./LinkedEnvironmentsSettings";
 import { usePeerLinkHosts } from "~/state/peerLinks";
 import { LoadBalancingSettings } from "./LoadBalancingSettings";
@@ -112,7 +115,6 @@ import {
 } from "../ServerUpdateAction";
 import {
   sortDesktopPairingLinks,
-  summarizeAuthorizedClients,
   sortDesktopClientSessions,
   toDesktopPairingLinkRecord,
   toDesktopClientSessionRecord,
@@ -123,7 +125,7 @@ import {
 import {
   AdvertisedEndpointListRow,
   AuthorizedClientsHeaderAction,
-  NetworkAccessDescription,
+  ReachableAddressRow,
   PairingClientsList,
 } from "./AuthorizedClientsSettings";
 import { ITEM_ROW_CLASSNAME } from "./itemRows";
@@ -145,7 +147,7 @@ const BACKEND_VALUE_WSL_OFF = "backend:wsl-off";
 function LocalVersionStatusLabel() {
   const updateState = useDesktopUpdateState();
   return (
-    <span className="text-xs text-muted-foreground">
+    <span className="text-meta text-muted-foreground">
       {resolveLocalVersionStatusLabel(updateState)}
     </span>
   );
@@ -267,6 +269,9 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
     DesktopServerExposureState["mode"] | null
   >(null);
   const primaryServerConfig = primaryEnvironment?.serverConfig ?? null;
+  const primaryManagedPolicy = primaryServerConfig?.managedPolicy;
+  // Turning remote access off stays possible; only the way in is managed.
+  const remoteClientsDenial = managedCapabilityDenial(primaryManagedPolicy, "remoteClients");
   const primaryVersionMismatch = resolveServerConfigVersionMismatch(primaryServerConfig);
   const primaryServerUpdateState = useAtomValue(
     serverEnvironment.updateStateAtom(primaryEnvironmentId),
@@ -286,7 +291,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
   const canManageLocalBackend = !isLocalEnvironmentDisabled() && canMaintain;
   const showsAccess = view === "access";
   const authAccessChanges = useEnvironmentQuery(
-    showsAccess && canReadAccess && primaryEnvironmentId !== null
+    canReadAccess && primaryEnvironmentId !== null
       ? authEnvironment.accessChanges({
           environmentId: primaryEnvironmentId,
           input: null,
@@ -294,10 +299,10 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
       : null,
   );
   const desktopNetworkAccess = useEnvironmentQuery(
-    showsAccess && canManageLocalBackend && desktopBridge ? desktopNetworkAccessStateAtom : null,
+    canManageLocalBackend && desktopBridge ? desktopNetworkAccessStateAtom : null,
   );
   const desktopWsl = useEnvironmentQuery(
-    showsAccess && canManageLocalBackend && desktopBridge ? desktopWslStateAtom : null,
+    canManageLocalBackend && desktopBridge ? desktopWslStateAtom : null,
   );
   const desktopWslState = desktopWsl.data;
   const desktopWslError = desktopWslMutationError ?? desktopWsl.error;
@@ -340,20 +345,11 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
     parsedTailscaleServePort >= 1 &&
     parsedTailscaleServePort <= 65_535;
 
-  const pendingTailscaleServeBaseUrl = (() => {
-    if (!pendingTailscaleServeEndpoint) return null;
-    if (!isTailscaleServePortValid) return pendingTailscaleServeEndpoint.httpBaseUrl;
-    if (parsedTailscaleServePort === DEFAULT_TAILSCALE_SERVE_PORT) {
-      return pendingTailscaleServeEndpoint.httpBaseUrl;
-    }
-    try {
-      const url = new URL(pendingTailscaleServeEndpoint.httpBaseUrl);
-      url.port = String(parsedTailscaleServePort);
-      return url.toString().replace(/\/$/u, "");
-    } catch {
-      return pendingTailscaleServeEndpoint.httpBaseUrl;
-    }
-  })();
+  const pendingTailscaleServeBaseUrl = resolveTailscaleServeBaseUrl(
+    pendingTailscaleServeEndpoint,
+    parsedTailscaleServePort,
+    isTailscaleServePortValid,
+  );
 
   const handleDesktopServerExposureChange = async (checked: boolean) => {
     if (
@@ -784,7 +780,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
             control={
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onClick={loadWslState}
                 disabled={isLoadingWslState}
               >
@@ -812,7 +808,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
           control={
             <Button
               size="sm"
-              variant="outline"
+              variant="secondary"
               disabled={isUpdatingWslBackend}
               onClick={() => handleSelectWslMode(BACKEND_VALUE_WSL_OFF)}
             >
@@ -928,16 +924,18 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
           />
         ) : null
       }
+      managed={tailscaleHttpsEndpoint?.status === "available" ? undefined : remoteClientsDenial}
     />
   );
-  const renderAuthorizedClients = () => (
+  const renderAuthorizedClients = (kind: "links" | "clients") => (
     <>
       {desktopAccessManagementError ? (
         <div className={ITEM_ROW_CLASSNAME}>
-          <p className="text-xs text-destructive">{desktopAccessManagementError}</p>
+          <p className="text-meta text-destructive">{desktopAccessManagementError}</p>
         </div>
       ) : null}
       <PairingClientsList
+        kind={kind}
         endpointUrl={desktopServerExposureState?.endpointUrl}
         endpoints={visibleDesktopAdvertisedEndpoints}
         defaultEndpointKey={defaultDesktopAdvertisedEndpointKey}
@@ -953,29 +951,34 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
       />
     </>
   );
+  // The Reachable at row replaces the address that used to sit in the network row's description.
+  const reachableUrl = isLocalBackendNetworkAccessible
+    ? (defaultDesktopNetworkAdvertisedEndpoint?.httpBaseUrl ??
+      desktopServerExposureState?.endpointUrl ??
+      null)
+    : null;
+  const renderReachableRow = () =>
+    reachableUrl ? (
+      <ReachableAddressRow
+        url={reachableUrl}
+        hiddenEndpointCount={Math.max(visibleDesktopNetworkAdvertisedEndpoints.length - 1, 0)}
+        expanded={isAdvertisedEndpointListExpanded}
+        onToggleExpanded={() => setIsAdvertisedEndpointListExpanded((expanded) => !expanded)}
+      />
+    ) : null;
   const renderNetworkAccessRow = () => (
     <SettingsRow
       title={searchableSetting("network-access").title}
       description={
-        isLocalBackendNetworkAccessible ? (
-          <NetworkAccessDescription
-            endpoint={defaultDesktopNetworkAdvertisedEndpoint}
-            hiddenEndpointCount={Math.max(visibleDesktopNetworkAdvertisedEndpoints.length - 1, 0)}
-            expanded={isAdvertisedEndpointListExpanded}
-            onToggleExpanded={() => setIsAdvertisedEndpointListExpanded((expanded) => !expanded)}
-            fallback={
-              desktopServerExposureState?.endpointUrl
-                ? `Reachable at ${desktopServerExposureState.endpointUrl}`
-                : desktopServerExposureState?.advertisedHost
-                  ? `Exposed on all interfaces. Pairing links use ${desktopServerExposureState.advertisedHost}.`
-                  : "Exposed on all interfaces."
-            }
-          />
-        ) : desktopServerExposureState ? (
-          "Limited to this machine."
-        ) : (
-          "Loading…"
-        )
+        isLocalBackendNetworkAccessible
+          ? reachableUrl
+            ? "Let devices on your network or tailnet connect."
+            : desktopServerExposureState?.advertisedHost
+              ? `Exposed on all interfaces. Pairing links use ${desktopServerExposureState.advertisedHost}.`
+              : "Exposed on all interfaces."
+          : desktopServerExposureState
+            ? "Limited to this machine."
+            : "Loading…"
       }
       status={
         desktopServerExposureError ? (
@@ -983,6 +986,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
         ) : null
       }
       control={renderNetworkAccessToggle()}
+      managed={isLocalBackendNetworkAccessible ? undefined : remoteClientsDenial}
     />
   );
   const renderDisabledNetworkAccessRow = () => (
@@ -1029,7 +1033,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
           <SettingsSection
             {...searchableSetting("connections-environment")}
             title={
-              primaryEnvironment?.label ?? (desktopBridge ? "This machine" : "Primary environment")
+              desktopBridge ? "This machine" : (primaryEnvironment?.label ?? "Primary environment")
             }
             icon={
               <EnvironmentMachineIcon
@@ -1048,6 +1052,8 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
                   <MenuTrigger
                     render={
                       <Button
+                        // Hangs 8px past the header row so the ellipsis ink ends on the card edge.
+                        className="-me-2"
                         type="button"
                         variant="ghost-muted"
                         size="icon-xs"
@@ -1067,6 +1073,11 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               ) : null
             }
           >
+            {primaryManagedPolicy ? (
+              <div className="px-3 py-2 sm:px-4">
+                <ManagedByOrganization policy={primaryManagedPolicy} />
+              </div>
+            ) : null}
             {canManageLocalBackend ? (
               <SettingsRow
                 title="Version"
@@ -1074,12 +1085,12 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
                   primaryServerUpdateState.status !== "idle" ? (
                     <ServerUpdateProgress state={primaryServerUpdateState} />
                   ) : (
-                    [
-                      primaryServerConfig?.environment.serverVersion ?? null,
-                      primaryEnvironment?.displayUrl ?? null,
-                    ]
-                      .filter((value): value is string => value !== null)
-                      .join(" · ") || "Loading…"
+                    <Tooltip>
+                      <TooltipTrigger render={<span tabIndex={0} />}>
+                        {primaryServerConfig?.environment.serverVersion ?? "Loading…"}
+                      </TooltipTrigger>
+                      <TooltipPopup>{primaryEnvironment?.displayUrl ?? "Loading…"}</TooltipPopup>
+                    </Tooltip>
                   )
                 }
                 control={
@@ -1112,6 +1123,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
             ) : null}
             {canManageLocalBackend && desktopBridge ? (
               <>
+                {renderReachableRow()}
                 {renderNetworkAccessRow()}
                 {renderEndpointRows()}
                 {renderTailscaleRow()}
@@ -1128,13 +1140,32 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
                 ) : null}
               </>
             ) : null}
-            {primaryEnvironment ? (
+            {!showsAccess && (canReadAccess || canWriteAccess) ? (
+              <SettingsRow
+                title="Authorized clients"
+                description={
+                  desktopAccessManagementError
+                    ? desktopAccessManagementError
+                    : isLoadingDesktopAccessManagement
+                      ? "Loading authorized clients…"
+                      : canReadAccess
+                        ? `${desktopClientSessions.length} authorized ${desktopClientSessions.length === 1 ? "client" : "clients"}`
+                        : "Manage pairing links and client access."
+                }
+                control={
+                  <Button variant="secondary" size="sm" render={<Link to="/settings/access" />}>
+                    Manage
+                  </Button>
+                }
+              />
+            ) : null}
+            {showsAccess && primaryEnvironment ? (
               <details className="group px-3 sm:px-4">
-                <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-md text-sm font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-                  Permissions
+                <summary className="flex min-h-11 cursor-pointer list-none items-center [&::-webkit-details-marker]:hidden">
+                  <span className="text-label">Permissions</span>
                   <ChevronRightIcon
                     aria-hidden
-                    className="size-3 text-muted-foreground group-open:rotate-90"
+                    className="ms-2 size-3 text-muted-foreground group-open:rotate-90"
                   />
                 </summary>
                 <SessionPermissions
@@ -1145,47 +1176,64 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
             ) : null}
           </SettingsSection>
 
-          {canReadAccess || canWriteAccess ? (
-            <FoldedSettingsSection
-              id="authorized-clients"
-              title="Authorized clients"
-              summary={summarizeAuthorizedClients(
-                desktopClientSessions,
-                visibleDesktopPairingLinks,
-              )}
-              control={
-                canWriteAccess ? (
-                  <AuthorizedClientsHeaderAction
-                    delegatableScopes={currentSessionScopes ?? []}
-                    onPairingLinkCreated={handlePairingLinkCreated}
-                    clientSessions={
-                      canReadAccess &&
-                      authAccessChanges.error === null &&
-                      authAccessChanges.data?.type === "snapshot"
-                        ? desktopClientSessions
-                        : null
-                    }
-                    isRevokingOtherClients={isRevokingOtherDesktopClients}
-                    onRevokeOtherClients={handleRevokeOtherDesktopClients}
-                  />
-                ) : undefined
-              }
-            >
-              <ScrollArea
-                scrollFade
-                chainVerticalScroll
-                className="max-h-[22.5rem]"
-                data-testid="authorized-clients-scroll-area"
+          {showsAccess && (canReadAccess || canWriteAccess) ? (
+            <>
+              <SettingsSection
+                id="pairing"
+                title="Pairing"
+                headerAction={
+                  canWriteAccess ? (
+                    <AuthorizedClientsHeaderAction
+                      part="create"
+                      delegatableScopes={currentSessionScopes ?? []}
+                      onPairingLinkCreated={handlePairingLinkCreated}
+                      clientSessions={desktopClientSessions}
+                      isRevokingOtherClients={isRevokingOtherDesktopClients}
+                      onRevokeOtherClients={handleRevokeOtherDesktopClients}
+                    />
+                  ) : undefined
+                }
               >
-                {canReadAccess ? (
-                  renderAuthorizedClients()
-                ) : (
-                  <p className="px-4 py-3 text-xs text-muted-foreground">
-                    This connection can create access links but cannot view authorized clients.
-                  </p>
-                )}
-              </ScrollArea>
-            </FoldedSettingsSection>
+                {renderAuthorizedClients("links")}
+              </SettingsSection>
+              <SettingsSection
+                id="authorized-clients"
+                title="Authorized clients"
+                headerAction={
+                  canWriteAccess ? (
+                    <AuthorizedClientsHeaderAction
+                      part="revoke"
+                      delegatableScopes={currentSessionScopes ?? []}
+                      onPairingLinkCreated={handlePairingLinkCreated}
+                      clientSessions={
+                        canReadAccess &&
+                        authAccessChanges.error === null &&
+                        authAccessChanges.data?.type === "snapshot"
+                          ? desktopClientSessions
+                          : null
+                      }
+                      isRevokingOtherClients={isRevokingOtherDesktopClients}
+                      onRevokeOtherClients={handleRevokeOtherDesktopClients}
+                    />
+                  ) : undefined
+                }
+              >
+                <ScrollArea
+                  scrollFade
+                  chainVerticalScroll
+                  className="max-h-[22.5rem]"
+                  data-testid="authorized-clients-scroll-area"
+                >
+                  {canReadAccess ? (
+                    renderAuthorizedClients("clients")
+                  ) : (
+                    <p className="px-4 py-3 text-meta text-muted-foreground">
+                      This connection can create access links but cannot view authorized clients.
+                    </p>
+                  )}
+                </ScrollArea>
+              </SettingsSection>
+            </>
           ) : null}
           <AlertDialog
             open={pendingDesktopServerExposureMode !== null && canManageLocalBackend}
@@ -1210,7 +1258,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               <AlertDialogFooter>
                 <AlertDialogClose
                   disabled={isUpdatingDesktopServerExposure}
-                  render={<Button variant="outline" disabled={isUpdatingDesktopServerExposure} />}
+                  render={<Button variant="secondary" disabled={isUpdatingDesktopServerExposure} />}
                 >
                   <span className="[text-box:trim-both_cap_alphabetic]">Cancel</span>
                 </AlertDialogClose>
@@ -1274,14 +1322,14 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               <AlertDialogFooter>
                 <AlertDialogClose
                   disabled={isUpdatingWslBackend}
-                  render={<Button variant="outline" disabled={isUpdatingWslBackend} />}
+                  render={<Button variant="secondary" disabled={isUpdatingWslBackend} />}
                 >
                   Cancel
                 </AlertDialogClose>
                 {pendingWslChange?.kind === "enable" ? (
                   <>
                     <Button
-                      variant="outline"
+                      variant="secondary"
                       onClick={() => handleConfirmEnableWsl("wsl-only")}
                       disabled={isUpdatingWslBackend || !canManageLocalBackend}
                     >
@@ -1360,7 +1408,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               <AlertDialogFooter>
                 <AlertDialogClose
                   disabled={isUpdatingTailscaleServe}
-                  render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
+                  render={<Button variant="secondary" disabled={isUpdatingTailscaleServe} />}
                 >
                   Cancel
                 </AlertDialogClose>
@@ -1398,7 +1446,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               </DialogHeader>
               <DialogPanel>
                 <label className="block">
-                  <span className="text-sm font-medium text-foreground">HTTPS port</span>
+                  <span className="text-label text-strong-foreground">HTTPS port</span>
                   <Input
                     className="mt-2"
                     type="number"
@@ -1412,14 +1460,14 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
                   />
                 </label>
                 {!isTailscaleServePortValid ? (
-                  <p className="mt-2 text-xs text-destructive">Enter a port from 1 to 65535.</p>
+                  <p className="mt-2 text-meta text-destructive">Enter a port from 1 to 65535.</p>
                 ) : null}
-                <div className="rounded-md border border-border/70 bg-muted/20 px-3 py-2">
-                  <p className="text-xs font-medium text-muted-foreground">HTTPS endpoint</p>
+                <div className="rounded-control surface-well px-3 py-2">
+                  <p className="text-meta text-muted-foreground">HTTPS endpoint</p>
                   <Tooltip>
                     <TooltipTrigger
                       render={
-                        <p className="mt-1 truncate text-sm text-foreground">
+                        <p className="mt-1 truncate text-body text-foreground">
                           {pendingTailscaleServeBaseUrl ?? "Pending MagicDNS endpoint"}
                         </p>
                       }
@@ -1433,7 +1481,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
               <DialogFooter>
                 <DialogClose
                   disabled={isUpdatingTailscaleServe}
-                  render={<Button variant="outline" disabled={isUpdatingTailscaleServe} />}
+                  render={<Button variant="secondary" disabled={isUpdatingTailscaleServe} />}
                 >
                   Cancel
                 </DialogClose>
@@ -1468,15 +1516,19 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
     </>
   );
 
-  if (showsAccess) return <SettingsPageContainer>{primarySettings}</SettingsPageContainer>;
+  if (showsAccess)
+    return (
+      <SettingsPageContainer className="max-w-[688px]">{primarySettings}</SettingsPageContainer>
+    );
 
   return (
-    <SettingsPageContainer>
+    <SettingsPageContainer className="max-w-[688px]">
       {desktopBridge ? (
         <SettingsSection id="this-app" title="This app">
           <LocalEnvironmentSetting />
         </SettingsSection>
       ) : null}
+      {primarySettings}
       <SettingsSection
         {...searchableSetting("remote-environments")}
         title="Environments"
@@ -1518,6 +1570,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
       {hasCloudPublicConfig() ? (
         <RemoveT3ConnectEnvironmentDialog
           environmentLabel={pendingT3ConnectRemoval?.label ?? null}
+          environmentId={pendingT3ConnectRemoval?.environmentId ?? null}
           onCancel={() => setPendingT3ConnectRemoval(null)}
           onConfirm={() => {
             if (!pendingT3ConnectRemoval) return;

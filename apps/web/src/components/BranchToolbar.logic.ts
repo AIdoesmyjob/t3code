@@ -7,6 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { sanitizeNewRefName } from "@t3tools/shared/git";
+import { workspaceRelativeFilePath } from "@t3tools/shared/path";
 import { toSortableTimestamp } from "@t3tools/client-runtime/state/thread-sort";
 export { deriveLocalBranchNameFromRemoteRef, sanitizeNewRefName } from "@t3tools/shared/git";
 
@@ -78,14 +79,21 @@ export function shouldShowComposerContextStrip(input: {
 // Hysteresis prevents labels and icons from flapping at the width boundary.
 const CONTEXT_STRIP_COMPACT_EXPAND_HYSTERESIS_PX = 16;
 
-export function resolveContextStripLabelsCompact(input: {
-  compact: boolean;
+export type ContextStripCompaction = "none" | "labels" | "branch";
+
+export function resolveContextStripCompaction(input: {
+  current: ContextStripCompaction;
   neededWidth: number;
   availableWidth: number;
-}): boolean {
-  return input.compact
-    ? input.neededWidth > input.availableWidth - CONTEXT_STRIP_COMPACT_EXPAND_HYSTERESIS_PX
-    : input.neededWidth > input.availableWidth;
+  labelsSavedWidth: number;
+}): ContextStripCompaction {
+  const fits = (width: number, expanding: boolean) =>
+    width <= input.availableWidth - (expanding ? CONTEXT_STRIP_COMPACT_EXPAND_HYSTERESIS_PX : 0);
+  if (fits(input.neededWidth, input.current !== "none")) return "none";
+  if (fits(input.neededWidth - input.labelsSavedWidth, input.current === "branch")) {
+    return "labels";
+  }
+  return "branch";
 }
 
 export function resolveEnvModeLabel(mode: EnvMode): string {
@@ -113,6 +121,8 @@ export function resolveLockedWorkspaceLabel(
 export interface PreviousWorktreeSeed {
   branch: string | null;
   worktreePath: string;
+  /** When a thread last touched the worktree, for the picker's "2h ago". */
+  updatedAt: string;
 }
 
 export function resolvePreviousWorktreeSeed(input: {
@@ -124,7 +134,12 @@ export function resolvePreviousWorktreeSeed(input: {
   }>;
   currentWorktreePath: string | null;
 }): PreviousWorktreeSeed | null {
-  let latest: { branch: string | null; worktreePath: string; updatedAt: number } | null = null;
+  let latest: {
+    branch: string | null;
+    worktreePath: string;
+    updatedAt: number;
+    updatedAtIso: string;
+  } | null = null;
   for (const thread of input.threads) {
     if (
       !thread.worktreePath ||
@@ -142,10 +157,13 @@ export function resolvePreviousWorktreeSeed(input: {
         branch: thread.branch,
         worktreePath: thread.worktreePath,
         updatedAt,
+        updatedAtIso: thread.updatedAt,
       };
     }
   }
-  return latest === null ? null : { branch: latest.branch, worktreePath: latest.worktreePath };
+  return latest === null
+    ? null
+    : { branch: latest.branch, worktreePath: latest.worktreePath, updatedAt: latest.updatedAtIso };
 }
 
 export function resolvePreviousWorktreeLabel(seed: PreviousWorktreeSeed): string {
@@ -247,6 +265,7 @@ export function resolveLocalCheckoutBranchMismatch(input: {
 
 export function resolveBranchSelectionTarget(input: {
   activeProjectCwd: string;
+  activeProjectCheckoutRoot?: string | undefined;
   activeWorktreePath: string | null;
   refName: Pick<VcsRef, "isDefault" | "worktreePath">;
 }): {
@@ -257,9 +276,14 @@ export function resolveBranchSelectionTarget(input: {
   const { activeProjectCwd, activeWorktreePath, refName } = input;
 
   if (refName.worktreePath) {
+    // Until the project's checkout root loads, a checkout containing the project counts as its own.
+    const isProjectCheckout =
+      input.activeProjectCheckoutRoot === undefined
+        ? workspaceRelativeFilePath(activeProjectCwd, refName.worktreePath) !== null
+        : workspaceRelativeFilePath(input.activeProjectCheckoutRoot, refName.worktreePath) === ".";
     return {
       checkoutCwd: refName.worktreePath,
-      nextWorktreePath: refName.worktreePath === activeProjectCwd ? null : refName.worktreePath,
+      nextWorktreePath: isProjectCheckout ? null : refName.worktreePath,
       reuseExistingWorktree: true,
     };
   }
@@ -305,4 +329,30 @@ export function shouldIncludeBranchPickerItem(input: {
     sanitizedQuery !== normalizedQuery &&
     lowerItemValue.includes(sanitizedQuery)
   );
+}
+
+/** Ref names for the picker: local branches first, then remote refs, each in server order. */
+export function orderRefNamesByGroup(refs: ReadonlyArray<VcsRef>): string[] {
+  return [
+    ...refs.filter((ref) => !ref.isRemote).map((ref) => ref.name),
+    ...refs.filter((ref) => ref.isRemote).map((ref) => ref.name),
+  ];
+}
+
+/**
+ * The section label each group's first visible row carries, keyed by item value. Items whose
+ * group is null (create, checkout-by-reference) get no label and do not start a group.
+ */
+export function groupLabelsForPickerItems(
+  items: ReadonlyArray<string>,
+  groupOf: (item: string) => string | null,
+): ReadonlyMap<string, string> {
+  const labels = new Map<string, string>();
+  let previousGroup: string | null = null;
+  for (const item of items) {
+    const group = groupOf(item);
+    if (group !== null && group !== previousGroup) labels.set(item, group);
+    previousGroup = group;
+  }
+  return labels;
 }

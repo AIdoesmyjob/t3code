@@ -1,4 +1,4 @@
-import type { DeviceSummary, EnvironmentId } from "@t3tools/contracts";
+import type { DeviceHostSummary, DeviceSummary, EnvironmentId } from "@t3tools/contracts";
 import { useRef, useState } from "react";
 import {
   captureDeviceScreenshot,
@@ -16,11 +16,10 @@ export function DeviceWorkspace(props: {
   environmentId: EnvironmentId;
   device: DeviceSummary;
   hostLabel: string;
-  /** Leased from a Simlock pool: serve-sim input, no host commands. */
-  simlock?: boolean;
+  hostKind: DeviceHostSummary["kind"] | undefined;
   hostDiagnostics: string | undefined;
   visible: boolean;
-  onFloat: () => void;
+  onFloat?: (() => void) | undefined;
   onClose: () => void;
   onPowerOff: () => void;
 }) {
@@ -31,7 +30,13 @@ export function DeviceWorkspace(props: {
   // A capture always finishes, even if the panel hides or closes meanwhile; the user asked for it.
   const capturing = useRef(false);
   const access = useDeviceHubAccess(props.environmentId, props.device.hostId);
-  const controls = useDeviceControls({ ...props, access });
+  // Settings and tools run commands on the device's own machine, which EAS and Simlock do not expose.
+  const runsHostCommands = props.hostKind === "local" || props.hostKind === "ssh";
+  const controls = useDeviceControls({
+    ...props,
+    access,
+    visible: props.visible && runsHostCommands,
+  });
   const saveScreenshot = () => {
     if (!access || capturing.current || !props.visible) return;
     capturing.current = true;
@@ -69,7 +74,7 @@ export function DeviceWorkspace(props: {
     <>
       <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
         {screenshotError || (controls.error && !toolsOpen) ? (
-          <p role="alert" className="px-3 py-2 text-xs text-destructive">
+          <p role="alert" className="px-3 py-2 text-xs text-error-foreground">
             {screenshotError ?? controls.error}
           </p>
         ) : null}
@@ -78,16 +83,22 @@ export function DeviceWorkspace(props: {
             environmentId={props.environmentId}
             platform={props.device.platform}
             deviceName={props.device.name}
-            deviceDescription={`${props.hostLabel} · ${props.device.version}`}
+            deviceDescription={
+              <span className="flex flex-col items-center gap-0.5">
+                <span>{props.hostLabel}</span>
+                <span>{props.device.version}</span>
+              </span>
+            }
             deviceId={props.device.id}
             hostId={props.device.hostId}
             visible={props.visible}
-            serveSimOnly={props.simlock === true}
+            serveSimOnly={props.hostKind === "simlock"}
             axOverlay={axOverlay}
             allowPhoneView
             renderControls={(view) => (
               <DeviceControlsRail
                 platform={props.device.platform}
+                hostKind={props.hostKind}
                 handle={view.handle}
                 view={view}
                 controls={controls}
@@ -98,7 +109,6 @@ export function DeviceWorkspace(props: {
                 onFloat={props.onFloat}
                 onClose={props.onClose}
                 onPowerOff={props.onPowerOff}
-                inputOnly={props.simlock === true}
               />
             )}
           />

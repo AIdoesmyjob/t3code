@@ -27,10 +27,16 @@ export function completeSidebarRouteReveal(reveal: SidebarRouteReveal): void {
   reveal.pendingKey = null;
 }
 
+const scrollRowIntoView = (row: HTMLElement) => row.scrollIntoView({ block: "nearest" });
+
 // Each route change and each mount scroll to the open thread once. Render records
 // the route, so a thread left before its row mounted still counts as a change.
 // The row can mount after the route, once its shells arrive, so its ref scrolls.
-export function useActiveRowReveal(reveal: SidebarRouteReveal, routeKey: string | null) {
+export function useActiveRowReveal(
+  reveal: SidebarRouteReveal,
+  routeKey: string | null,
+  scrollRow: (row: HTMLElement) => void = scrollRowIntoView,
+) {
   const mountRevealOwed = useRef(true);
   pendingSidebarRouteReveal(reveal, routeKey);
   return (row: HTMLElement | null, rowKey: string) => {
@@ -38,7 +44,10 @@ export function useActiveRowReveal(reveal: SidebarRouteReveal, routeKey: string 
     if (reveal.pendingKey !== rowKey && !mountRevealOwed.current) return;
     completeSidebarRouteReveal(reveal);
     mountRevealOwed.current = false;
-    row.scrollIntoView({ block: "nearest" });
+    // A row under the pointer was just clicked, so it is in view; scrolling it would force a
+    // layout mid-commit. Keyboard activation can come from a focused row scrolled out of view.
+    if (row.matches(":hover")) return;
+    scrollRow(row);
   };
 }
 

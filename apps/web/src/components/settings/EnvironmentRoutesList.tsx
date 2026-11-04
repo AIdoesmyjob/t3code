@@ -23,6 +23,7 @@ import {
   connectionRouteLabel,
   connectionRoutes,
   isLearned,
+  pendingRouteOrder,
 } from "@t3tools/client-runtime/connection";
 import { GripVerticalIcon, PlusIcon, XIcon } from "lucide-react";
 import { useState } from "react";
@@ -46,12 +47,10 @@ export function EnvironmentRoutesList({
   const saved = connectionRoutes(environment.entry);
   const savedIds = saved.map((route) => connectionRouteId(route.target));
   const [pending, setPending] = useState<ReadonlyArray<string> | null>(null);
-  const order: Array<string> =
-    pending !== null &&
-    pending.length === savedIds.length &&
-    pending.some((id, index) => id !== savedIds[index])
-      ? [...pending]
-      : savedIds;
+  const shownPending = pendingRouteOrder(pending, savedIds);
+  // Dropped during render so a stale order never outlives the save it was for.
+  if (pending !== null && shownPending === null) setPending(null);
+  const order: Array<string> = shownPending === null ? savedIds : [...shownPending];
   const byId = new Map(saved.map((route) => [connectionRouteId(route.target), route]));
   const routes = order.flatMap((id) => byId.get(id) ?? []);
 
@@ -162,31 +161,38 @@ function SortableRouteRow({
       )}
     >
       <div className="min-w-0 flex-1">
-        <p className="flex items-center gap-1.5 text-xs font-medium text-foreground">
+        <p className="flex items-center gap-1.5 text-meta text-foreground">
           {label}
           {inUse ? (
-            <span className="rounded-sm bg-success/12 px-1 text-2xs font-normal text-success-foreground">
+            <span className="rounded-sm bg-success/12 px-1 text-caption text-success-foreground">
               In use
             </span>
           ) : null}
         </p>
         {address !== null ? (
-          <p className="truncate text-2xs text-muted-foreground">
-            {address}
-            {isLearned(route) ? " · found automatically" : ""}
-          </p>
+          <Tooltip>
+            <TooltipTrigger
+              render={<p tabIndex={0} className="truncate text-meta text-muted-foreground" />}
+            >
+              {address}
+            </TooltipTrigger>
+            <TooltipPopup side="top">
+              {isLearned(route) ? "Found automatically" : address}
+            </TooltipPopup>
+          </Tooltip>
         ) : null}
       </div>
-      <button
-        type="button"
+      <Button
+        size="icon-xs"
+        variant="ghost-muted"
         ref={setActivatorNodeRef}
         {...attributes}
         {...listeners}
         aria-label={`Reorder ${label}, position ${position}`}
-        className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded text-muted-foreground/70 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring active:cursor-grabbing"
+        className="cursor-grab touch-none active:cursor-grabbing"
       >
         <GripVerticalIcon className="size-3.5" />
-      </button>
+      </Button>
       {removable ? (
         <Tooltip>
           <TooltipTrigger

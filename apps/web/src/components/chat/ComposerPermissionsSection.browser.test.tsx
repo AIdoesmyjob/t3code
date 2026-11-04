@@ -12,24 +12,28 @@ import {
   useComposerMenuProps,
 } from "./composerEventScope";
 import { ComposerFooterModeControls, ComposerPermissionsSection } from "./ComposerFooterControls";
-import { runtimeModeConfig, runtimeModeOptions } from "./runtimeModeConfig";
+import {
+  resolveRuntimeModeOptions,
+  runtimeModeConfig,
+  runtimeModeOptions,
+} from "./runtimeModeConfig";
 
 const options = runtimeModeOptions.map((mode) => ({ mode, ...runtimeModeConfig[mode] }));
 
-// Mirrors the effort menu: effort radio items first, then the Permissions section.
-function EffortMenu() {
-  const [effort, setEffort] = useState("high");
+// Mirrors the overflow menu: mode radio items first, then the Permissions section.
+function OverflowMenu() {
+  const [interaction, setInteraction] = useState("plan");
   const [mode, setMode] = useState<RuntimeMode>("full-access");
   const composerMenuProps = useComposerMenuProps();
   const triggerRef = useRef<HTMLButtonElement>(null);
   return (
     <>
       <Menu onOpenChangeComplete={(open) => focusRequestedPermission(open, triggerRef.current)}>
-        <MenuTrigger ref={triggerRef}>Effort</MenuTrigger>
+        <MenuTrigger ref={triggerRef}>More</MenuTrigger>
         <MenuPopup {...composerMenuProps}>
-          <MenuRadioGroup value={effort} onValueChange={setEffort}>
-            <MenuRadioItem value="low">Low</MenuRadioItem>
-            <MenuRadioItem value="high">High</MenuRadioItem>
+          <MenuRadioGroup value={interaction} onValueChange={setInteraction}>
+            <MenuRadioItem value="default">Chat</MenuRadioItem>
+            <MenuRadioItem value="plan">Plan</MenuRadioItem>
           </MenuRadioGroup>
           <ComposerPermissionsSection
             runtimeMode={mode}
@@ -43,13 +47,13 @@ function EffortMenu() {
   );
 }
 
-it("reaches Permissions from the effort items with arrow keys, previews, and picks with Enter", async () => {
-  await using screen = await render(<EffortMenu />, { router: false }); // no routes involved
-  const trigger = screen.getByRole("button", { name: "Effort" });
+it("reaches Permissions from the mode items with arrow keys, previews, and picks with Enter", async () => {
+  await using screen = await render(<OverflowMenu />, { router: false }); // no routes involved
+  const trigger = screen.getByRole("button", { name: "More" });
   await userEvent.tab();
   await expect.element(trigger).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}");
-  await expect.element(page.getByRole("menuitemradio", { name: "Low" })).toHaveFocus();
+  await expect.element(page.getByRole("menuitemradio", { name: "Chat" })).toHaveFocus();
 
   await userEvent.keyboard("{ArrowDown}{ArrowDown}");
   const supervised = page.getByRole("menuitemradio", { name: "Supervised" });
@@ -66,7 +70,7 @@ it("reaches Permissions from the effort items with arrow keys, previews, and pic
   await expect.element(page.getByRole("menuitemradio", { name: "Supervised" })).toHaveFocus();
 
   await userEvent.keyboard("{ArrowUp}");
-  await expect.element(page.getByRole("menuitemradio", { name: "High" })).toHaveFocus();
+  await expect.element(page.getByRole("menuitemradio", { name: "Plan" })).toHaveFocus();
 
   await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
   await expect.element(screen.getByRole("status")).toHaveTextContent("auto-accept-edits");
@@ -77,14 +81,14 @@ it("reaches Permissions from the effort items with arrow keys, previews, and pic
 });
 
 it("marks the current mode as checked and closes on Escape", async () => {
-  await using screen = await render(<EffortMenu />, { router: false }); // no routes involved
+  await using screen = await render(<OverflowMenu />, { router: false }); // no routes involved
   await userEvent.tab();
   await userEvent.keyboard("{ArrowDown}");
   const fullAccess = page.getByRole("menuitemradio", { name: "Full access" });
   await expect.element(fullAccess).toHaveAttribute("aria-checked", "true");
   await userEvent.keyboard("{Escape}");
   await expect.element(fullAccess).not.toBeInTheDocument();
-  await expect.element(screen.getByRole("button", { name: "Effort" })).toHaveFocus();
+  await expect.element(screen.getByRole("button", { name: "More" })).toHaveFocus();
 });
 
 // The real composer menu focus rule (useComposerMenuProps), with a stub composer handle.
@@ -95,19 +99,19 @@ function withComposer(children: ReactNode) {
 }
 
 it("returns focus to the editor after a pick", async () => {
-  const { handle, ui } = withComposer(<EffortMenu />);
+  const { handle, ui } = withComposer(<OverflowMenu />);
   await using screen = await render(ui, { router: false }); // no routes involved
   await userEvent.tab();
   await userEvent.keyboard("{ArrowDown}");
-  await expect.element(page.getByRole("menuitemradio", { name: "Low" })).toHaveFocus();
+  await expect.element(page.getByRole("menuitemradio", { name: "Chat" })).toHaveFocus();
   await userEvent.keyboard("{ArrowDown}{ArrowDown}{Enter}");
   await expect.element(screen.getByRole("status")).toHaveTextContent("approval-required");
   await vi.waitFor(() => expect(handle.focusAtEnd).toHaveBeenCalled());
 });
 
 it("opens on the checked permission when composer.mode marked the trigger", async () => {
-  await using screen = await render(<EffortMenu />, { router: false }); // no routes involved
-  const trigger = screen.getByRole("button", { name: "Effort" });
+  await using screen = await render(<OverflowMenu />, { router: false }); // no routes involved
+  const trigger = screen.getByRole("button", { name: "More" });
   markOpenToPermissions(trigger.element() as HTMLElement);
   await userEvent.click(trigger);
   await expect.element(page.getByRole("menuitemradio", { name: "Full access" })).toHaveFocus();
@@ -124,7 +128,7 @@ function PermissionsChip() {
   return (
     <div data-slot="composer-shell">
       <button type="button" data-composer-shortcut="composer.effort composer.mode">
-        Effort
+        Model
       </button>
       {mode === "full-access" ? null : (
         <ComposerFooterModeControls
@@ -147,5 +151,45 @@ it("returns focus to the editor when picking the default hides the chip", async 
   await userEvent.click(screen.getByRole("button", { name: "Permissions: Supervised" }));
   await userEvent.click(page.getByRole("menuitemradio", { name: "Full access" }));
   await vi.waitFor(() => expect(handle.focusAtEnd).toHaveBeenCalled());
-  await expect.element(screen.getByRole("button", { name: "Effort" })).not.toHaveFocus();
+  await expect.element(screen.getByRole("button", { name: "Model" })).not.toHaveFocus();
+});
+
+function ContextPermissions() {
+  const [mode, setMode] = useState<RuntimeMode>("full-access");
+  return (
+    <ComposerFooterModeControls
+      showInteractionModeToggle={false}
+      interactionMode="default"
+      runtimeMode={mode}
+      runtimeModeOptions={resolveRuntimeModeOptions(
+        ["approval-required", "full-access"],
+        undefined,
+      )}
+      onToggleInteractionMode={() => {}}
+      onRuntimeModeChange={setMode}
+    />
+  );
+}
+
+it("opens permissions directly from the context strip and applies a supported mode", async () => {
+  await using screen = await render(<ContextPermissions />, { router: false }); // no routes involved
+  await userEvent.click(screen.getByRole("button", { name: "Permissions: Full access" }));
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Full access" }))
+    .toHaveAttribute("aria-checked", "true");
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Auto", exact: true }))
+    .not.toBeInTheDocument();
+  await userEvent.click(page.getByRole("menuitemradio", { name: "Supervised" }));
+  const trigger = screen.getByRole("button", { name: "Permissions: Supervised" });
+  await expect.element(trigger).toBeVisible();
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Supervised" }))
+    .not.toBeInTheDocument();
+  await userEvent.click(trigger);
+  await expect
+    .element(page.getByRole("menuitemradio", { name: "Supervised" }))
+    .toHaveAttribute("aria-checked", "true");
+  await userEvent.keyboard("{Escape}");
+  await expect.element(trigger).toHaveFocus();
 });

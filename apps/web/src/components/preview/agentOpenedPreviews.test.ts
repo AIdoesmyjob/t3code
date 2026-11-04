@@ -230,11 +230,14 @@ describe("revealServerTabs", () => {
     expect(useRightPanelStore.getState().byThreadKey[threadKey]?.activeSurfaceId).not.toBe(
       browserSurfaceId,
     );
+    const userActionRevision = useRightPanelStore.getState().getUserActionRevision(ref);
     revealServerTabs(ref, [tab("tab_a", true)], { autoShowFloatingPreview: true });
     expect(useRightPanelStore.getState().byThreadKey[threadKey]?.activeSurfaceId).toBe(
       browserSurfaceId,
     );
     expect(floatingTabId()).toBeNull();
+    // A user action moves keyboard focus into the panel; an agent reveal must not.
+    expect(useRightPanelStore.getState().getUserActionRevision(ref)).toBe(userActionRevision);
   });
 });
 
@@ -265,6 +268,13 @@ describe("followPreviewSessions", () => {
     useRightPanelStore.getState().openBrowser(ref, "tab_gone");
     followPreviewSessions(ref, previewState([snapshot("tab_a"), snapshot("tab_hidden", false)]));
     expect(browserTabs()).toEqual(["browser:tab_a"]);
+  });
+
+  it("keeps browser tabs from an earlier server run available to reopen", () => {
+    setup();
+    useRightPanelStore.getState().openBrowser(ref, "tab_1_server-old");
+    followPreviewSessions(ref, { ...previewState([]), serverEpoch: "server-new" });
+    expect(browserTabs()).toEqual(["browser:tab_1_server-old"]);
   });
 
   it("waits for the first server list before treating missing sessions as closed", () => {
@@ -317,6 +327,25 @@ describe("startAgentOpenedPreviews", () => {
       .getState()
       .byThreadKey[threadKeyToRead]?.surfaces.filter((surface) => surface.kind === "preview")
       .map((surface) => surface.id);
+
+  it("defers tab reconciliation during a reopen and catches up when it finishes", () => {
+    using _following = following();
+    reconcilePreviewServerSessions(ref, {
+      sessions: [serverTab({ tabId: "tab_old" })],
+      serverEpoch,
+      revision: 1,
+    });
+    useRightPanelStore.getState().beginBrowserReopen(ref);
+    reconcilePreviewServerSessions(ref, {
+      sessions: [serverTab({ tabId: "tab_new" })],
+      serverEpoch,
+      revision: 2,
+    });
+    const tabsWhileReopening = browserTabs();
+    useRightPanelStore.getState().endBrowserReopen(ref);
+    expect(tabsWhileReopening).toEqual(["browser:tab_old"]);
+    expect(browserTabs()).toEqual(["browser:tab_new"]);
+  });
 
   it("treats the first list as a baseline and floats tabs opened later", () => {
     using _following = following();

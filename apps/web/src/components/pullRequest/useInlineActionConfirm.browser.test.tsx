@@ -76,3 +76,42 @@ it("stops swallowing Escape once the armed button unmounts", async () => {
   await screen.rerender(<ToolbarWithMergeButton shown />);
   await expect.element(screen.getByRole("button")).toHaveTextContent("Merge");
 });
+
+it.each(["merge", "enable-auto-merge"] as const)(
+  "keeps a blocked %s action reachable without arming or performing it",
+  async (primaryAction) => {
+    const perform = vi.fn(async () => true);
+    const { PullRequestPrimaryAction } = await import("./PullRequestDetailActions");
+    function Control({ mergeBlockedReason }: { mergeBlockedReason: string | null }) {
+      const inlineConfirm = useInlineActionConfirm("owner/repo/7");
+      return (
+        <PullRequestPrimaryAction
+          handoff={null}
+          unavailable={false}
+          onResolve={() => undefined}
+          inlineConfirm={inlineConfirm}
+          primaryAction={primaryAction}
+          mergeBlockedReason={mergeBlockedReason}
+          armedAutoMergeLabel="Auto-merge enabled"
+          pendingAutoMergeLabel="Auto-merge (squash)"
+          selectedMergeMethod="squash"
+          selectedMergeMethodLabel="Squash and merge"
+          pendingAction={null}
+          perform={perform}
+        />
+      );
+    }
+    await using screen = await render(<Control mergeBlockedReason="Checking stack membership…" />);
+    const button = screen.getByRole("button");
+    await userEvent.tab();
+    await expect.element(button).toHaveFocus();
+    await expect.element(button).toHaveAccessibleDescription("Checking stack membership…");
+    await userEvent.keyboard("{Enter}{Enter} ");
+    expect(perform).not.toHaveBeenCalled();
+    await screen.rerender(<Control mergeBlockedReason={null} />);
+    await userEvent.click(button);
+    expect(perform).not.toHaveBeenCalled();
+    await userEvent.click(button);
+    expect(perform).toHaveBeenCalledExactlyOnceWith(primaryAction, "squash");
+  },
+);

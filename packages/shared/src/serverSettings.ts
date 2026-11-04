@@ -1,5 +1,6 @@
 import type { ModelPreferences } from "@t3tools/contracts/settings";
 import {
+  DEFAULT_SPEECH_POST_PROCESSING_MODELS,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_TEXT_GENERATION_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
@@ -14,7 +15,7 @@ import {
   type ModelSelection,
   type ProjectId,
   type ProjectScopedServerSettingKey,
-  type ProjectSettingsOverrides,
+  ProjectSettingsOverrides,
   ProviderDriverKind,
   ProviderInstanceId,
   type ServerProvider,
@@ -23,6 +24,7 @@ import {
   withIdleCompaction,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import { deepMerge } from "./Struct.ts";
 import { fromLenientJson } from "./schemaJson.ts";
@@ -127,6 +129,71 @@ export function resolveSourceControlWriterModelSelection(
     : settings.textGenerationModelSelection;
 }
 
+/** Resolve voice cleanup without changing the user's persisted selection. */
+export function resolveSpeechPostProcessingModelSelection(
+  settings: ServerSettings,
+  providers?: ReadonlyArray<ServerProvider>,
+  isDriverAllowed: (driver: ProviderDriverKind) => boolean = () => true,
+): ModelSelection | null {
+  const canUse = (selection: ModelSelection) => {
+    if (!isModelSelectionProviderEnabled(settings, selection)) return false;
+    const provider = providers?.find((entry) => entry.instanceId === selection.instanceId);
+    const driver =
+      settings.providerInstances[selection.instanceId]?.driver ??
+      provider?.driver ??
+      ProviderDriverKind.make(selection.instanceId);
+    if (!isDriverAllowed(driver)) return false;
+    if (providers === undefined) return true;
+    return (
+      provider?.enabled === true &&
+      provider.installed &&
+      isProviderAvailable(provider) &&
+      provider.supportsTextGeneration !== false
+    );
+  };
+  let selection: ModelSelection | null = settings.speechPostProcessingModelSelection;
+  if (!canUse(selection)) {
+    selection = null;
+    for (const [driver, defaults] of Object.entries(DEFAULT_SPEECH_POST_PROCESSING_MODELS)) {
+      if (!defaults) continue;
+      const instanceIds = [
+        ProviderInstanceId.make(driver),
+        ...Object.entries(settings.providerInstances)
+          .filter(([id, instance]) => instance.driver === driver && id !== driver)
+          .map(([id]) => ProviderInstanceId.make(id)),
+      ];
+      const instanceId = instanceIds.find((id) =>
+        canUse({ instanceId: id, model: defaults.model }),
+      );
+      if (instanceId) {
+        selection = createModelSelection(instanceId, defaults.model, defaults.options);
+        break;
+      }
+    }
+  }
+  if (selection === null) return null;
+  if (providers === undefined || !selection.options?.length) return selection;
+  const provider = providers.find((entry) => entry.instanceId === selection.instanceId);
+  const model =
+    provider?.models.find(
+      (model) => model.slug === selection.model || model.aliases?.includes(selection.model),
+    ) ??
+    (provider?.driver === "grok" && selection.model === "grok-build"
+      ? provider.models.find((entry) => entry.isDefault)
+      : undefined);
+  const descriptors = model?.capabilities?.optionDescriptors ?? [];
+  const options = selection.options.filter((option) =>
+    descriptors.some(
+      (descriptor) =>
+        descriptor.id === option.id &&
+        (descriptor.type === "boolean"
+          ? typeof option.value === "boolean"
+          : descriptor.options.some((choice) => choice.id === option.value)),
+    ),
+  );
+  return createModelSelection(selection.instanceId, selection.model, options);
+}
+
 export function resolveReviewGuideModelSelection(
   settings: ServerSettings,
   providers: ReadonlyArray<ServerProvider> | undefined,
@@ -226,6 +293,25 @@ function mergeSettingsEntries<Value>(
   return Object.fromEntries(next);
 }
 
+// Secret persistence keys tokens by trimmed, lowercased host, so merge on the same key.
+const byHost = (tokens: unknown) =>
+  Object.fromEntries(
+    Object.entries(Predicate.isObject(tokens) ? tokens : {}).map(([host, token]) => [
+      host.trim().toLowerCase(),
+      token,
+    ]),
+  );
+
+const knownProjectOverrideKeys = new Set(Object.keys(ProjectSettingsOverrides.fields));
+
+function pickOverrideKeys(entry: ProjectSettingsOverrides | undefined, known: boolean) {
+  return Object.fromEntries(
+    Object.entries<unknown>(entry ?? {}).filter(
+      ([key]) => knownProjectOverrideKeys.has(key) === known,
+    ),
+  );
+}
+
 // Older clients omit providerInstances during whole-entry replacement; preserve it to avoid wiping overrides.
 function mergeProjectSettingsOverridesPatch(
   current: Readonly<Record<string, ProjectSettingsOverrides>>,
@@ -239,7 +325,9 @@ function mergeProjectSettingsOverridesPatch(
     }
     const storedProviderInstances = current[projectId]?.providerInstances;
     next.set(projectId, {
-      ...entry,
+      // Preserve downgraded storage, but reject new unknown writes so clients can detect unsupported settings.
+      ...pickOverrideKeys(current[projectId], false),
+      ...pickOverrideKeys(entry, true),
       ...(Object.hasOwn(entry, "providerInstances") || storedProviderInstances === undefined
         ? {}
         : { providerInstances: storedProviderInstances }),
@@ -344,6 +432,7 @@ export function applyServerSettingsPatch(
 ): ServerSettings {
   const patch = translateLegacyProjectOverridePatch(current, rawPatch);
   const selectionPatch = patch.textGenerationModelSelection;
+  const speechSelectionPatch = patch.speechPostProcessingModelSelection;
   const {
     migrateModelPreferences,
     setModelFavorites,
@@ -357,6 +446,7 @@ export function applyServerSettingsPatch(
     worktreeCleanup: worktreeCleanupPatch,
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
+    secretProviders: secretProvidersPatch,
     sourceControlHosts: sourceControlHostsPatch,
     usagePriceOverrides: usagePriceOverridesPatch,
     usageModelAliases: usageModelAliasesPatch,
@@ -517,10 +607,26 @@ export function applyServerSettingsPatch(
           sourceControlHosts: {
             ...current.sourceControlHosts,
             ...Object.fromEntries(
-              Object.entries(sourceControlHostsPatch).map(([kind, fields]) => [
-                kind,
-                { ...current.sourceControlHosts[kind], ...fields },
-              ]),
+              Object.entries(sourceControlHostsPatch).map(([kind, fields]) => {
+                const saved = current.sourceControlHosts[kind];
+                return [
+                  kind,
+                  {
+                    ...saved,
+                    ...fields,
+                    // Older clients send the whole token map; a host missing from it keeps its saved
+                    // token. An empty map still clears them all.
+                    ...(Predicate.isObject(fields.tokens) && Object.keys(fields.tokens).length > 0
+                      ? {
+                          tokens: {
+                            ...byHost(saved?.tokens),
+                            ...byHost(fields.tokens),
+                          },
+                        }
+                      : {}),
+                  },
+                ];
+              }),
             ),
           },
         }
@@ -553,6 +659,9 @@ export function applyServerSettingsPatch(
             usageLimitSourcesPatch,
           ),
         }
+      : {}),
+    ...(secretProvidersPatch !== undefined
+      ? { secretProviders: mergeSettingsEntries(current.secretProviders, secretProvidersPatch) }
       : {}),
     ...(usagePriceOverridesPatch !== undefined
       ? {
@@ -588,6 +697,26 @@ export function applyServerSettingsPatch(
   const nextWithReplacements = {
     ...withIdleCompaction(nextWithReplacementsBase, patchedIdleCompaction(current, patch)),
     ...deriveLegacyProjectOverrides(nextWithReplacementsBase),
+    ...(speechSelectionPatch
+      ? {
+          speechPostProcessingModelSelection: createModelSelection(
+            speechSelectionPatch.instanceId ??
+              current.speechPostProcessingModelSelection.instanceId,
+            speechSelectionPatch.model ?? current.speechPostProcessingModelSelection.model,
+            shouldReplaceTextGenerationModelSelection(speechSelectionPatch)
+              ? speechSelectionPatch.options
+              : mergeModelSelectionOptionsById({
+                  current: current.speechPostProcessingModelSelection.options,
+                  patch: speechSelectionPatch.options,
+                }),
+          ),
+        }
+      : {}),
+    speechPostProcessingPrompt:
+      nextWithReplacementsBase.speechPostProcessingPrompt.mode === "custom" &&
+      !nextWithReplacementsBase.speechPostProcessingPrompt.customInstructions.trim()
+        ? { mode: "default" as const, customInstructions: "" }
+        : nextWithReplacementsBase.speechPostProcessingPrompt,
     backgroundActivity: normalizedBackgroundActivity,
     automaticGitFetchInterval: resolvedBackgroundActivity.automaticGitFetchInterval,
     providerHealthRefreshInterval: resolvedBackgroundActivity.providerHealthRefreshInterval,

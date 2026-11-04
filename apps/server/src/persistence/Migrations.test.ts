@@ -78,52 +78,42 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect(
-    "upgrades populated rebuild state from 67 without losing messages or creating links",
-    () =>
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* runMigrations({ toMigrationInclusive: 67 });
-        const payload = JSON.stringify({ text: "delegation migration receipt", createdBy: "user" });
-        yield* sql`
-        INSERT INTO orchestration_v2_projection_messages (
-          message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json
-        ) VALUES (
-          'rebuild-message', 'rebuild-thread', NULL, NULL, 'user', 0,
-          '2026-10-29T00:00:00.000Z', '2026-10-29T00:00:00.000Z', ${payload}
+  it.effect("drops the unused correlation index and keeps correlation values", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: 54 });
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        VALUES (
+          'event-1', 'thread', 'thread-1', 0, 'thread.created', '2026-01-01T00:00:00.000Z',
+          'command-1', NULL, 'correlation-1', 'client', '{}', '{}'
         )
       `;
 
-        yield* runMigrations();
+      yield* runMigrations();
 
-        assert.deepStrictEqual(yield* history, migrationManifest);
-        const messages = yield* sql<{ readonly payload: string }>`
-        SELECT payload_json AS payload FROM orchestration_v2_projection_messages
-        WHERE message_id = 'rebuild-message'
-      `;
-        assert.deepStrictEqual(messages, [{ payload }]);
-        const indexed = yield* sql<{ readonly messageId: string }>`
-        SELECT messages.message_id AS "messageId"
-        FROM orchestration_v2_message_search AS search
-        INNER JOIN orchestration_v2_projection_messages AS messages ON messages.rowid = search.rowid
-        WHERE orchestration_v2_message_search MATCH '"delegation"'
-      `;
-        assert.deepStrictEqual(indexed, [{ messageId: "rebuild-message" }]);
-        assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, []);
-        const fences = yield* sql<{ readonly name: string; readonly dflt_value: string | null }>`
-        SELECT name, dflt_value FROM pragma_table_info('peer_environment_links') WHERE name = 'fenced'
-      `;
-        assert.deepStrictEqual(fences, [{ name: "fenced", dflt_value: "0" }]);
-        const indexes = yield* sql<{ readonly name: string }>`
+      const indexes = yield* sql<{ readonly name: string }>`
         SELECT name FROM sqlite_master
-        WHERE type = 'index' AND name IN (
-          'orchestration_v2_projection_turn_items_stop_request_idx',
-          'orchestration_v2_projection_turn_items_waiting_link_idx'
-        ) ORDER BY name
+        WHERE type = 'index' AND tbl_name = 'orchestration_events' AND sql IS NOT NULL
       `;
-        assert.strictEqual(indexes.length, 2);
-        assert.deepStrictEqual(yield* runMigrations(), []);
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+      const indexNames = indexes.map((row) => row.name);
+      assert.notInclude(indexNames, "idx_orch_events_correlation_id");
+      for (const kept of [
+        "idx_orch_events_stream_version",
+        "idx_orch_events_stream_sequence",
+        "idx_orch_events_command_id",
+        "idx_orchestration_events_agent_stream_sequence",
+      ]) {
+        assert.include(indexNames, kept);
+      }
+      const events = yield* sql<{ readonly correlation_id: string | null }>`
+        SELECT correlation_id FROM orchestration_events WHERE event_id = 'event-1'
+      `;
+      assert.deepStrictEqual(events, [{ correlation_id: "correlation-1" }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect.each([30, 54])("still starts with a site-local migration at id %s", (id) =>

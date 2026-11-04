@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   AuthEnvironmentMaintainScope,
   type AuthSessionState,
+  managedUpdatesDenial,
   sessionGrantsScope,
 } from "@t3tools/contracts";
 import type { AsyncResult } from "effect/reactivity";
@@ -26,11 +27,15 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { serverEnvironment, updateOutdatedServer } from "~/state/server";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useAtomCommand } from "~/state/use-atom-command";
-import { manualServerUpdateCommand } from "~/versionSkew";
 import { useServerConfigs } from "~/state/entities";
+import { useManagedPolicy } from "~/state/managedPolicy";
+import { environmentPresentations } from "~/state/presentation";
+import { ManagedControl } from "./ManagedPolicy";
+import { manualServerUpdateCommand } from "~/versionSkew";
 import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
+import { StatusDot } from "./ui/status-dot";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const UPDATE_STAGE_LABELS: Record<ServerUpdateStage, string> = {
@@ -42,6 +47,14 @@ const pendingUpdateEnvironmentIds = new Set<EnvironmentId>();
 
 export function serverUpdateStageLabel(stage: ServerUpdateStage): string {
   return UPDATE_STAGE_LABELS[stage];
+}
+
+/** Why the environment's policy refuses server updates, read outside render. */
+function readUpdatesDenial(environmentId: EnvironmentId): string | undefined {
+  return managedUpdatesDenial(
+    appAtomRegistry.get(environmentPresentations.serverConfigsAtom).get(environmentId)
+      ?.managedPolicy,
+  );
 }
 
 const CROSS_TRACK_NOTE = "Switch tracks in About → Update track";
@@ -64,7 +77,7 @@ function refusedCrossing(
 }
 
 function CrossTrackNote() {
-  return <span className="text-muted-foreground text-xs">{CROSS_TRACK_NOTE}</span>;
+  return <span className="text-muted-foreground text-meta">{CROSS_TRACK_NOTE}</span>;
 }
 
 function updateFailureMessage(error: unknown): string {
@@ -103,6 +116,17 @@ export function useServerUpdate() {
     { quiet = false }: { readonly quiet?: boolean } = {},
   ): Promise<ServerUpdateOutcome> => {
     const { environmentId, serverLabel, selfUpdate, targetVersion } = target;
+    const denial = readUpdatesDenial(environmentId);
+    if (denial !== undefined) {
+      if (!quiet) {
+        toastManager.add({
+          type: "error",
+          title: `${serverLabel} not updated`,
+          description: denial,
+        });
+      }
+      return { status: "failed", message: denial };
+    }
     if (
       !canUpdateServer(appAtomRegistry.get(environmentSession.sessionStateAtom(environmentId))) ||
       pendingUpdateEnvironmentIds.has(environmentId)
@@ -149,7 +173,7 @@ export function useServerUpdate() {
 export function ServerUpdatesAction({
   targets,
   label = "Update all",
-  variant = "outline",
+  variant = "secondary",
   size = "xs",
   className,
 }: UpdateButtonProps & {
@@ -163,6 +187,7 @@ export function ServerUpdatesAction({
     (target) =>
       target.selfUpdate !== null &&
       (target.selfUpdate !== "desktop-managed" || target.desktopAppUpdate) &&
+      managedUpdatesDenial(serverConfigs.get(target.environmentId)?.managedPolicy) === undefined &&
       !refusedCrossing(target, serverConfigs.get(target.environmentId)?.environment.serverVersion),
   );
   const handleUpdate = async () => {
@@ -214,7 +239,7 @@ export function ServerUpdateProgress({
   if (state.status === "failed") {
     return (
       <div className="mt-1 flex min-w-0 items-center gap-2 text-xs text-destructive" role="alert">
-        <span className="size-1.5 shrink-0 rounded-full bg-destructive" aria-hidden="true" />
+        <StatusDot tone="danger" />
         <Tooltip>
           <TooltipTrigger render={<span className="min-w-0 truncate">{state.message}</span>} />
           <TooltipPopup side="top">{state.message}</TooltipPopup>
@@ -224,7 +249,7 @@ export function ServerUpdateProgress({
   }
   return (
     <div className="mt-1 flex items-center gap-2 text-xs font-medium text-foreground">
-      <span className="size-1.5 shrink-0 rounded-full bg-foreground" aria-hidden="true" />
+      <StatusDot tone="foreground" />
       <span>{serverUpdateStageLabel(state.stage)}</span>
     </div>
   );
@@ -240,7 +265,7 @@ export function ServerUpdateAction({
   targetVersion,
   channel,
   label = "Update",
-  variant = "outline",
+  variant = "secondary",
   size = "xs",
   className,
   appearance = "button",
@@ -248,7 +273,8 @@ export function ServerUpdateAction({
   const isDesktopAppUpdate = selfUpdate === "desktop-managed";
   const serverVersion = useServerConfigs().get(environmentId)?.environment.serverVersion;
   const sessionStateAtom = environmentSession.sessionStateAtom(environmentId);
-  const canUpdate = canUpdateServer(useAtomValue(sessionStateAtom));
+  const canUpdate = useAtomValue(sessionStateAtom, canUpdateServer);
+  const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId));
   const update = useServerUpdate();
   const { copyToClipboard } = useCopyToClipboard<{ command: string }>({
     target: installation?.kind === "npm-global" ? "update command" : "relaunch command",
@@ -298,9 +324,21 @@ export function ServerUpdateAction({
     });
   };
 
+  if (updatesDenial !== undefined) {
+    return appearance === "icon" ? (
+      <ManagedControl reason={updatesDenial}>
+        <Button size="icon-xs" variant="ghost-muted" aria-label={updatesDenial} disabled>
+          <CircleArrowUpIcon className="size-3.5" />
+        </Button>
+      </ManagedControl>
+    ) : (
+      <span className="text-muted-foreground text-meta">{updatesDenial}</span>
+    );
+  }
+
   if (selfUpdate === "desktop-managed" && !desktopAppUpdate) {
     return (
-      <span className="text-muted-foreground text-xs">
+      <span className="text-muted-foreground text-meta">
         Update the desktop app on that machine to update this server.
       </span>
     );
@@ -401,7 +439,7 @@ export function OutdatedServerUpdateAction({
     return <CrossTrackNote />;
   }
   return (
-    <Button size="xs" variant="outline" onClick={() => void handleUpdate()}>
+    <Button size="xs" variant="secondary" onClick={() => void handleUpdate()}>
       {label}
     </Button>
   );

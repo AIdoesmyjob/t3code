@@ -338,7 +338,9 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       });
 
       const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
-      assert.isFalse(persisted.some((entry) => entry.command === "terminal.toggle"));
+      assert.isFalse(
+        persisted.some((entry) => entry.command === "terminal.toggle" && entry.key === "mod+j"),
+      );
       assert.isTrue(persisted.some((entry) => entry.command === "script.custom-action.run"));
 
       assert.isTrue(
@@ -352,6 +354,38 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       ),
     );
   });
+
+  it.effect("drops a retired default so its replacement takes the key", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
+        { key: "mod+shift+d", command: "diff.toggle" },
+        { key: "mod+w", command: "rightPanel.close", when: "(!terminalFocus)" },
+      ]);
+
+      yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        yield* keybindings.syncDefaultKeybindingsOnStartup;
+      });
+
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.isFalse(
+        persisted.some((entry) => entry.command === "diff.toggle" && entry.key === "mod+d"),
+      );
+      assert.isTrue(
+        persisted.some((entry) => entry.command === "diff.toggle" && entry.key === "mod+shift+d"),
+      );
+      assert.isTrue(
+        persisted.some((entry) => entry.command === "layout.splitRight" && entry.key === "mod+d"),
+      );
+      assert.deepInclude(persisted, {
+        key: "mod+w",
+        command: "rightPanel.close",
+        when: "(!terminalFocus)",
+      });
+    }).pipe(Effect.provide(layerKeybindings())),
+  );
 
   it.effect("appends additional custom keybindings for the same command", () =>
     Effect.gen(function* () {
@@ -441,6 +475,108 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
       const persistedView = persisted.map(({ key, command }) => ({ key, command }));
       assert.deepEqual(persistedView, [{ key: "mod+shift+r", command: "script.run-tests.run" }]);
+    }).pipe(Effect.provide(layerKeybindings())),
+  );
+
+  it.effect("keeps entries it cannot decode when editing other keybindings", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      const futureCommand = { key: "mod+shift+k", command: "command.from-a-newer-build" };
+      const badShortcut = { key: "mod+shift+d+o", command: "terminal.new" };
+      yield* fs.writeFileString(
+        keybindingsConfigPath,
+        JSON.stringify([
+          { key: "mod+r", command: "script.run-tests.run" },
+          futureCommand,
+          badShortcut,
+        ]),
+      );
+      const keybindings = yield* Keybindings.Keybindings;
+      const persisted = Effect.map(fs.readFileString(keybindingsConfigPath), JSON.parse);
+
+      const saved = yield* keybindings.upsertKeybindingRule({
+        key: "mod+shift+r",
+        command: "script.run-tests.run",
+      });
+      assert.equal(saved.issues.length, 2);
+      assert.deepEqual(yield* persisted, [
+        { key: "mod+r", command: "script.run-tests.run" },
+        futureCommand,
+        badShortcut,
+        { key: "mod+shift+r", command: "script.run-tests.run" },
+      ]);
+
+      const removed = yield* keybindings.removeKeybindingRule({
+        key: "mod+r",
+        command: "script.run-tests.run",
+      });
+      assert.deepEqual(yield* persisted, [
+        futureCommand,
+        badShortcut,
+        { key: "mod+shift+r", command: "script.run-tests.run" },
+      ]);
+      const { issues } = yield* keybindings.loadConfigState;
+      assert.deepEqual(removed.issues, issues);
+      assert.deepEqual(
+        issues.map((issue) => issue.kind === "keybindings.invalid-entry" && issue.index),
+        [0, 1],
+      );
+    }).pipe(Effect.provide(layerKeybindings())),
+  );
+
+  it.effect("removes a hand-written keybinding targeted by its settings spelling", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        {
+          key: "Shift+Cmd+R",
+          command: "script.run-tests.run",
+          when: "terminalFocus&&!previewFocus",
+        },
+        { key: "mod+shift+r", command: "script.run-tests.run" },
+        { key: "x\u0000true", command: "script.run-tests.run" },
+        { key: "x", command: "script.run-tests.run", when: "true" },
+      ]);
+      yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        yield* keybindings.removeKeybindingRule({
+          key: "meta+shift+r",
+          command: "script.run-tests.run",
+          when: "terminalFocus && !previewFocus",
+        });
+        yield* keybindings.removeKeybindingRule({
+          key: "x",
+          command: "script.run-tests.run",
+          when: "true",
+        });
+      });
+
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.deepEqual(persisted, [
+        { key: "mod+shift+r", command: "script.run-tests.run" },
+        { key: "x\u0000true", command: "script.run-tests.run" },
+      ]);
+    }).pipe(Effect.provide(layerKeybindings())),
+  );
+
+  it.effect("replaces a hand-written keybinding targeted by its settings spelling", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "escape", command: "script.run-tests.run", when: "a && b && c" },
+      ]);
+      yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        return yield* keybindings.upsertKeybindingRule({
+          key: "mod+alt+r",
+          command: "script.run-tests.run",
+          replace: { key: "esc", command: "script.run-tests.run", when: "(a && b) && c" },
+        });
+      });
+
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.deepEqual(persisted, [{ key: "mod+alt+r", command: "script.run-tests.run" }]);
     }).pipe(Effect.provide(layerKeybindings())),
   );
 

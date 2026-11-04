@@ -15,14 +15,20 @@ import {
   matchesKeybindingShortcutModifiers,
   normalizeEventKey,
   resolveEventKeys,
-  type ShortcutEventLike,
+  type ShortcutEventLike as SharedShortcutEventLike,
   type ShortcutModifierStateLike,
 } from "@t3tools/shared/keybindings";
+import { evaluateWhenNode } from "@t3tools/shared/keybindingMatching";
 import { isElectron } from "./env";
+import { isEditableFocused } from "./lib/editableFocus";
 import { projectScriptIdFromCommand } from "./projectScripts";
 
-export type { ShortcutEventLike, ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
+export type { ShortcutModifierStateLike } from "@t3tools/shared/keybindings";
 export { shortcutKeyFromEvent } from "@t3tools/shared/keybindings";
+
+export interface ShortcutEventLike extends SharedShortcutEventLike {
+  target?: EventTarget | null;
+}
 
 export interface ShortcutMatchContext {
   terminalFocus: boolean;
@@ -31,6 +37,8 @@ export interface ShortcutMatchContext {
   previewOpen: boolean;
   isWeb: boolean;
   isDesktop: boolean;
+  /** macOS, where mod is Cmd. Optional: derived from the platform unless given. */
+  isMac?: boolean;
   editableFocus?: boolean;
   [key: string]: boolean;
 }
@@ -61,24 +69,10 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
     previewOpen: false,
     isWeb: !isElectron,
     isDesktop: isElectron,
+    isMac: isMacPlatform(resolvePlatform(options)),
     editableFocus: false,
     ...options?.context,
   };
-}
-
-function evaluateWhenNode(node: KeybindingWhenNode, context: ShortcutMatchContext): boolean {
-  switch (node.type) {
-    case "identifier":
-      if (node.name === "true") return true;
-      if (node.name === "false") return false;
-      return Boolean(context[node.name]);
-    case "not":
-      return !evaluateWhenNode(node.node, context);
-    case "and":
-      return evaluateWhenNode(node.left, context) && evaluateWhenNode(node.right, context);
-    case "or":
-      return evaluateWhenNode(node.left, context) || evaluateWhenNode(node.right, context);
-  }
 }
 
 function matchesWhenClause(
@@ -177,6 +171,9 @@ export function resolveShortcutCommand(
 ): KeybindingCommand | null {
   const platform = resolvePlatform(options);
   const context = resolveContext(options);
+  if (options?.context?.editableFocus === undefined && typeof document !== "undefined") {
+    context.editableFocus = isEditableFocused(event.target ?? document.activeElement);
+  }
 
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
@@ -464,13 +461,43 @@ export function terminalNavigationShortcutData(
     return null;
   }
 
-  if (event.ctrlKey && !event.metaKey && !event.altKey) {
-    return moveWord;
-  }
-
   if (event.altKey && !event.metaKey && !event.ctrlKey) {
     return moveWord;
   }
 
   return null;
+}
+
+const ELECTRON_KEY_NAMES: Record<string, string> = {
+  arrowleft: "Left",
+  arrowright: "Right",
+  arrowup: "Up",
+  arrowdown: "Down",
+  escape: "Escape",
+  enter: "Enter",
+  " ": "Space",
+  home: "Home",
+  end: "End",
+  tab: "Tab",
+};
+
+/**
+ * A command's key for a context menu row: the label the web menu shows and
+ * the accelerator the desktop menu shows beside the item. Empty when the
+ * command has no key.
+ */
+export function contextMenuShortcutFields(
+  keybindings: ResolvedKeybindingsConfig,
+  command: KeybindingCommand,
+): { shortcut?: string; accelerator?: string } {
+  const shortcut = findEffectiveShortcutForCommand(keybindings, command);
+  if (!shortcut) return {};
+  const parts: string[] = [];
+  if (shortcut.modKey) parts.push("CmdOrCtrl");
+  if (shortcut.metaKey) parts.push("Super");
+  if (shortcut.ctrlKey) parts.push("Ctrl");
+  if (shortcut.altKey) parts.push("Alt");
+  if (shortcut.shiftKey) parts.push("Shift");
+  parts.push(ELECTRON_KEY_NAMES[shortcut.key] ?? shortcut.key.toUpperCase());
+  return { shortcut: formatShortcutLabel(shortcut), accelerator: parts.join("+") };
 }

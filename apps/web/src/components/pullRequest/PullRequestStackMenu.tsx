@@ -6,7 +6,7 @@ import type {
   PullRequestMergeMethod,
 } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
-import { RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronDownIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
 import { useState } from "react";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { pullRequestEnvironment } from "~/state/pullRequests";
@@ -27,6 +27,7 @@ import { PullRequestStackLayers } from "./PullRequestStackLayers";
 import { PullRequestStackHeader } from "./PullRequestStackHeader";
 import { PullRequestStackLayerContent } from "./PullRequestStackLayerContent";
 import { PullRequestGlyph } from "./pullRequestIcons";
+import { readableFailure } from "./pullRequestDetail.logic";
 
 export function PullRequestStackMenu({
   hostLabel,
@@ -34,6 +35,7 @@ export function PullRequestStackMenu({
   stack,
   reference,
   environmentId,
+  stale,
   canMerge,
   canRebase,
   mergeMethod,
@@ -41,14 +43,24 @@ export function PullRequestStackMenu({
   onActed,
   notice,
   onRetry,
+  syncedAt,
+  display = "both",
 }: {
   hostLabel: string;
   terminology: ChangeRequestTerminology;
   notice?: string | null;
+  /** Epoch milliseconds of the last successful stack read. */
+  syncedAt?: number | undefined;
+  /**
+   * The stack trigger, the "Merge stack" button, or both. The panel header shows the
+   * trigger beside the branch and the readiness card shows the merge button.
+   */
+  display?: "trigger" | "merge-button" | "both";
   onRetry?: (() => void) | undefined;
   stack: PullRequestStack;
   reference: PullRequestRef;
   environmentId: EnvironmentId;
+  stale: boolean;
   canMerge: boolean;
   canRebase: boolean;
   mergeMethod: PullRequestMergeMethod;
@@ -72,12 +84,13 @@ export function PullRequestStackMenu({
   const hasUnknownHead = expectedStackHeads.length !== unmerged.length;
   const mergeDisabled =
     pending ||
+    stale ||
     selectedLayer?.state !== "open" ||
     mergeLayers.some((layer) => !layer.headSha) ||
     mergeHasClosed ||
     mergeLayers.length === 0 ||
     mergeLayers.some((layer) => layer.isDraft);
-  const rebaseDisabled = pending || hasUnknownHead || hasClosed || unmerged.length === 0;
+  const rebaseDisabled = pending || stale || hasUnknownHead || hasClosed || unmerged.length === 0;
   const run = async () => {
     if (
       pending ||
@@ -114,7 +127,12 @@ export function PullRequestStackMenu({
       toastManager.update(toastId, {
         type: "error",
         title: action === "merge" ? "Could not merge the stack" : "Could not rebase the stack",
-        description: String(squashAtomCommandFailure(result)),
+        description: readableFailure(
+          squashAtomCommandFailure(result),
+          action === "merge"
+            ? "The host refused the merge. Check that you have write access, that the checks it requires have passed, and that the branch is not conflicting."
+            : "The host refused the rebase. A rebase stops at the first commit that does not apply cleanly.",
+        ),
       });
     } else {
       toastManager.update(toastId, {
@@ -130,85 +148,105 @@ export function PullRequestStackMenu({
   const confirmationLayers = confirmation === "merge" ? mergeLayers : unmerged;
   return (
     <>
-      <Menu open={open} onOpenChange={setOpen}>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <MenuTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="xs"
-                    aria-label={`Stack ${stack.number}, layer ${position} of ${stack.layers.length}`}
-                  />
-                }
-              >
-                <PullRequestGlyph.stack aria-hidden className="size-3.5" /> {position}/
-                {stack.layers.length}
-                {onRetry ? <TriangleAlertIcon aria-hidden className="size-3 text-warning" /> : null}
-              </MenuTrigger>
-            }
-          />
-          <TooltipPopup>
-            View stack #{stack.number}, layer {position} of {stack.layers.length}
-            {notice ? ` · ${notice}` : null}
-          </TooltipPopup>
-        </Tooltip>
-        <MenuPopup align="start">
-          <MenuGroup>
-            <PullRequestStackHeader number={stack.number} notice={notice} stale={!!onRetry} />
-            {onRetry ? <MenuItem onClick={onRetry}>Retry stack refresh</MenuItem> : null}
-            <PullRequestStackLayers
-              stack={stack}
-              reference={reference}
-              pending={pending}
-              onSelect={
-                onSelect
-                  ? (target) => {
-                      setOpen(false);
-                      onSelect(target);
-                    }
-                  : undefined
+      {display !== "merge-button" ? (
+        <Menu open={open} onOpenChange={setOpen}>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <MenuTrigger
+                  render={
+                    <Button
+                      variant="success-outline"
+                      size="chip"
+                      aria-label={`Stack ${stack.number}, layer ${position} of ${stack.layers.length}`}
+                    />
+                  }
+                >
+                  <PullRequestGlyph.stack aria-hidden className="size-3.5" /> {position}/
+                  {stack.layers.length}
+                  <ChevronDownIcon aria-hidden className="size-3" />
+                  {onRetry ? (
+                    <TriangleAlertIcon aria-hidden className="size-3 text-warning" />
+                  ) : null}
+                </MenuTrigger>
               }
             />
-          </MenuGroup>
-          {canMerge || canRebase ? (
-            <>
-              <MenuSeparator />
-              {canMerge ? (
-                <MenuItem disabled={mergeDisabled} onClick={() => setConfirmation("merge")}>
-                  <PullRequestGlyph.merged aria-hidden />
-                  Merge stack ({mergeLayers.length})
-                </MenuItem>
-              ) : null}
-              {canRebase ? (
-                <MenuItem
-                  disabled={rebaseDisabled}
-                  onClick={() => setConfirmation("update-branch")}
-                >
-                  <RefreshCwIcon aria-hidden />
-                  Rebase stack
-                </MenuItem>
-              ) : null}
-              {mergeHasClosed || mergeLayers.some((layer) => layer.isDraft) ? (
-                <p className="px-2 py-1 text-xs text-muted-foreground">
-                  Every layer being merged must be open and ready for review.
-                </p>
-              ) : null}
-            </>
-          ) : null}
-        </MenuPopup>
-      </Menu>
-      {canMerge && selectedLayer?.state === "open" ? (
+            <TooltipPopup>
+              <span className="flex flex-col gap-0.5">
+                <span>
+                  View stack #{stack.number}, layer {position} of {stack.layers.length}
+                </span>
+                {notice ? <span>{notice}</span> : null}
+              </span>
+            </TooltipPopup>
+          </Tooltip>
+          <MenuPopup align="start" className="w-[437px] max-w-[calc(100vw-2rem)]">
+            <MenuGroup>
+              <PullRequestStackHeader
+                number={stack.number}
+                onClose={() => setOpen(false)}
+                terminology={terminology}
+                size={stack.layers.length}
+                notice={notice}
+                stale={!!onRetry}
+              />
+              {onRetry ? <MenuItem onClick={onRetry}>Retry stack refresh</MenuItem> : null}
+              <PullRequestStackLayers
+                stack={stack}
+                terminology={terminology}
+                reference={reference}
+                pending={pending}
+                syncedAt={syncedAt}
+                onSelect={
+                  onSelect
+                    ? (target) => {
+                        setOpen(false);
+                        onSelect(target);
+                      }
+                    : undefined
+                }
+              />
+            </MenuGroup>
+            {canMerge || canRebase ? (
+              <>
+                <MenuSeparator />
+                {canMerge ? (
+                  <MenuItem disabled={mergeDisabled} onClick={() => setConfirmation("merge")}>
+                    <PullRequestGlyph.merged aria-hidden />
+                    Merge stack ({mergeLayers.length})
+                  </MenuItem>
+                ) : null}
+                {canRebase ? (
+                  <MenuItem
+                    disabled={rebaseDisabled}
+                    onClick={() => setConfirmation("update-branch")}
+                  >
+                    <RefreshCwIcon aria-hidden />
+                    Rebase stack
+                  </MenuItem>
+                ) : null}
+                {mergeHasClosed || mergeLayers.some((layer) => layer.isDraft) ? (
+                  <p className="px-2 py-1 text-meta text-muted-foreground">
+                    Every layer being merged must be open and ready for review.
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+          </MenuPopup>
+        </Menu>
+      ) : null}
+      {display !== "trigger" && canMerge && selectedLayer?.state === "open" ? (
         <Tooltip>
           <TooltipTrigger
             render={
               <span className="inline-flex">
                 <Button
                   variant="default"
-                  size="xs"
-                  disabled={mergeDisabled}
-                  onClick={() => setConfirmation("merge")}
+                  size={display === "merge-button" ? "sm" : "xs"}
+                  disabled={mergeDisabled && !stale}
+                  aria-disabled={mergeDisabled || undefined}
+                  aria-description={stale ? (notice ?? undefined) : undefined}
+                  onClick={mergeDisabled ? undefined : () => setConfirmation("merge")}
                 >
                   <PullRequestGlyph.merged aria-hidden className="size-3.5" />
                   Merge stack
@@ -217,8 +255,9 @@ export function PullRequestStackMenu({
             }
           />
           <TooltipPopup>
-            Merge stack through #{reference.number} into {stack.base} ({mergeLayers.length}{" "}
-            {mergeLayers.length === 1 ? terminology.singular : terminology.plural})
+            {stale
+              ? notice
+              : `Merge stack through #${reference.number} into ${stack.base} (${mergeLayers.length} ${mergeLayers.length === 1 ? terminology.singular : terminology.plural})`}
           </TooltipPopup>
         </Tooltip>
       ) : null}
@@ -242,19 +281,19 @@ export function PullRequestStackMenu({
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
-            <ul className="max-h-48 space-y-1 overflow-y-auto text-sm">
+            <ul className="max-h-48 space-y-1 overflow-y-auto text-body">
               {confirmationLayers.map((layer) => (
                 <li
                   key={layer.number}
-                  className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2"
+                  className="flex items-center gap-2 rounded-row surface-selected-soft px-3 py-2"
                 >
-                  <PullRequestStackLayerContent layer={layer} compact />
+                  <PullRequestStackLayerContent layer={layer} terminology={terminology} compact />
                 </li>
               ))}
             </ul>
           </DialogPanel>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmation(null)}>
+            <Button variant="secondary" onClick={() => setConfirmation(null)}>
               Cancel
             </Button>
             <Button onClick={() => void run()}>

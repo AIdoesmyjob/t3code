@@ -1,12 +1,18 @@
 import {
   DEFAULT_SERVER_SETTINGS,
+  DEFAULT_SPEECH_POST_PROCESSING_MODELS,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  SecretProviderId,
+  SecretProviderKind,
+  ServerSettings,
+  ServerSettingsPatch,
   UsageLimitSourceId,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Duration from "effect/Duration";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 import { resolveServerBackgroundActivitySettings } from "./backgroundActivitySettings.ts";
 import { createModelSelection } from "./model.ts";
@@ -19,11 +25,21 @@ import {
   isModelSelectionProviderEnabled,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
+  resolveSpeechPostProcessingModelSelection,
 } from "./serverSettings.ts";
+
+const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
+const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 
 const FOLDED_SERVER_SETTINGS = { ...DEFAULT_SERVER_SETTINGS, projectSettingsFolded: true };
 
 describe("fallbackTextGenerationModelSelection", () => {
+  it("uses Big Pickle when only OpenCode is enabled", () => {
+    expect(
+      fallbackTextGenerationModelSelection({}, (instanceId) => instanceId === "opencode"),
+    ).toEqual({ instanceId: "opencode", model: "opencode/big-pickle" });
+  });
+
   it("replaces and clears the fallback without carrying model options", () => {
     const fallbackModelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "new" };
     const settings = applyServerSettingsPatch(
@@ -79,6 +95,195 @@ describe("serverSettings helpers", () => {
     expect([on.idleCompaction, on.compactIdleThreads]).toEqual(["beforeCacheExpires", true]);
   });
 
+  it("uses voice defaults in the configured fallback order, including custom instances", () => {
+    const entries = [
+      ["codex", { model: "gpt-6-luna", options: [{ id: "reasoningEffort", value: "low" }] }],
+      ["claudeAgent", { model: "claude-haiku-4-5", options: [{ id: "thinking", value: false }] }],
+      ["cursor", { model: "composer-2", options: [{ id: "reasoning", value: "low" }] }],
+      ["grok", { model: "grok-build", options: [{ id: "reasoningEffort", value: "low" }] }],
+      ["opencode", { model: "opencode/big-pickle", options: [{ id: "variant", value: "low" }] }],
+      ["antigravity", { model: "antigravity-default", options: [] }],
+    ] as const;
+    for (let index = 0; index < entries.length; index++) {
+      const settings = {
+        ...DEFAULT_SERVER_SETTINGS,
+        speechPostProcessingModelSelection: createModelSelection(
+          ProviderInstanceId.make("missing"),
+          "custom",
+        ),
+        providerInstances: Object.fromEntries(
+          entries.map(([driver], candidateIndex) => [
+            driver,
+            {
+              driver: ProviderDriverKind.make(driver),
+              enabled: candidateIndex >= index,
+              config: {},
+            },
+          ]),
+        ),
+      };
+      const [driver, defaults] = entries[index]!;
+      expect(resolveSpeechPostProcessingModelSelection(settings)).toEqual(
+        createModelSelection(ProviderInstanceId.make(driver), defaults.model, defaults.options),
+      );
+      const customSettings = {
+        ...settings,
+        providerInstances: {
+          ...settings.providerInstances,
+          [driver]: { driver: ProviderDriverKind.make(driver), enabled: false, config: {} },
+          custom: { driver: ProviderDriverKind.make(driver), enabled: true, config: {} },
+        },
+      };
+      expect(resolveSpeechPostProcessingModelSelection(customSettings)).toEqual(
+        createModelSelection(ProviderInstanceId.make("custom"), defaults.model, defaults.options),
+      );
+    }
+  });
+
+  it("preserves an enabled custom voice selection independently of text generation", () => {
+    const selection = createModelSelection(ProviderInstanceId.make("voice"), "custom-model", [
+      { id: "variant", value: "high" },
+    ]);
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      speechPostProcessingModelSelection: selection,
+      providerInstances: {
+        voice: { driver: ProviderDriverKind.make("opencode"), enabled: true, config: {} },
+      },
+    };
+    expect(resolveSpeechPostProcessingModelSelection(settings)).toBe(selection);
+    expect(settings.textGenerationModelSelection).toBe(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
+  });
+
+  it("uses the supported model default when low reasoning is not advertised", () => {
+    const selection = createModelSelection(
+      ProviderInstanceId.make("opencode"),
+      "opencode/big-pickle",
+      [{ id: "variant", value: "low" }],
+    );
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      speechPostProcessingModelSelection: selection,
+      providerInstances: {
+        opencode: { driver: ProviderDriverKind.make("opencode"), enabled: true, config: {} },
+      },
+    };
+    const provider: ServerProvider = {
+      instanceId: ProviderInstanceId.make("opencode"),
+      driver: ProviderDriverKind.make("opencode"),
+      enabled: true,
+      installed: true,
+      version: null,
+      status: "ready",
+      auth: { status: "authenticated" },
+      checkedAt: "2026-10-01T00:00:00.000Z",
+      models: [
+        {
+          slug: "opencode/big-pickle",
+          name: "Big Pickle",
+          isCustom: false,
+          capabilities: {
+            optionDescriptors: [
+              {
+                id: "variant",
+                label: "Reasoning",
+                type: "select",
+                options: [{ id: "high", label: "High", isDefault: true }],
+              },
+            ],
+          },
+        },
+      ],
+      slashCommands: [],
+      skills: [],
+    };
+    expect(resolveSpeechPostProcessingModelSelection(settings, [provider])).toEqual({
+      instanceId: "opencode",
+      model: "opencode/big-pickle",
+    });
+    expect(
+      resolveSpeechPostProcessingModelSelection(settings, [
+        {
+          ...provider,
+          models: [
+            {
+              ...provider.models[0]!,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    id: "variant",
+                    label: "Reasoning",
+                    type: "select",
+                    options: [{ id: "low", label: "Low" }],
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ]),
+    ).toEqual(selection);
+    expect(settings.speechPostProcessingModelSelection).toBe(selection);
+  });
+
+  it("returns no voice selection when every provider is disabled", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: Object.fromEntries(
+        Object.keys(DEFAULT_SPEECH_POST_PROCESSING_MODELS).map((driver) => [
+          driver,
+          { driver: ProviderDriverKind.make(driver), enabled: false, config: {} },
+        ]),
+      ),
+    };
+    expect(resolveSpeechPostProcessingModelSelection(settings)).toBeNull();
+  });
+
+  it("checks configured drivers when resolving managed voice fallbacks", () => {
+    const settings = {
+      ...DEFAULT_SERVER_SETTINGS,
+      providerInstances: {
+        codex: { driver: ProviderDriverKind.make("opencode"), enabled: true, config: {} },
+        voice: { driver: ProviderDriverKind.make("claudeAgent"), enabled: true, config: {} },
+        claudeAgent: { driver: ProviderDriverKind.make("claudeAgent"), enabled: false, config: {} },
+      },
+    };
+    expect(
+      resolveSpeechPostProcessingModelSelection(
+        settings,
+        undefined,
+        (driver) => driver === "claudeAgent",
+      ),
+    ).toEqual({
+      instanceId: "voice",
+      model: "claude-haiku-4-5",
+      options: [{ id: "thinking", value: false }],
+    });
+    expect(resolveSpeechPostProcessingModelSelection(settings, undefined, () => false)).toBeNull();
+  });
+
+  it("keeps the built-in voice prompt selected until custom instructions are nonempty", () => {
+    const blank = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      speechPostProcessingPrompt: { mode: "custom", customInstructions: "   " },
+    });
+    expect(blank.speechPostProcessingPrompt).toEqual({ mode: "default", customInstructions: "" });
+
+    const custom = applyServerSettingsPatch(blank, {
+      speechPostProcessingPrompt: { mode: "custom", customInstructions: "Keep product names." },
+    });
+    expect(custom.speechPostProcessingPrompt).toEqual({
+      mode: "custom",
+      customInstructions: "Keep product names.",
+    });
+    expect(
+      applyServerSettingsPatch(custom, {
+        speechPostProcessingPrompt: { customInstructions: "" },
+      }).speechPostProcessingPrompt,
+    ).toEqual({ mode: "default", customInstructions: "" });
+  });
+
   it("changes a cleanup rule without replacing the machine's other rules", () => {
     const enabled = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
       storageCleanup: { worktreeAfterDays: 8, worktreeOnMerge: true, logsAfterDays: 30 },
@@ -111,6 +316,24 @@ describe("serverSettings helpers", () => {
       hosts: { "github.com": { enabled: false } },
       tokens: {},
     });
+  });
+
+  it("keeps a source control host's saved tokens when a patch sets another host's token", () => {
+    const reference = { provider: "vault", reference: "github/token" };
+    const saved = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      sourceControlHosts: { github: { tokens: { "github.com": reference } } },
+    });
+    const patched = applyServerSettingsPatch(saved, {
+      sourceControlHosts: { github: { tokens: { "ghe.example": "x" } } },
+    });
+    expect(patched.sourceControlHosts.github?.tokens).toEqual({
+      "github.com": reference,
+      "ghe.example": "x",
+    });
+    const recased = applyServerSettingsPatch(saved, {
+      sourceControlHosts: { github: { tokens: { " GitHub.com ": "ghp_new" } } },
+    });
+    expect(recased.sourceControlHosts.github?.tokens).toEqual({ "github.com": "ghp_new" });
   });
 
   it("inherits actions, preserves existing actions, and supports empty overrides and reset", () => {
@@ -278,31 +501,30 @@ describe("serverSettings helpers", () => {
     });
   });
 
-  it("replaces text generation selection across providers without leaking stale options", () => {
-    const current = {
-      ...DEFAULT_SERVER_SETTINGS,
-      textGenerationModelSelection: createModelSelection(
-        ProviderInstanceId.make("codex"),
-        "gpt-5.4-mini",
-        [
+  it.each(["textGenerationModelSelection", "speechPostProcessingModelSelection"] as const)(
+    "replaces %s across providers without leaking stale options",
+    (selectionKey) => {
+      const current = {
+        ...DEFAULT_SERVER_SETTINGS,
+        [selectionKey]: createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.4-mini", [
           { id: "reasoningEffort", value: "high" },
           { id: "fastMode", value: true },
-        ],
-      ),
-    };
+        ]),
+      };
 
-    expect(
-      applyServerSettingsPatch(current, {
-        textGenerationModelSelection: {
-          instanceId: ProviderInstanceId.make("opencode"),
-          model: "openai/gpt-5",
-        },
-      }).textGenerationModelSelection,
-    ).toEqual({
-      instanceId: "opencode",
-      model: "openai/gpt-5",
-    });
-  });
+      expect(
+        applyServerSettingsPatch(current, {
+          [selectionKey]: {
+            instanceId: ProviderInstanceId.make("opencode"),
+            model: "openai/gpt-5",
+          },
+        })[selectionKey],
+      ).toEqual({
+        instanceId: "opencode",
+        model: "openai/gpt-5",
+      });
+    },
+  );
 
   it("falls back from a disabled source control writer provider without clearing its selection", () => {
     const instanceId = ProviderInstanceId.make("codex_writer");
@@ -496,6 +718,37 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  // regression: #18334 a newer client must still see this server drop a key it does not know
+  it("drops an override key this server does not know from a patch and keeps one it stored", () => {
+    const projectId = ProjectId.make("project-a");
+    const current = decodeServerSettings({
+      projectSettingsFolded: true,
+      projectSettingsOverrides: {
+        [projectId]: { defaultAutoPull: true, addedByNewerServer: 3 },
+      },
+    });
+    const patch = decodeServerSettingsPatch({
+      projectSettingsOverrides: {
+        [projectId]: { defaultAutoPull: false, addedByNewerServer: 4, addedByNewerClient: "x" },
+      },
+    });
+
+    const updated = applyServerSettingsPatch(current, patch);
+    expect(updated.projectSettingsOverrides[projectId]).toEqual({
+      defaultAutoPull: false,
+      addedByNewerServer: 3,
+    });
+    const reset = applyServerSettingsPatch(updated, {
+      projectSettingsOverrides: { [projectId]: {} },
+    });
+    expect(reset.projectSettingsOverrides[projectId]).toEqual({ addedByNewerServer: 3 });
+    expect(
+      applyServerSettingsPatch(reset, {
+        projectSettingsOverrides: { [projectId]: null },
+      }).projectSettingsOverrides[projectId],
+    ).toBeUndefined();
+  });
+
   it("clears a project's providerInstances override when a patch entry sends an empty map", () => {
     const instanceId = ProviderInstanceId.make("codex_work");
     const projectId = ProjectId.make("project-a");
@@ -542,6 +795,28 @@ describe("serverSettings helpers", () => {
 
     const removed = applyServerSettingsPatch(added, { usageLimitSources: { [hubA]: null } });
     expect(Object.keys(removed.usageLimitSources)).toEqual([hubB]);
+  });
+
+  it("upserts and removes secretProviders per entry so concurrent edits cannot clobber", () => {
+    const personal = SecretProviderId.make("personal");
+    const work = SecretProviderId.make("work");
+    const onePassword = (label: string, account: string) => ({
+      kind: SecretProviderKind.make("one_password"),
+      label,
+      config: { account },
+    });
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      secretProviders: { [personal]: onePassword("Personal", "my.1password.com") },
+    };
+
+    const added = applyServerSettingsPatch(current, {
+      secretProviders: { [work]: onePassword("Work", "team.1password.com") },
+    });
+    expect(Object.keys(added.secretProviders)).toEqual([personal, work]);
+
+    const removed = applyServerSettingsPatch(added, { secretProviders: { [personal]: null } });
+    expect(Object.keys(removed.secretProviders)).toEqual([work]);
   });
 
   it("replaces and removes individual usage prices without clobbering other models", () => {

@@ -24,6 +24,7 @@ import {
   type PullRequestProviderApi,
   type ProviderRepositoryRef,
 } from "@t3tools/source-control-core/server/PullRequestProvider";
+import type { GitHubCredentialSource } from "./GitHubCredentials.ts";
 import type {
   GitHubRepositoryAccess,
   GitHubViewerAccess,
@@ -119,12 +120,30 @@ function gitHubProviderFailure(
       };
     case "SourceControlRateLimitPausedError":
       return { reason: "rate-limited", retryAt: error.retryAt };
+    case "GitHubApiResponseError":
+      return {
+        reason:
+          error.status === 403 ||
+          (error.githubErrorTypes?.includes("FORBIDDEN") &&
+            error.githubErrorTypes.every((type) => type === "FORBIDDEN" || type === "NOT_FOUND"))
+            ? "forbidden"
+            : "failed",
+      };
     case "GitHubApiNotFoundError":
-      return { reason: "not-found" };
+      return error.credential === undefined || error.credential === "app"
+        ? { reason: "not-found" }
+        : { reason: "not-found", accessHint: REPOSITORY_ACCESS_HINTS[error.credential] };
     default:
       return { reason: "failed" };
   }
 }
+
+const REPOSITORY_ACCESS_HINTS: Record<Exclude<GitHubCredentialSource, "app">, string> = {
+  settings:
+    "Your saved GitHub token can't see it. Give it access, or change it in Settings → Source Control.",
+  env: "The server's environment token can't see it. Give it access, or unset it.",
+  gh: "Your gh login can't see it. Give it access, or save a token in Settings → Source Control.",
+};
 
 function withAvatar(
   actor: PullRequestActor | null,
@@ -493,6 +512,7 @@ export const make = Effect.gen(function* () {
               botLogins: new Set<string>(),
               commits: [],
               viewer: { canUpdate: true, didAuthor: false },
+              reviewRequests: undefined,
             })),
           ),
         ],
@@ -515,6 +535,26 @@ export const make = Effect.gen(function* () {
             ),
             reviewers: reviewThreads.reviewers,
             reactions: reviewThreads.reactions,
+            ...(reviewThreads.reviewRequests === undefined
+              ? {}
+              : {
+                  reviewRequests: reviewThreads.reviewRequests.map((event) => ({
+                    ...event,
+                    actor: withAvatar(
+                      event.actor,
+                      reviewThreads.avatarsByLogin,
+                      input.host,
+                      reviewThreads.botLogins,
+                    ),
+                    reviewer:
+                      withAvatar(
+                        event.reviewer,
+                        reviewThreads.avatarsByLogin,
+                        input.host,
+                        reviewThreads.botLogins,
+                      ) ?? event.reviewer,
+                  })),
+                }),
             commits: (reviewThreads.commits.length > 0
               ? reviewThreads.commits
               : pullRequest.commits

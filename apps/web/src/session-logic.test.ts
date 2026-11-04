@@ -631,7 +631,8 @@ describe("V2 session presentation", () => {
         {
           kind: "work",
           entry: {
-            label: stepStatus === "completed" ? "Tasks 1/1" : "Tasks 0/1 · Verify the change",
+            label: stepStatus === "completed" ? "Tasks 1/1" : "Tasks 0/1",
+            ...(stepStatus === "completed" ? {} : { detail: "Verify the change" }),
           },
         },
       ]);
@@ -1152,7 +1153,7 @@ describe("native provider presentation in the v2 timeline", () => {
       turnDiffSummaries: [],
       supportsConversationRollback: false,
     });
-    expect(rows.map((row) => row.kind)).toEqual(["message"]);
+    expect(rows.map((row) => row.kind)).toEqual(["turn-fold", "message"]);
   });
 
   it.each([
@@ -1305,6 +1306,23 @@ describe("HTML renders in the timeline", () => {
       mcpApp,
     });
     expect(rowsFor(entries, false)).toEqual(["message", "turn-fold", "mcp-app", "message"]);
+  });
+
+  it("hosts an MCP app whose call failed, as a form-deferring write does", () => {
+    const mcpApp = {
+      attachmentId: "render-thread-app-html",
+      server: "github",
+      tool: "create_pull_request",
+      resourceUri: "ui://github-mcp-server/pr-create",
+    };
+    const call = renderCall("failed", {
+      t3McpApp: mcpApp,
+      result: { content: [], isError: true },
+    });
+    const entries = turn(
+      call.type === "dynamic_tool" ? { ...call, toolName: "github.create_pull_request" } : call,
+    );
+    expect(entries.find((entry) => entry.kind === "mcp-app")).toMatchObject({ mcpApp });
   });
 
   it("keeps a render visible when its superseded attempt folds", () => {

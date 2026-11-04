@@ -65,6 +65,9 @@ const EMPTY_VISIBLE_TURN_ITEMS_ATOM = Atom.make(EMPTY_VISIBLE_TURN_ITEMS).pipe(
 const EMPTY_CHECKPOINT_SUMMARIES_ATOM = Atom.make<ReadonlyArray<ThreadCheckpointSummary>>(
   Object.freeze([]),
 ).pipe(Atom.withLabel("web-thread-checkpoint-summaries:empty"));
+const EMPTY_ASSISTANT_MESSAGE_TEXT_ATOM = Atom.make<string | null>(null).pipe(
+  Atom.withLabel("web-assistant-message-text:empty"),
+);
 const EMPTY_LAST_VISITED_AT_ATOM = Atom.make<DateTime.Utc | null>(null).pipe(
   Atom.withLabel("web-thread-last-visited:empty"),
 );
@@ -101,6 +104,23 @@ export function useServerConfigs() {
 export function useThreadShells(enabled = true): ReadonlyArray<EnvironmentThreadShell> {
   return useAtomValue(
     enabled ? environmentThreadShells.threadShellsAtom : EMPTY_THREAD_SHELLS_ATOM,
+  );
+}
+
+/** Whether any connected environment is hiding tagged threads right now. */
+export function useAnyEnvironmentHiding(): boolean {
+  return useAtomValue(environmentThreadShells.anyEnvironmentHidingAtom);
+}
+
+/** Keys of threads the tag filter hides from display, by `threadKey`. */
+export function useHiddenThreadKeys(): ReadonlySet<string> {
+  return useAtomValue(environmentThreadShells.hiddenThreadKeysAtom);
+}
+
+/** Thread shells minus those the tag filter hides, for lists that show threads to the user. */
+export function useVisibleThreadShells(enabled = true): ReadonlyArray<EnvironmentThreadShell> {
+  return useAtomValue(
+    enabled ? environmentThreadShells.visibleThreadShellsAtom : EMPTY_THREAD_SHELLS_ATOM,
   );
 }
 
@@ -212,6 +232,29 @@ export function useThreadVisibleTurnItems(
   );
 }
 
+/** Visible turn items held through streamed assistant text; see useAssistantMessageText. */
+export function useTimelineVisibleTurnItems(
+  ref: ScopedThreadRef | null,
+): ReadonlyArray<OrchestrationV2ProjectedTurnItem> {
+  return useAtomValue(
+    ref === null
+      ? EMPTY_VISIBLE_TURN_ITEMS_ATOM
+      : environmentThreadDetails.timelineVisibleTurnItemsAtom(ref),
+  );
+}
+
+/** One assistant message's live text, or null when the thread does not hold the item. */
+export function useAssistantMessageText(
+  ref: ScopedThreadRef | null,
+  itemId: string | undefined,
+): string | null {
+  return useAtomValue(
+    ref === null || itemId === undefined
+      ? EMPTY_ASSISTANT_MESSAGE_TEXT_ATOM
+      : environmentThreadDetails.assistantMessageTextAtom(ref, itemId),
+  );
+}
+
 /** Visible turn items without their streamed text; see ThreadStructure. */
 export function useQuietThreadVisibleTurnItems(
   ref: ScopedThreadRef | null,
@@ -284,6 +327,15 @@ export function waitForProjectRemoval(ref: ScopedProjectRef, timeoutMs = 5_000):
 
 export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
+}
+
+/** The shell list leaves out idle subagents, so an open one's lineage comes from its detail. */
+export function readThreadLineage(ref: ScopedThreadRef) {
+  return (
+    readThreadShell(ref)?.lineage ??
+    appAtomRegistry.get(environmentThreadDetails.quietThreadAtom(ref))?.projection.thread.lineage ??
+    null
+  );
 }
 
 export function waitForThreadShell(ref: ScopedThreadRef, timeoutMs = 5_000): Promise<boolean> {
@@ -366,9 +418,14 @@ export function selectThreadRelationshipShells(
   const current = threads.find((thread) => thread.id === threadId);
   const currentParentId = current === undefined ? null : shellParentThreadId(current);
   if (currentParentId !== null) named.add(currentParentId);
-  return threads.filter(
-    (thread) => named.has(thread.id) || shellParentThreadId(thread) === threadId,
-  );
+  return threads.filter((thread) => {
+    const parentId = shellParentThreadId(thread);
+    return (
+      named.has(thread.id) ||
+      parentId === threadId ||
+      (currentParentId !== null && parentId === currentParentId)
+    );
+  });
 }
 
 const relationshipShellsAtomFamily = Atom.family((key: string) => {

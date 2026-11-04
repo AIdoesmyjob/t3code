@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from "vite-plus/test";
 import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
   compileResolvedKeybindingsConfig,
+  DEFAULT_RESOLVED_KEYBINDINGS,
   parseKeybindingShortcut,
 } from "@t3tools/shared/keybindings";
 
@@ -9,6 +10,7 @@ import { resolveShortcutCommand } from "../../keybindings";
 
 import {
   buildKeybindingRows,
+  commandLabel,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
   parseWhenExpressionDraft,
@@ -53,7 +55,7 @@ describe("KeybindingsSettings.logic", () => {
       { command: "terminal.toggle", key: "mod+j", when: "terminalFocus" },
     ]);
     expect(new Set(rows.map((row) => row.id)).size).toBe(4);
-    expect(rows.find((row) => row.command === "chat.new")?.conflicts).toEqual(["Terminal: Toggle"]);
+    expect(rows.find((row) => row.command === "chat.new")?.conflicts).toEqual(["Toggle terminal"]);
     expect(buildKeybindingRows(bindings.slice(1)).map((row) => row.id)).toEqual(
       rows.map((row) => row.id),
     );
@@ -223,6 +225,13 @@ describe("KeybindingsSettings.logic", () => {
     });
   });
 
+  it("gives every default-bound command its own label", () => {
+    // The fallback reads "Category: Name"; defaults deserve a written label.
+    for (const binding of DEFAULT_RESOLVED_KEYBINDINGS) {
+      expect(commandLabel(binding.command), binding.command).not.toContain(":");
+    }
+  });
+
   it("reports conflicting shortcuts that share an active when context", () => {
     const rows = buildKeybindingRows([
       {
@@ -257,13 +266,68 @@ describe("KeybindingsSettings.logic", () => {
       },
     ] satisfies ResolvedKeybindingsConfig);
 
-    expect(rows[0]?.conflicts).toEqual(["Chat: New Local"]);
+    expect(rows[0]?.conflicts).toEqual(["New local thread"]);
     expect(
       keybindingConflictLabels(rows, {
         rowId: rows[0]?.id ?? "",
         key: "mod+n",
         when: "",
       }),
-    ).toEqual(["Chat: New Local"]);
+    ).toEqual(["New local thread"]);
+  });
+
+  it.each([
+    { platform: "Linux x86_64", ctrl: ["New thread"], meta: [] },
+    { platform: "Win32", ctrl: ["New thread"], meta: [] },
+    { platform: "MacIntel", ctrl: [], meta: ["New thread"] },
+  ])("resolves mod to the $platform modifier when reporting conflicts", (expected) => {
+    const rows = buildKeybindingRows(
+      compileResolvedKeybindingsConfig([
+        { command: "chat.new", key: "mod+k" },
+        { command: "chat.newLocal", key: "ctrl+k" },
+        { command: "thread.copyReference", key: "meta+k" },
+      ]),
+      expected.platform,
+    );
+    const conflictsFor = (key: string) => rows.find((row) => row.key === key)?.conflicts;
+
+    expect(conflictsFor("ctrl+k")).toEqual(expected.ctrl);
+    expect(conflictsFor("meta+k")).toEqual(expected.meta);
+    expect(
+      keybindingConflictLabels(rows, { rowId: "new", key: "ctrl+k", when: "" }, expected.platform),
+    ).toEqual(["New local thread", ...expected.ctrl].toSorted());
+  });
+
+  it.each([
+    {
+      platform: "MacIntel",
+      visible: ["", "!isMac || terminalFocus", "isMac", "isMac && isDesktop"],
+    },
+    { platform: "Linux x86_64", visible: ["", "!isMac", "!isMac || terminalFocus"] },
+  ])("lists only the $platform platform variants", ({ platform, visible }) => {
+    const rows = buildKeybindingRows(
+      compileResolvedKeybindingsConfig([
+        { command: "layout.focusDown", key: "mod+alt+arrowdown", when: "isMac" },
+        { command: "layout.focusDown", key: "alt+shift+arrowdown", when: "!isMac" },
+        { command: "layout.focusDown", key: "mod+alt+j", when: "isMac && isDesktop" },
+        { command: "layout.focusDown", key: "ctrl+j", when: "!isMac || terminalFocus" },
+        { command: "layout.focusDown", key: "f9" },
+      ]),
+      platform,
+    );
+
+    expect(rows.map((row) => row.when).toSorted()).toEqual(visible);
+  });
+
+  it("keeps mod and ctrl shortcuts apart when their when contexts differ", () => {
+    const rows = buildKeybindingRows(
+      compileResolvedKeybindingsConfig([
+        { command: "chat.new", key: "mod+k", when: "!terminalFocus" },
+        { command: "chat.newLocal", key: "ctrl+k", when: "terminalFocus" },
+      ]),
+      "Linux x86_64",
+    );
+
+    expect(rows.map((row) => row.conflicts)).toEqual([[], []]);
   });
 });

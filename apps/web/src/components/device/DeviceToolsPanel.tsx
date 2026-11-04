@@ -16,6 +16,7 @@ import {
 } from "~/components/ui/select";
 import { Spinner } from "~/components/ui/spinner";
 import { Switch } from "~/components/ui/switch";
+import { Text } from "~/components/ui/text";
 import { Toggle, ToggleGroup } from "~/components/ui/toggle-group";
 import { cn } from "~/lib/utils";
 import type { DeviceControls } from "./useDeviceControls";
@@ -110,7 +111,7 @@ export function DeviceToolsPanel(props: {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {error ? (
-          <p className="border-b bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+          <p className="border-b bg-error/10 px-3 py-2 text-xs text-error-foreground">{error}</p>
         ) : null}
         {detail === null && !error ? (
           <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-foreground">
@@ -134,7 +135,7 @@ export function DeviceToolsPanel(props: {
             <div className="flex gap-1.5">
               <Button
                 size="xs"
-                variant="outline"
+                variant="secondary"
                 disabled={disabled}
                 onClick={() => void act({ type: "terminateApp", appId: foregroundApp.id })}
               >
@@ -142,7 +143,7 @@ export function DeviceToolsPanel(props: {
               </Button>
               <Button
                 size="xs"
-                variant="outline"
+                variant="secondary"
                 disabled={disabled}
                 onClick={() => void act({ type: "launchApp", appId: foregroundApp.id })}
               >
@@ -312,7 +313,7 @@ export function DeviceToolsPanel(props: {
               onSubmit={(payload) =>
                 foregroundApp
                   ? act({ type: "sendPush", appId: foregroundApp.id, payload })
-                  : Promise.resolve()
+                  : Promise.resolve(false)
               }
             />
             {!foregroundApp ? (
@@ -330,7 +331,9 @@ export function DeviceToolsPanel(props: {
 function Section(props: { readonly title: string; readonly children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-2 border-b px-3 py-2.5 last:border-b-0">
-      <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+      <Text variant="meta" tone="dim" render={<h3 />}>
+        {props.title}
+      </Text>
       {props.children}
     </section>
   );
@@ -349,7 +352,7 @@ function SwitchRow(props: {
   readonly label: string;
   readonly checked: boolean | undefined;
   readonly disabled: boolean;
-  readonly onChange: (value: boolean) => Promise<void>;
+  readonly onChange: (value: boolean) => Promise<unknown>;
 }) {
   return (
     <Row label={props.label}>
@@ -370,7 +373,7 @@ function ChoiceSelect<V extends string>(props: {
   readonly options: ReadonlyArray<{ readonly value: V; readonly label: string }>;
   readonly disabled: boolean;
   readonly placeholder?: string;
-  readonly onChange: (value: V) => Promise<void>;
+  readonly onChange: (value: V) => Promise<unknown>;
 }) {
   const current = props.options.find((option) => option.value === props.value);
   return (
@@ -405,13 +408,15 @@ function SubmitRow(props: {
   readonly placeholder: string;
   readonly action: string;
   readonly disabled: boolean;
-  readonly onSubmit: (value: string) => Promise<void>;
+  readonly onSubmit: (value: string) => Promise<boolean>;
 }) {
   const [value, setValue] = useState("");
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed) return;
-    void props.onSubmit(trimmed).then(() => setValue(""));
+    void props.onSubmit(trimmed).then((sent) => {
+      if (sent) setValue("");
+    });
   };
   return (
     <form
@@ -433,7 +438,7 @@ function SubmitRow(props: {
       <Button
         type="submit"
         size="xs"
-        variant="outline"
+        variant="secondary"
         disabled={props.disabled || value.trim().length === 0}
       >
         {props.action}
@@ -445,8 +450,8 @@ function SubmitRow(props: {
 function LocationSection(props: {
   readonly disabled: boolean;
   readonly canClear: boolean;
-  readonly onSet: (latitude: number, longitude: number) => Promise<void>;
-  readonly onClear: () => Promise<void>;
+  readonly onSet: (latitude: number, longitude: number) => Promise<unknown>;
+  readonly onClear: () => Promise<unknown>;
 }) {
   const [latitude, setLatitude] = useState("");
   const [longitude, setLongitude] = useState("");
@@ -507,7 +512,7 @@ function LocationSection(props: {
         </Select>
         <Button
           size="xs"
-          variant="outline"
+          variant="secondary"
           disabled={props.disabled || !valid}
           onClick={() => void props.onSet(parsed.latitude, parsed.longitude)}
         >
@@ -541,7 +546,7 @@ function PermissionsSection(props: {
     appId: string,
     permission: DevicePermission,
     decision: "grant" | "revoke" | "reset",
-  ) => Promise<void>;
+  ) => Promise<unknown>;
 }) {
   const [appId, setAppId] = useState("");
   const [permission, setPermission] = useState<DevicePermission>("camera");
@@ -571,7 +576,7 @@ function PermissionsSection(props: {
         />
         <Button
           size="xs"
-          variant="outline"
+          variant="secondary"
           disabled={props.disabled || !resolvedAppId}
           onClick={() => decide("grant")}
         >
@@ -579,7 +584,7 @@ function PermissionsSection(props: {
         </Button>
         <Button
           size="xs"
-          variant="outline"
+          variant="secondary"
           disabled={props.disabled || !resolvedAppId}
           onClick={() => decide("revoke")}
         >

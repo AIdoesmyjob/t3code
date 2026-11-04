@@ -3,9 +3,11 @@ import { useId, useRef, useState } from "react";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import {
+  isSecretReference,
   type DeviceEasAccount,
   type EasDeviceHostConfig,
   type EnvironmentId,
+  type SettingsSecretValue,
 } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
 
@@ -25,7 +27,7 @@ import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { parseEasDeviceHostDraft } from "./easDeviceHostsSettings.logic";
-import { SecretInput } from "./SecretInput";
+import { SecretSourceInput, useSecretSources } from "./SecretSourceInput";
 
 const FROM_THREAD_PROJECT = "thread-project";
 
@@ -57,9 +59,12 @@ export function EasDeviceHostEditor(props: {
   const check = useAtomCommand(deviceEnvironment.easAccount, { reportFailure: false });
   const [draft, setDraft] = useState(props.host);
   const tokenId = useId();
+  const secretSources = useSecretSources(props.environmentId);
+  const [tokenValid, setTokenValid] = useState(true);
+  const [tokenInputKey, setTokenInputKey] = useState(0);
   // A saved token arrives redacted; only a replacement or a clear changes it.
   const [token, setToken] = useState<
-    { kind: "saved" } | { kind: "new"; value: string } | { kind: "cleared" }
+    { kind: "saved" } | { kind: "new"; value: SettingsSecretValue } | { kind: "cleared" }
   >(props.host.accessToken ? { kind: "saved" } : { kind: "cleared" });
   // Checking on open names the saved project and shows a rejected credential
   // before anything is changed. A manual check or a token edit replaces it.
@@ -87,13 +92,15 @@ export function EasDeviceHostEditor(props: {
     accessToken:
       token.kind === "saved" ? props.host.accessToken : token.kind === "new" ? token.value : "",
   };
-  const valid = Option.isSome(parseEasDeviceHostDraft(next));
+  const valid = tokenValid && Option.isSome(parseEasDeviceHostDraft(next));
   // Why Save is off, for the limits the fields' ranges do not show.
   const problem = valid
     ? null
-    : draft.maxSessionMinutes > 0 && draft.idleMinutes >= draft.maxSessionMinutes
-      ? "Idle minutes must be smaller than session minutes."
-      : "Give the host a label and limits within the ranges shown.";
+    : !tokenValid
+      ? "Enter a valid secret reference."
+      : draft.maxSessionMinutes > 0 && draft.idleMinutes >= draft.maxSessionMinutes
+        ? "Idle minutes must be smaller than session minutes."
+        : "Give the host a label and limits within the ranges shown.";
   const apps = account.status === "signed-in" ? account.account.apps : [];
 
   // A check answers for the credential it was asked about: a later check or a
@@ -135,7 +142,7 @@ export function EasDeviceHostEditor(props: {
     label: string,
     max: number,
   ) => (
-    <label className="block space-y-1.5">
+    <label className="block space-y-1.5 text-label">
       <span>{label}</span>
       <Input
         type="number"
@@ -174,7 +181,7 @@ export function EasDeviceHostEditor(props: {
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
-            <label className="block space-y-1.5 text-sm">
+            <label className="block space-y-1.5 text-label">
               <span>Name</span>
               <Input
                 autoFocus
@@ -187,16 +194,33 @@ export function EasDeviceHostEditor(props: {
                 }}
               />
             </label>
-            <div className="space-y-1.5 text-sm">
-              <label htmlFor={tokenId} className="block">
+            <div className="space-y-1.5 text-body">
+              <label htmlFor={tokenId} className="block text-label">
                 Expo access token
               </label>
               <div className="flex items-center gap-2">
-                <SecretInput
+                <SecretSourceInput
+                  key={tokenInputKey}
                   id={tokenId}
+                  aria-label="Expo access token"
                   className="min-w-0 flex-1"
-                  configured={token.kind === "saved"}
-                  value={token.kind === "new" ? token.value : ""}
+                  configured={token.kind === "saved" && typeof props.host.accessToken === "string"}
+                  value={
+                    token.kind === "new"
+                      ? token.value
+                      : token.kind === "saved" && isSecretReference(props.host.accessToken)
+                        ? props.host.accessToken
+                        : ""
+                  }
+                  sources={secretSources}
+                  onValidityChange={(valid) => {
+                    setTokenValid(valid);
+                    resetAccount();
+                  }}
+                  onSecretChange={(secret) => {
+                    setToken(secret ? { kind: "new", value: secret } : { kind: "cleared" });
+                    resetAccount();
+                  }}
                   disabled={props.busy}
                   placeholder="Optional"
                   onChange={(event) => {
@@ -221,6 +245,8 @@ export function EasDeviceHostEditor(props: {
                     aria-label="Clear access token"
                     onClick={() => {
                       setToken({ kind: "cleared" });
+                      setTokenValid(true);
+                      setTokenInputKey((key) => key + 1);
                       resetAccount();
                     }}
                   >
@@ -229,8 +255,8 @@ export function EasDeviceHostEditor(props: {
                 ) : null}
               </div>
             </div>
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5">
-              <p role="status" className="min-w-0 text-xs text-muted-foreground">
+            <div className="flex items-center justify-between gap-3 rounded-card border border-transparent surface-card-settings px-3 py-2.5">
+              <p role="status" className="min-w-0 text-meta text-muted-foreground">
                 {account.status === "signed-in"
                   ? `Signed in as ${account.account.signedInAs} with ${CREDENTIAL_SOURCES[account.account.credentialSource]}.`
                   : account.status === "failed"
@@ -242,15 +268,15 @@ export function EasDeviceHostEditor(props: {
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
-                disabled={props.busy || account.status === "checking"}
+                variant="secondary"
+                disabled={props.busy || !tokenValid || account.status === "checking"}
                 onClick={() => void checkAccount()}
               >
                 {account.status === "checking" ? <Spinner size="xs" /> : null} Check account
               </Button>
             </div>
-            <div className="space-y-1.5 text-sm">
-              <span>EAS project</span>
+            <div className="space-y-1.5 text-body">
+              <span className="text-label">EAS project</span>
               <Select
                 value={draft.appId ?? FROM_THREAD_PROJECT}
                 disabled={props.busy}
@@ -283,24 +309,24 @@ export function EasDeviceHostEditor(props: {
                   ))}
                 </SelectPopup>
               </Select>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-meta text-muted-foreground">
                 Sessions bill the project's Expo account. "From the thread's project" reads
                 extra.eas.projectId from the project's app config.
               </p>
             </div>
-            <div className="grid grid-cols-3 gap-3 text-sm">
+            <div className="grid grid-cols-3 gap-3 text-body">
               {limit("maxConcurrentSessions", "Sessions at once", 20)}
               {limit("maxSessionMinutes", "Session minutes", 115)}
               {limit("idleMinutes", "Idle minutes", 60)}
             </div>
-            <p className="text-xs text-muted-foreground">
+            <p className="text-meta text-muted-foreground">
               Expo allows sessions of up to 40 minutes on free accounts and 115 on paid ones, and
               ends one after the idle minutes without activity, so idle minutes must be smaller than
               session minutes.
               {props.isNew ? null : " Saving restarts this host, which stops its running sessions."}
             </p>
             {problem === null ? null : (
-              <p className="text-xs text-destructive" role="alert">
+              <p className="text-meta text-destructive-foreground" role="alert">
                 {problem}
               </p>
             )}

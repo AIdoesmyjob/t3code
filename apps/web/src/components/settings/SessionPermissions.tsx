@@ -1,5 +1,8 @@
 import { type EnvironmentId, sessionGrantsScope } from "@t3tools/contracts";
-import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
+import {
+  AUTH_SCOPE_OPTIONS,
+  sessionPermissionsUnavailableMessage,
+} from "@t3tools/shared/authScopeOptions";
 import { useEnvironmentSessionState } from "~/state/session";
 
 export function SessionPermissions({
@@ -13,7 +16,7 @@ export function SessionPermissions({
 }) {
   const session = useEnvironmentSessionState(environmentId);
   return connected && !session.hasError && !session.isPending && session.data?.authenticated ? (
-    <div className="space-y-3 py-3 text-xs">
+    <div className="space-y-3 py-3 text-meta">
       <p className="text-muted-foreground">
         {routeContext
           ? "These permissions apply to your active route. Other routes may have different permissions."
@@ -31,8 +34,12 @@ export function SessionPermissions({
       </ul>
     </div>
   ) : (
-    <p className="py-3 text-xs text-muted-foreground">
-      Permissions not checked. Connect to this environment to view this session’s permissions.
+    <p className="py-3 text-meta text-muted-foreground">
+      {sessionPermissionsUnavailableMessage({
+        connected,
+        failed: session.hasError,
+        rejected: !session.hasError && !session.isPending && session.data?.authenticated === false,
+      })}
     </p>
   );
 }

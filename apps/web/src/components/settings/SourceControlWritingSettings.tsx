@@ -27,27 +27,22 @@ import {
 } from "../../modelSelection";
 import { useEnvironmentProviders } from "../../state/environments";
 import { EMPTY_SERVER_PROVIDERS } from "../../state/server";
-import { ProviderModelPicker } from "../chat/ProviderModelPicker";
-import { TraitsPicker } from "../chat/TraitsPicker";
+import { GitCommitHorizontalIcon } from "lucide-react";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { toastManager } from "../ui/toast";
 import { Button } from "../ui/button";
-import {
-  SETTINGS_PICKER_TRIGGER_CLASSNAME,
-  SettingResetButton,
-  SettingsRow,
-  SettingsSection,
-} from "./settingsLayout";
 import { AdvancedSettings } from "./AdvancedSettings";
+import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
+import { SettingsModelPicker } from "./SettingsModelPicker";
 import { searchableSetting } from "./settingsSearch";
 
 const MODE_OPTIONS: Record<SourceControlWritingStyleMode, { label: string; description: string }> =
   {
     repo_conventions: {
       label: "Repository conventions",
-      description: "In each project, matches recent change descriptions and change request titles.",
+      description: "Matches each project's recent change descriptions and titles.",
     },
     conventional_commits: {
       label: "Conventional Commits",
@@ -172,7 +167,7 @@ export function SourceControlWritingSettingsSection() {
   );
 
   return (
-    <SettingsSection id="source-control-text-generation" title="Writing & review">
+    <SettingsSection id="source-control-text-generation" title="Text generation">
       <SettingsRow
         serverScoped
         settingKeys={["sourceControlWritingStyle"]}
@@ -211,6 +206,7 @@ export function SourceControlWritingSettingsSection() {
               size="sm"
               className="w-full sm:w-56"
               aria-label="Source control writing style"
+              leadingIcon={<GitCommitHorizontalIcon />}
             >
               <SelectValue>
                 {(value: SourceControlWritingStyleMode | null) =>
@@ -241,7 +237,7 @@ export function SourceControlWritingSettingsSection() {
                 />
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant="secondary"
                   disabled={allInstructions === null}
                   onClick={() => {
                     if (allInstructions === null) return;
@@ -260,7 +256,7 @@ export function SourceControlWritingSettingsSection() {
             ) : (
               <Button
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 onClick={() => {
                   setAllInstructions(null);
                   setEditingAllInstructions(true);
@@ -295,7 +291,7 @@ export function SourceControlWritingSettingsSection() {
         settingKeys={["reviewGuidesEnabled"]}
         mixed={mixedReviewGuidesEnabled}
         {...searchableSetting("review-guides")}
-        description="Adds a Guide tab to pull requests: an agent writes a tour of the change, stop by stop, with the calls a maintainer should make."
+        description="Add a Guide tab to pull requests. An agent explains the changes and points out decisions that need review."
         control={
           <Switch
             mixed={mixedReviewGuidesEnabled}
@@ -315,21 +311,39 @@ export function SourceControlWritingSettingsSection() {
             description="Model that reads a pull request to write its review guide. It reads the change itself over many steps, so a stronger model helps. Off uses the source control writer model."
             control={
               !hasServerTargets ? (
-                <span className="text-sm text-muted-foreground">
+                <span className="text-body text-muted-foreground">
                   Connect an environment to choose its review guide model.
                 </span>
               ) : (
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   {(usesReviewGuideModel || mixedReviewGuideModel) && canEnableDedicatedModel ? (
-                    <ProviderModelPicker
+                    <SettingsModelPicker
                       environmentId={environmentId}
                       activeInstanceId={reviewGuideSelection.instanceId}
                       model={reviewGuideSelection.model}
-                      lockedProvider={null}
                       instanceEntries={instanceEntries}
                       modelOptionsByInstance={reviewGuideModelOptionsByInstance}
-                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                       triggerAriaLabel="Review guide model"
+                      traits={
+                        usesReviewGuideModel && !mixedReviewGuideModel && reviewGuideInstanceEntry
+                          ? {
+                              provider: reviewGuideInstanceEntry.driverKind,
+                              models: reviewGuideInstanceEntry.models,
+                              modelOptions: reviewGuideSelection.options ?? [],
+                              planModeEnabled:
+                                settings.planModeEnabled ||
+                                selectsPlanAgent(reviewGuideSelection.options),
+                              onModelOptionsChange: (options) =>
+                                updateSettings({
+                                  reviewGuideModelSelection: createModelSelection(
+                                    reviewGuideSelection.instanceId,
+                                    reviewGuideSelection.model,
+                                    options,
+                                  ),
+                                }),
+                            }
+                          : null
+                      }
                       {...(mixedReviewGuideModel ? { triggerLabel: "Mixed" } : {})}
                       getModelDisabledReason={writerModelDisabledReason}
                       onInstanceModelChange={(instanceId, model) => {
@@ -346,31 +360,6 @@ export function SourceControlWritingSettingsSection() {
                           reviewGuideModelSelection: createModelSelection(instanceId, model),
                         });
                       }}
-                    />
-                  ) : null}
-                  {usesReviewGuideModel &&
-                  canEnableDedicatedModel &&
-                  !mixedReviewGuideModel &&
-                  reviewGuideInstanceEntry ? (
-                    <TraitsPicker
-                      provider={reviewGuideInstanceEntry.driverKind}
-                      models={reviewGuideInstanceEntry.models}
-                      model={reviewGuideSelection.model}
-                      modelOptions={reviewGuideSelection.options ?? []}
-                      allowPromptInjectedEffort={false}
-                      planModeEnabled={
-                        settings.planModeEnabled || selectsPlanAgent(reviewGuideSelection.options)
-                      }
-                      triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                      onModelOptionsChange={(options) =>
-                        updateSettings({
-                          reviewGuideModelSelection: createModelSelection(
-                            reviewGuideSelection.instanceId,
-                            reviewGuideSelection.model,
-                            options,
-                          ),
-                        })
-                      }
                     />
                   ) : null}
                   <Switch
@@ -462,7 +451,7 @@ export function SourceControlWritingSettingsSection() {
           settingKeys={["sourceControlWritingStyle"]}
           mixed={templatesMixed}
           {...searchableSetting("follow-change-request-templates")}
-          description="Use the repository's template for change request descriptions when available."
+          description="Use the repository's change request template when it has one."
           resetAction={
             templatesMixed ||
             style.followChangeRequestTemplates !== defaults.followChangeRequestTemplates ? (
@@ -498,28 +487,45 @@ export function SourceControlWritingSettingsSection() {
           serverScoped
           settingKeys={["sourceControlWriterModelSelection"]}
           {...searchableSetting("source-control-writer-model")}
-          description="Model for source control text and branch or bookmark names. Off uses the environment's text generation model."
+          description="Model for source control text and branch or bookmark names. When disabled, use the text generation model configured for this environment."
           control={
             !hasServerTargets ? (
-              <span className="text-sm text-muted-foreground">
+              <span className="text-body text-muted-foreground">
                 Connect an environment to choose its source control writer model.
               </span>
             ) : (
               <div className="flex flex-wrap items-center justify-end gap-2">
                 {usesDedicatedModel && !canEnableDedicatedModel ? (
-                  <span className="text-sm text-muted-foreground">
+                  <span className="text-body text-muted-foreground">
                     No text generation providers available.
                   </span>
                 ) : null}
                 {usesDedicatedModel && canEnableDedicatedModel ? (
-                  <ProviderModelPicker
+                  <SettingsModelPicker
                     environmentId={environmentId}
                     activeInstanceId={activeSelection.instanceId}
                     model={activeSelection.model}
-                    lockedProvider={null}
                     instanceEntries={instanceEntries}
                     modelOptionsByInstance={modelOptionsByInstance}
-                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                    traits={
+                      !mixedWriterModel && writerInstanceEntry
+                        ? {
+                            provider: writerInstanceEntry.driverKind,
+                            models: writerInstanceEntry.models,
+                            modelOptions: activeSelection.options ?? [],
+                            planModeEnabled:
+                              settings.planModeEnabled || selectsPlanAgent(activeSelection.options),
+                            onModelOptionsChange: (options) =>
+                              updateSettings({
+                                sourceControlWriterModelSelection: createModelSelection(
+                                  activeSelection.instanceId,
+                                  activeSelection.model,
+                                  options,
+                                ),
+                              }),
+                          }
+                        : null
+                    }
                     triggerAriaLabel="Source control writer model"
                     {...(mixedWriterModel ? { triggerLabel: "Mixed" } : {})}
                     {...(environmentId
@@ -547,31 +553,6 @@ export function SourceControlWritingSettingsSection() {
                         sourceControlWriterModelSelection: createModelSelection(instanceId, model),
                       });
                     }}
-                  />
-                ) : null}
-                {usesDedicatedModel &&
-                canEnableDedicatedModel &&
-                !mixedWriterModel &&
-                writerInstanceEntry ? (
-                  <TraitsPicker
-                    provider={writerInstanceEntry.driverKind}
-                    models={writerInstanceEntry.models}
-                    model={activeSelection.model}
-                    modelOptions={activeSelection.options ?? []}
-                    allowPromptInjectedEffort={false}
-                    planModeEnabled={
-                      settings.planModeEnabled || selectsPlanAgent(activeSelection.options)
-                    }
-                    triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                    onModelOptionsChange={(options) =>
-                      updateSettings({
-                        sourceControlWriterModelSelection: createModelSelection(
-                          activeSelection.instanceId,
-                          activeSelection.model,
-                          options,
-                        ),
-                      })
-                    }
                   />
                 ) : null}
                 <Switch

@@ -1,3 +1,9 @@
+import {
+  createHighlightCacheKey,
+  estimateHighlightedSize,
+  extractFenceLanguage,
+} from "./MarkdownCodeBlock.logic";
+import { reportMarkdownActionFailure } from "./markdownActionFailure";
 import { Check, Copy } from "lucide";
 import { PlayIcon, WrapTextIcon } from "lucide-react";
 import { toHtml } from "hast-util-to-html";
@@ -21,12 +27,6 @@ import { MorphIcon } from "../MorphIcon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { HighlightedCodeLines } from "./HighlightedCodeLines";
-import {
-  createHighlightCacheKey,
-  estimateHighlightedSize,
-  extractFenceLanguage,
-} from "./MarkdownCodeBlock.logic";
-import { reportMarkdownActionFailure } from "./markdownActionFailure";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 
 const MAX_HIGHLIGHT_CACHE_ENTRIES = 500;
@@ -65,19 +65,23 @@ export function MarkdownCodeBlockFrame({
   return (
     <Wrapper
       dir="ltr"
-      className="chat-markdown-codeblock my-[0.65rem] overflow-hidden rounded-lg border border-border/70 bg-secondary leading-snug dark:border-transparent dark:bg-input/32"
+      className={cn(
+        "chat-markdown-codeblock surface-well my-[0.65rem] text-start overflow-hidden rounded-lg shadow-none! leading-snug",
+        /^(?:text|plaintext|txt)$/.test(language) &&
+          "[&_pre]:text-foreground! [&_code]:text-foreground! [&_.line_span]:text-foreground!",
+      )}
       data-language={language}
       data-wrap={wrapped ? "true" : "false"}
     >
       <div
         {...headerProps}
         className={cn(
-          "chat-markdown-codeblock-header flex items-center justify-between gap-2 pt-1.5 pr-1.5 pb-0 pl-3 select-none",
+          "chat-markdown-codeblock-header flex h-8 items-center justify-between gap-2 pr-1.5 pl-3.5 select-none",
           headerProps?.className,
         )}
       >
         {title ?? (
-          <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-2xs">
+          <span className="inline-flex min-w-0 items-center gap-1.5 font-mono text-2xs text-muted-foreground">
             <MarkdownCodeBlockTitleContent
               fenceTitle={fenceTitle}
               language={language}
@@ -201,8 +205,9 @@ export function MarkdownCodeBlock({
 
   if (diagram) {
     return (
+      // The transparent border and fixed-height header match the code frame, so the
       <div className="my-[0.65rem] border border-transparent" data-language={language}>
-        <div className="flex items-center justify-end gap-0.5 pt-1.5 pr-1.5 select-none">
+        <div className="flex h-8 items-center justify-end gap-0.5 pr-1.5 select-none">
           {viewToggle}
           {copyButton}
         </div>
@@ -226,7 +231,7 @@ export function MarkdownCodeBlock({
                 render={
                   <Button
                     type="button"
-                    variant={wrapped ? "secondary" : "ghost-muted"}
+                    variant="ghost-muted"
                     size="icon-xs"
                     aria-pressed={wrapped}
                     onClick={() => setWrapped((value) => !value)}
@@ -234,7 +239,7 @@ export function MarkdownCodeBlock({
                   />
                 }
               >
-                <WrapTextIcon className="size-3" />
+                <WrapTextIcon className={cn("size-3", wrapped && "text-foreground")} />
               </TooltipTrigger>
               <TooltipPopup side="top">{wrapLabel}</TooltipPopup>
             </Tooltip>

@@ -12,6 +12,7 @@ import {
   type EnvironmentId,
   connectReachabilityHelpUrl,
   formatConnectReachable,
+  managedCapabilityDenial,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 import {
@@ -60,6 +61,7 @@ import {
   usePrimaryEnvironmentId,
 } from "~/state/environments";
 import { APP_VERSION } from "~/branding";
+import { usePrimaryManagedPolicy } from "~/state/managedPolicy";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { serverEnvironment } from "~/state/server";
 import {
@@ -211,14 +213,11 @@ export function SavedBackendListRow({
       (lastDescriptor === undefined ? null : { environment: lastDescriptor }),
   );
   const routeCount = connectionRoutes(environment.entry).length;
-  const subtitleText = [
-    environmentTransportLabel(environment, connectedTarget),
-    // The headline below names the failure in full.
-    diagnosis ? null : resumingServerUpdate ? "Restarting" : status.text,
-    enabled && versionMismatch ? serverVersion : null,
-  ]
-    .filter((value): value is string => value !== null)
-    .join(" · ");
+  const subtitleText = diagnosis
+    ? environmentTransportLabel(environment, connectedTarget)
+    : resumingServerUpdate
+      ? "Restarting"
+      : status.text;
 
   const showUpdateAction =
     enabled &&
@@ -226,7 +225,8 @@ export function SavedBackendListRow({
     versionMismatch !== null &&
     (serverUpdateState.status === "idle" || serverUpdateState.status === "failed");
 
-  const statusTooltip = `${
+  const statusTooltip = `${environmentTransportLabel(environment, connectedTarget)}
+${serverVersion ? `Version ${serverVersion}\n` : ""}${
     unsupported
       ? (environment.connection.error ?? connectionStatusText(environment.connection))
       : enabled
@@ -244,7 +244,7 @@ export function SavedBackendListRow({
       label={environment.label}
       dimmed={!enabled}
       subtitle={
-        <span className="flex min-w-0 items-center gap-1">
+        <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
           <Tooltip>
             {/* The status can change while the tooltip is open, and base-ui only
                 re-measures the popup when the trigger's payload changes. */}
@@ -269,14 +269,10 @@ export function SavedBackendListRow({
               {statusTooltip}
             </TooltipPopup>
           </Tooltip>
-          <span aria-hidden className="shrink-0">
-            ·
-          </span>
-          <button
-            type="button"
+          <InlineButton
+            tone="muted"
             aria-expanded={routesOpen}
             onClick={() => setRoutesOpen((open) => !open)}
-            className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           >
             {routeCount === 1 ? "Routes" : `${routeCount} routes`}
             <ChevronRightIcon
@@ -286,16 +282,12 @@ export function SavedBackendListRow({
                 routesOpen && "rotate-90",
               )}
             />
-          </button>
-          <span aria-hidden className="shrink-0">
-            ·
-          </span>
-          <button
-            type="button"
+          </InlineButton>
+          <InlineButton
+            tone="muted"
             aria-expanded={permissionsOpen}
             aria-controls={`remote-permissions-${environmentId}`}
             onClick={() => setPermissionsOpen((open) => !open)}
-            className="inline-flex shrink-0 items-center gap-0.5 rounded-sm text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
           >
             Permissions
             <ChevronRightIcon
@@ -305,7 +297,7 @@ export function SavedBackendListRow({
                 permissionsOpen && "rotate-90",
               )}
             />
-          </button>
+          </InlineButton>
         </span>
       }
       below={
@@ -531,6 +523,8 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
     reconcileCloudState,
   } = useCloudLinkController();
   const { openAuthPrompt } = useT3ConnectAuthPrompt();
+  // The server unlinks and refuses relay changes under such a policy; unlinking stays possible.
+  const connectDenial = managedCapabilityDenial(usePrimaryManagedPolicy(), "connect");
   const [isUpdating, setIsUpdating] = useState(false);
   const [isUpdatingPreference, setIsUpdatingPreference] = useState(false);
 
@@ -549,7 +543,7 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
   // a fresh sign-in offers both linking and publishing.
   const signedOut = isSignedIn === false;
   const signInButton = (
-    <Button size="sm" variant="outline" onClick={openAuthPrompt}>
+    <Button size="sm" variant="secondary" onClick={openAuthPrompt}>
       Sign in
     </Button>
   );
@@ -566,18 +560,22 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
     reachability?.status === "reachable" ? (
       formatConnectReachable(reachability)
     ) : reachability?.status === "unreachable" ? (
-      <span className="block text-destructive">
+      <span className="block text-destructive-foreground">
         {[reachability.reason, reachability.hint, `Fix: ${reachability.fix}`]
           .filter(Boolean)
           .join(" ")}{" "}
-        <a
-          href={connectReachabilityHelpUrl(reachability.cause)}
-          target="_blank"
-          rel="noreferrer"
-          className="underline underline-offset-2"
+        <InlineButton
+          tone="destructive"
+          render={
+            <a
+              href={connectReachabilityHelpUrl(reachability.cause)}
+              target="_blank"
+              rel="noreferrer"
+            />
+          }
         >
           More info
-        </a>
+        </InlineButton>
       </span>
     ) : null;
 
@@ -652,21 +650,24 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
         <SettingsRow
           title={searchableSetting("t3-connect").title}
           description={
-            signedOut
-              ? "Sign in to make this environment available to your other devices through T3 Connect."
-              : linkRevoked
-                ? "This environment was removed from T3 Connect. Turn it on to link it again."
-                : managedTunnelActive
-                  ? reachability?.status === "unreachable"
-                    ? "T3 Connect is on, but other devices cannot reach this environment."
-                    : reachability?.status === "reachable"
-                      ? "This environment is available to your other devices through T3 Connect."
-                      : "T3 Connect is on. Reachability has not been checked yet."
-                  : managedTunnelOutOfSync
-                    ? "T3 Connect is out of sync. This environment is linked only to publish agent activity, so other devices cannot connect. Turn T3 Connect on to repair it."
-                    : "Make this environment available to your other devices through T3 Connect."
+            connectDenial !== undefined && !managedTunnelActive
+              ? connectDenial
+              : signedOut
+                ? "Sign in to make this environment available to your other devices through T3 Connect."
+                : linkRevoked
+                  ? "This environment was removed from T3 Connect. Turn it on to link it again."
+                  : managedTunnelActive
+                    ? reachability?.status === "unreachable"
+                      ? "T3 Connect is on, but other devices cannot reach this environment."
+                      : reachability?.status === "reachable"
+                        ? "This environment is available to your other devices through T3 Connect."
+                        : "T3 Connect is on. Reachability has not been checked yet."
+                    : managedTunnelOutOfSync
+                      ? "T3 Connect is out of sync. This environment is linked only to publish agent activity, so other devices cannot connect. Turn T3 Connect on to repair it."
+                      : "Make this environment available to your other devices through T3 Connect."
           }
           status={operationError ?? primaryCloudLinkState.error ?? reachabilityStatus}
+          managed={managedTunnelActive ? undefined : connectDenial}
           control={
             signedOut ? (
               signInButton
@@ -680,7 +681,9 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
             )
           }
         >
-          {signedOut ? null : <T3ConnectTunnelUsage tunnelLimit={tunnelLimit} />}
+          {signedOut || connectDenial !== undefined ? null : (
+            <T3ConnectTunnelUsage tunnelLimit={tunnelLimit} />
+          )}
         </SettingsRow>
       ) : linkRevoked ? (
         <SettingsRow
@@ -696,6 +699,7 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
               ? "Sign in to send activity to mobile notifications and Live Activities."
               : "Send activity to mobile notifications and Live Activities without T3 Connect."
           }
+          managed={connectDenial}
           control={
             signedOut ? (
               signInButton
@@ -715,6 +719,7 @@ function ConfiguredCloudLinkRow({ canManageRelay }: { readonly canManageRelay: b
         <SettingsRow
           title={searchableSetting("hold-webhooks-while-offline").title}
           description="Keep webhook requests for up to 24 hours while this environment is offline, then deliver them. Off: T3 Connect only forwards requests and stores nothing."
+          managed={connectDenial}
           control={
             <CloudLinkSwitch
               ariaLabel="Hold webhook requests while this environment is offline"
@@ -751,7 +756,7 @@ export function CloudLinkRow({
 
 function EmptyRemoteEnvironments({ cloudEnabled = true }: { readonly cloudEnabled?: boolean }) {
   return (
-    <Empty className="min-h-52">
+    <Empty size="compact">
       <EmptyMedia variant="icon">
         <ChevronsLeftRightEllipsisIcon />
       </EmptyMedia>

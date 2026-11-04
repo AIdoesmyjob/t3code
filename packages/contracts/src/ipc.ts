@@ -1,3 +1,4 @@
+import { ResolvedKeybindingsConfig } from "./keybindings.ts";
 import * as Schema from "effect/Schema";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
 
@@ -30,6 +31,10 @@ export interface ContextMenuItem<T extends string = string> {
   icon?: string;
   separatorBefore?: boolean;
   checked?: boolean;
+  /** The item's key as the platform writes it ("⌥⌘F"), shown by the web fallback. */
+  shortcut?: string;
+  /** The same key in Electron accelerator form, shown (not registered) by desktop menus. */
+  accelerator?: string;
   children?: readonly ContextMenuItem<T>[];
 }
 
@@ -46,6 +51,8 @@ export interface ContextMenuItemSchemaType {
   readonly icon?: string;
   readonly separatorBefore?: boolean;
   readonly checked?: boolean;
+  readonly shortcut?: string;
+  readonly accelerator?: string;
   readonly children?: readonly ContextMenuItemSchemaType[];
 }
 
@@ -58,6 +65,8 @@ export const ContextMenuItemSchema: Schema.Codec<ContextMenuItemSchemaType> = Sc
   icon: Schema.optionalKey(Schema.String),
   separatorBefore: Schema.optionalKey(Schema.Boolean),
   checked: Schema.optionalKey(Schema.Boolean),
+  shortcut: Schema.optionalKey(Schema.String),
+  accelerator: Schema.optionalKey(Schema.String),
   children: Schema.optionalKey(
     Schema.Array(
       Schema.suspend((): Schema.Codec<ContextMenuItemSchemaType> => ContextMenuItemSchema),
@@ -282,6 +291,8 @@ export interface DesktopUpdateState {
   errorContext: "check" | "download" | "install" | null;
   canRetry: boolean;
   notAppliedVersion?: string;
+  /** Off only because a managed policy rules out this channel; switching channels turns it on. */
+  channelBlockedByPolicy?: true;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -290,10 +301,11 @@ export interface DesktopUpdateReleaseNote {
   totalItems: number;
   /** ISO time from the update feed for the offered version, else `YYYY-MM-DD` from a prerelease version. */
   releasedAt?: string;
-  /** Generated summaries only: the highlights paragraph. `items` then holds the fixes. */
+  /** Paragraph-style summaries from older releases keep their fixes in `items`. */
   intro?: string;
   /** Generated summaries only, for example "275 changes from 22 contributors". */
   stats?: string;
+  footer?: string;
 }
 
 export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
@@ -303,6 +315,7 @@ export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
   releasedAt: Schema.optionalKey(Schema.String),
   intro: Schema.optionalKey(Schema.String),
   stats: Schema.optionalKey(Schema.String),
+  footer: Schema.optionalKey(Schema.String),
 });
 
 export const DesktopUpdateStateSchema = Schema.Struct({
@@ -993,6 +1006,33 @@ export const DesktopPreviewAnnotationThemeInputSchema = Schema.Struct({
   theme: DesktopPreviewAnnotationThemeSchema,
 });
 
+/**
+ * A chord a focused preview webview hands back to the app window instead of
+ * the page (the layout map). `key` is a keybinding key token ("arrowleft",
+ * "u", "["); modifiers are exact.
+ */
+export const DesktopForwardedShortcutSchema = Schema.Struct({
+  key: Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(32)),
+  metaKey: Schema.Boolean,
+  ctrlKey: Schema.Boolean,
+  altKey: Schema.Boolean,
+  shiftKey: Schema.Boolean,
+});
+export type DesktopForwardedShortcut = typeof DesktopForwardedShortcutSchema.Type;
+
+export const DesktopPreviewForwardedShortcutsInputSchema = Schema.Struct({
+  shortcuts: Schema.Array(DesktopForwardedShortcutSchema).check(Schema.isMaxLength(256)),
+});
+
+/** A forwarded keydown, replayed in the app window as-is. */
+export interface DesktopForwardedKeyEvent {
+  readonly key: string;
+  readonly code: string;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly altKey: boolean;
+  readonly shiftKey: boolean;
+}
 export const DesktopPreviewAnnotationSendEnabledInputSchema = Schema.Struct({
   tabId: DesktopPreviewTabIdSchema,
   enabled: Schema.Boolean,
@@ -1008,6 +1048,13 @@ export const DesktopPreviewRecordingSaveInputSchema = Schema.Struct({
   data: Schema.Uint8Array,
 });
 
+export const DesktopMediaReadSchema = Schema.Struct({
+  status: Schema.Number,
+  mimeType: Schema.String,
+  data: Schema.Uint8Array,
+});
+export type DesktopMediaRead = typeof DesktopMediaReadSchema.Type;
+
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
@@ -1018,6 +1065,7 @@ export interface DesktopBridge {
   getClientPlatform: () => string;
   setNotificationBadge: (badge: { count: number; image: string | null }) => Promise<void>;
   onNotificationBadgeClear: (listener: () => void) => () => void;
+  onTrackpadScrollBegin: (listener: () => void) => () => void;
   onTrackpadScrollEnd: (listener: () => void) => () => void;
   /**
    * Renderer `window.focus()` cannot raise an Electron window, and on Wayland
@@ -1087,6 +1135,12 @@ export interface DesktopBridge {
   pickProjectFavicon: (initialPath?: string) => Promise<string | null>;
   pickThemeFiles: () => Promise<readonly PickedThemeFile[] | null>;
   setTheme: (theme: DesktopTheme) => Promise<void>;
+  /**
+   * Whether the renderer shows the light, black chrome appearance, so the
+   * native window background and caption buttons match the black chrome.
+   * Optional while older desktop shells can host a newer web client.
+   */
+  setBlackChrome?: (enabled: boolean) => Promise<void>;
   showContextMenu: <T extends string>(
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
@@ -1094,6 +1148,8 @@ export interface DesktopBridge {
   receiveProviderAuthCallback: (authorizationUrl: string) => Promise<string>;
   cancelProviderAuthCallback: (authorizationUrl: string) => Promise<void>;
   openExternal: (url: string) => Promise<boolean>;
+  /** Reads http(s) media in the main process, outside renderer CORS and CSP; null on network failure. */
+  readMedia: (url: string) => Promise<DesktopMediaRead | null>;
   openSystemSettings: (pane: SystemSettingsPane) => Promise<boolean>;
   checkSystemPermission: (pane: SystemSettingsPane) => Promise<boolean>;
   probeRemoteEditors: () => Promise<readonly EditorId[]>;
@@ -1104,6 +1160,11 @@ export interface DesktopBridge {
   getWindowFullscreenState: () => boolean;
   onWindowFullscreenStateChange: (listener: (fullscreen: boolean) => void) => () => void;
   getWindowZoomFactor: () => number;
+  /**
+   * Shows or hides the macOS traffic lights; a no-op on other platforms.
+   * Optional: older desktop builds lack it.
+   */
+  setWindowButtonsVisible?: (visible: boolean) => Promise<void>;
   getUpdateState: () => Promise<DesktopUpdateState>;
   /** `minimumVersion` is a track switch's checked release; nothing older is offered after. */
   setUpdateChannel: (
@@ -1134,6 +1195,62 @@ export interface DesktopBridge {
 
 /** Renderer callback invoked by Electron with a fresh user gesture before display-media capture. */
 export const DESKTOP_PREVIEW_RECORDING_CAPTURE_TRIGGER = "__t3DesktopPreviewRecordingCapture";
+
+export const DesktopPreviewAnnotationVoiceConfigSchema = Schema.Struct({
+  sessionId: Schema.String,
+  keybindings: ResolvedKeybindingsConfig,
+});
+export type DesktopPreviewAnnotationVoiceConfig =
+  typeof DesktopPreviewAnnotationVoiceConfigSchema.Type;
+
+export const DesktopPreviewAnnotationVoiceEventSchema = Schema.Struct({
+  sessionId: Schema.String,
+  text: Schema.String,
+  cursor: Schema.Number,
+  action: Schema.Literals(["sync", "start", "stop", "cancel", "skip", "settings", "key", "blur"]),
+  keyboard: Schema.optional(
+    Schema.Struct({
+      type: Schema.Literals(["keydown", "keyup"]),
+      key: Schema.String,
+      code: Schema.String,
+      metaKey: Schema.Boolean,
+      ctrlKey: Schema.Boolean,
+      shiftKey: Schema.Boolean,
+      altKey: Schema.Boolean,
+      repeat: Schema.Boolean,
+    }),
+  ),
+});
+export type DesktopPreviewAnnotationVoiceEvent =
+  typeof DesktopPreviewAnnotationVoiceEventSchema.Type;
+
+export const DesktopPreviewAnnotationVoiceStateSchema = Schema.Struct({
+  tabId: Schema.String,
+  sessionId: Schema.String,
+  available: Schema.Boolean,
+  phase: Schema.Literals([
+    "idle",
+    "preparing",
+    "recording",
+    "transcribing",
+    "post-processing",
+    "error",
+  ]),
+  status: Schema.NullOr(Schema.String),
+  errorAction: Schema.NullOr(Schema.Literals(["retry", "settings"])),
+  preview: Schema.NullOr(Schema.String),
+  level: Schema.Number,
+  shortcutLabel: Schema.NullOr(Schema.String),
+  freezesEditor: Schema.Boolean,
+  blocksSubmission: Schema.Boolean,
+  draft: Schema.NullOr(Schema.Struct({ text: Schema.String, cursor: Schema.Number })),
+});
+export type DesktopPreviewAnnotationVoiceState =
+  typeof DesktopPreviewAnnotationVoiceStateSchema.Type;
+export const DesktopPreviewAnnotationVoiceInputSchema = Schema.Struct({
+  tabId: Schema.String,
+  voice: Schema.optional(DesktopPreviewAnnotationVoiceConfigSchema),
+});
 
 export interface DesktopPreviewBridge {
   setForwardedShortcuts: (shortcuts: ReadonlyArray<PreviewForwardedShortcut>) => Promise<void>;
@@ -1167,8 +1284,20 @@ export interface DesktopPreviewBridge {
   }) => Promise<BrowserImportResult>;
   setAnnotationTheme: (theme: DesktopPreviewAnnotationTheme) => Promise<void>;
   setAnnotationSendEnabled: (tabId: string, enabled: boolean) => Promise<void>;
+  /** Older desktop shells may omit both layout-chord forwarding methods. */
+  setForwardedKeyChords?: (shortcuts: ReadonlyArray<DesktopForwardedShortcut>) => Promise<void>;
+  onForwardedKeyChord?: (listener: (event: DesktopForwardedKeyEvent) => void) => () => void;
+  annotationVoice: {
+    onEvent(
+      listener: (tabId: string, event: DesktopPreviewAnnotationVoiceEvent) => void,
+    ): () => void;
+    update(state: DesktopPreviewAnnotationVoiceState): Promise<void>;
+  };
   /** Resolves with the annotation and attach/send intent, or null on cancellation. Rejects if activation fails. */
-  pickElement: (tabId: string) => Promise<PreviewAnnotationSubmissionResult | null>;
+  pickElement: (
+    tabId: string,
+    voice?: DesktopPreviewAnnotationVoiceConfig,
+  ) => Promise<PreviewAnnotationSubmissionResult | null>;
   cancelPickElement: (tabId: string) => Promise<void>;
   captureScreenshot: (
     tabId: string,
@@ -1198,6 +1327,10 @@ export type ConfirmDialogVariant = "default" | "destructive";
 
 export interface ConfirmDialogOptions {
   readonly variant?: ConfirmDialogVariant;
+  /** Replaces the title parsed from the message; the whole message becomes the description. */
+  readonly title?: string;
+  /** The confirm button's label. Defaults to "Confirm". */
+  readonly confirmLabel?: string;
 }
 
 export interface LocalApi {

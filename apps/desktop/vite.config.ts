@@ -93,7 +93,7 @@ export default defineConfig({
       dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
-      entry: ["src/boot.ts", "src/compileCache.ts"],
+      entry: ["src/boot.ts", "src/compileCache.ts", "src/serverCompileCache.ts"],
       clean: false,
       deps: {
         neverBundle: (id) => id === "./main.cjs" || id === "./compileCache.cjs",
@@ -120,7 +120,10 @@ export default defineConfig({
       outExtensions: () => ({ js: ".cjs" }),
       entry: ["src/preview-pick-preload.ts"],
       deps: {
-        alwaysBundle: (id) => id === "react-grab" || id.startsWith("react-grab/"),
+        alwaysBundle: (id) =>
+          id === "react-grab" ||
+          id.startsWith("react-grab/") ||
+          id === "@t3tools/shared/keybindingMatching",
       },
     },
     {

@@ -25,6 +25,8 @@ export const ReviewCommentContextSchema = Schema.Struct({
   fenceLanguage: Schema.optional(Schema.String),
   selection: Schema.optional(ReviewCommentSelectionSchema),
   pullRequest: Schema.optional(PullRequestContextMetadata),
+  /** ISO time the comment was saved, for its card's relative time. */
+  createdAt: Schema.optional(Schema.String),
 });
 
 export interface ReviewCommentContext {
@@ -40,6 +42,7 @@ export interface ReviewCommentContext {
   readonly fenceLanguage?: string | undefined;
   readonly selection?: ReviewCommentSelection | undefined;
   readonly pullRequest?: PullRequestContextMetadata | undefined;
+  readonly createdAt?: string | undefined;
 }
 
 interface DiffReviewLine {
@@ -512,10 +515,10 @@ export function buildReviewCommentRenderablePatch(comment: ReviewCommentContext)
   if ((comment.fenceLanguage ?? "diff") !== "diff") {
     return "";
   }
-  const diff = comment.diff.trim();
-  if (diff.length === 0) {
+  if (comment.diff.trim().length === 0) {
     return "";
   }
+  const diff = comment.diff.trimStart().replace(/\n+$/, "");
   if (diff.startsWith("diff --git ")) {
     return diff;
   }

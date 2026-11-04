@@ -9,6 +9,7 @@ import {
   UsageProviderKind,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { normalizeProviderAccentColor } from "@t3tools/client-runtime/state/provider-instance-display";
 import {
   formatDuration,
   formatResetsIn,
@@ -37,6 +38,7 @@ import {
   AlertDialogTitle,
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
+import { Text } from "../ui/text";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { UsageLimitsPooled } from "./UsageLimitsPooled";
 import { PROVIDER_PRESENTATION } from "./usageProviders";
@@ -123,6 +125,7 @@ function WindowBar({
 }) {
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const remaining = remainingPercent(window);
+  const pace = paceOf(window, now);
   const timeLeft = paceRemainingPercent(window, now);
   const [barRef, paceMark] = usePaceMark(timeLeft);
   const resetsIn = formatResetsIn(window, now);
@@ -166,18 +169,14 @@ function WindowBar({
       </TooltipTrigger>
       <TooltipPopup side="top">
         <div className="flex flex-col gap-0.5">
-          <span className="text-foreground">
-            {remaining}% left{timeLeft !== null ? ` · ${timeLeft}% of the window left` : ""}
-          </span>
+          <span className="text-foreground">{remaining}% left</span>
+          {timeLeft !== null ? <span>{timeLeft}% of the window left</span> : null}
           {timeLeft !== null ? (
             <span className="text-muted-foreground">The line is where even spending would be.</span>
           ) : null}
-          {resetsAt ? (
-            <span className="text-muted-foreground">
-              Resets {resetsAt}
-              {resetsIn ? ` · ${resetsIn}` : ""}
-            </span>
-          ) : null}
+          {pace ? <Text variant="meta">{PACE[pace].label}</Text> : null}
+          {resetsAt ? <span className="text-muted-foreground">Resets {resetsAt}</span> : null}
+          {resetsIn ? <span className="text-muted-foreground">{resetsIn}</span> : null}
         </div>
       </TooltipPopup>
     </Tooltip>
@@ -186,40 +185,44 @@ function WindowBar({
 
 export function LimitWindows({
   driver,
+  accentColor,
   windows,
   now,
   compact = false,
 }: {
   readonly driver: ServerProvider["driver"];
+  readonly accentColor?: string | undefined;
   readonly windows: ReadonlyArray<ServerProviderUsageWindow>;
   readonly now: number;
   readonly compact?: boolean;
 }) {
-  const color = barColor(driver);
+  const color = normalizeProviderAccentColor(accentColor) ?? barColor(driver);
   return (
     <div
       className={
         compact
-          ? "grid grid-cols-[minmax(0,9rem)_minmax(3rem,1fr)_auto] gap-x-3 gap-y-0.5"
-          : "grid grid-cols-[11rem_minmax(0,1fr)_7rem] gap-x-4 gap-y-1"
+          ? "grid grid-cols-[minmax(0,1fr)_minmax(3rem,1fr)_auto] items-center gap-x-3 gap-y-0.5"
+          : "grid grid-cols-[minmax(0,11rem)_minmax(3rem,1fr)_auto] items-center gap-x-4 gap-y-1"
       }
     >
       {windows.map((window) => {
-        const pace = paceOf(window, now);
-        const resetsIn = formatResetsIn(window, now);
+        const [period, ...model] = window.label.split(/\s*\u00b7\s*/);
         return (
           <Fragment key={window.id}>
-            <span className="flex min-w-0 items-center gap-2 text-xs">
-              <span className="truncate text-muted-foreground">{window.label}</span>
-              <span className="ms-auto shrink-0 font-medium text-foreground tabular-nums">
-                {remainingPercent(window)}% left
-              </span>
+            <span className="flex min-w-0 flex-wrap items-center gap-x-2 wrap-anywhere">
+              <Text variant="meta" tone="muted">
+                {period}
+              </Text>
+              {model.map((name) => (
+                <Text key={name} variant="meta">
+                  {name}
+                </Text>
+              ))}
             </span>
             <WindowBar color={color} window={window} now={now} />
-            <span className="flex items-center gap-2 text-xs whitespace-nowrap text-muted-foreground tabular-nums">
-              {pace ? <PaceIcon pace={pace} /> : null}
-              <span className="ms-auto shrink-0">{resetsIn ?? ""}</span>
-            </span>
+            <Text variant="meta" numeric>
+              {remainingPercent(window)}% left
+            </Text>
           </Fragment>
         );
       })}
@@ -289,7 +292,7 @@ export function ResetCreditDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
+          <AlertDialogClose render={<Button variant="secondary" />}>Cancel</AlertDialogClose>
           <Button disabled={disabled} onClick={onConfirm}>
             Use credit
           </Button>
@@ -303,16 +306,22 @@ export function resetCreditsSummary(
   credits: ServerProviderResetCredits,
   now: number,
   compact = false,
-): string {
+) {
   const expiresIn = credits.nextExpiresAt
     ? formatDuration(Date.parse(credits.nextExpiresAt) - now)
     : null;
-  if (credits.availableCount === 0) return "No reset credits banked";
-  if (compact)
-    return `${credits.availableCount} banked${expiresIn ? ` · expires in ${expiresIn}` : ""}`;
-  return `${credits.availableCount} ${credits.availableCount === 1 ? "reset credit" : "reset credits"} banked${
-    expiresIn ? ` · next expires in ${expiresIn}` : ""
-  }`;
+  return {
+    label:
+      credits.availableCount === 0
+        ? "No reset credits banked"
+        : compact
+          ? `${credits.availableCount} banked`
+          : `${credits.availableCount} ${credits.availableCount === 1 ? "reset credit" : "reset credits"} banked`,
+    expiry:
+      credits.availableCount > 0 && expiresIn
+        ? `${compact ? "Expires" : "Next expires"} in ${expiresIn}`
+        : null,
+  };
 }
 
 export function ResetCredits({
@@ -331,13 +340,17 @@ export function ResetCredits({
     input,
   );
   if (credits.availableCount === 0 && status === null) return null;
+  const summary = resetCreditsSummary(credits, now);
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-      <span className="tabular-nums">{resetCreditsSummary(credits, now)}</span>
+      <Tooltip>
+        <TooltipTrigger render={<span tabIndex={0} />}>{summary.label}</TooltipTrigger>
+        <TooltipPopup>{summary.expiry ?? "No expiry"}</TooltipPopup>
+      </Tooltip>
       {credits.availableCount > 0 ? (
         <Button
           size="xs"
-          variant="outline"
+          variant="secondary"
           disabled={busy || !canManageProviders}
           onClick={() => {
             if (readEnvironmentScope(environmentId, AuthProvidersManageScope)) setConfirming(true);

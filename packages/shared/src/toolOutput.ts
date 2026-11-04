@@ -43,6 +43,8 @@ interface CompactToolOutput {
   [MCP_APP_OUTPUT_KEY]?: McpAppReference;
   thread?: { threadId: string };
   threads?: Array<{ threadId?: string; status?: "rolled_back" }>;
+  linkedCount?: number;
+  unlinkedCount?: number;
 }
 
 function readResult(value: unknown, budget: ResultReadBudget, depth = 0): ResultEnvelope {
@@ -123,6 +125,10 @@ export function compactDynamicToolOutput(value: unknown): CompactToolOutput | un
       if (id !== undefined) output[key] = id;
     }
     if (data.status === "rolled_back") output.status = "rolled_back";
+    for (const key of ["linkedCount", "unlinkedCount"] as const) {
+      const count = data[key];
+      if (typeof count === "number" && Number.isSafeInteger(count)) output[key] = count;
+    }
     const htmlRender = readHtmlRenderReference(data.htmlRender);
     if (htmlRender !== undefined) output.htmlRender = htmlRender;
     const mcpApp = readMcpAppReference(data[MCP_APP_OUTPUT_KEY]);
@@ -206,6 +212,32 @@ export function toolOutputIndicatesFailure(text: string): boolean {
     /exit(?:ed)? with exit code\s+[1-9]\d*/i.test(text) ||
     /exit code\s*[:\s]\s*[1-9]\d*\b/i.test(text)
   );
+}
+
+const TEST_COMMAND_PATTERN =
+  /(?:^|[\s;&|(/])(?:vitest|jest|pytest|mocha|ava|rspec|phpunit|ctest|playwright\s+test|(?:bun|deno|go|cargo|dotnet|mix|swift|npm|pnpm|yarn|vp)\s+(?:run\s+)?test(?::\S+)?|(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?t(?:est)?)(?=$|[\s;&|)])/i;
+
+/** Whether a shell command runs a test suite, so a failure reads as failing tests. */
+export function commandRunsTests(command: string): boolean {
+  return TEST_COMMAND_PATTERN.test(command);
+}
+
+/**
+ * Failed test count from common runner summaries (vitest, jest, bun, pytest,
+ * cargo, go). Undefined when the output names no count.
+ */
+export function countFailedTests(output: string): number | undefined {
+  const summary =
+    /^\s*Tests?:?\s+(\d+)\s+failed\b/im.exec(output) ??
+    /^\s*(\d+)\s+fail\b/m.exec(output) ??
+    /\btest result: FAILED\.[^\n]*?\b(\d+) failed\b/i.exec(output) ??
+    /^=+[^\n]*?\b(\d+) failed\b[^\n]*=+\s*$/m.exec(output);
+  if (summary) {
+    const count = Number(summary[1]);
+    return Number.isSafeInteger(count) && count > 0 ? count : undefined;
+  }
+  const goFailures = output.match(/^\s*--- FAIL: /gm)?.length ?? 0;
+  return goFailures > 0 ? goFailures : undefined;
 }
 
 export interface ToolOutputImage {

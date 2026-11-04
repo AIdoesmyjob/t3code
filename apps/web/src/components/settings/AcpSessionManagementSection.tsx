@@ -211,7 +211,7 @@ export function AcpSessionManagementSection(props: {
     reportFailure("Could not delete ACP session", result);
   };
 
-  const loadProviders = async () => {
+  const loadProviders = async (resetProviderId?: string) => {
     if (projectId === null || loadingProviders) return;
     setLoadingProviders(true);
     const result = await listProviders({
@@ -221,11 +221,13 @@ export function AcpSessionManagementSection(props: {
     setLoadingProviders(false);
     if (result._tag === "Success") {
       setProviders(result.value.providers);
-      setProviderDrafts(
+      setProviderDrafts((current) =>
         Object.fromEntries(
           result.value.providers.map((provider) => [
             provider.providerId,
-            {
+            (resetProviderId !== undefined && provider.providerId !== resetProviderId
+              ? current[provider.providerId]
+              : undefined) ?? {
               apiType: provider.current?.apiType ?? provider.supported[0] ?? "",
               baseUrl: provider.current?.baseUrl ?? "",
               headers: "",
@@ -242,7 +244,8 @@ export function AcpSessionManagementSection(props: {
     if (
       !readEnvironmentScope(props.environmentId, AuthProvidersManageScope) ||
       projectId === null ||
-      savingProviderId !== null
+      savingProviderId !== null ||
+      loadingProviders
     )
       return;
     const draft = providerDrafts[provider.providerId];
@@ -272,14 +275,15 @@ export function AcpSessionManagementSection(props: {
     setSavingProviderId(null);
     if (result._tag === "Success") {
       toastManager.add({ type: "success", title: "ACP provider configured" });
-      await loadProviders();
+      await loadProviders(provider.providerId);
       return;
     }
     reportFailure("Could not configure ACP provider", result);
   };
 
   const disableConfiguredProvider = async (provider: AcpRegistryConfigurableProvider) => {
-    if (projectId === null || savingProviderId !== null || provider.required) return;
+    if (projectId === null || savingProviderId !== null || loadingProviders || provider.required)
+      return;
     const confirmed = await ensureLocalApi().dialogs.confirm(
       `Disable ACP provider "${provider.providerId}"?`,
       { variant: "destructive" },
@@ -293,7 +297,7 @@ export function AcpSessionManagementSection(props: {
     setSavingProviderId(null);
     if (result._tag === "Success") {
       toastManager.add({ type: "success", title: "ACP provider disabled" });
-      await loadProviders();
+      await loadProviders(provider.providerId);
       return;
     }
     reportFailure("Could not disable ACP provider", result);
@@ -332,7 +336,7 @@ export function AcpSessionManagementSection(props: {
               <Button
                 type="button"
                 size="sm"
-                variant="outline"
+                variant="secondary"
                 disabled={props.readOnly || loggingOut}
                 onClick={() => void logoutProvider()}
               >
@@ -369,7 +373,7 @@ export function AcpSessionManagementSection(props: {
                 <Button
                   type="button"
                   size="sm"
-                  variant="outline"
+                  variant="secondary"
                   disabled={!canRead || loading || projectId === null}
                   onClick={() => void loadSessions()}
                 >
@@ -383,7 +387,7 @@ export function AcpSessionManagementSection(props: {
         {canList && (sessions.length > 0 || nextCursor !== null) ? (
           <>
             {sessions.length > 0 ? (
-              <div className="divide-y divide-border/60 border-y border-border/60">
+              <div className="divide-y divide-border border-y border-border">
                 {sessions.map((session) => (
                   <div
                     key={session.sessionId}
@@ -454,10 +458,10 @@ export function AcpSessionManagementSection(props: {
       </SettingsRow>
 
       {canConfigureProviders ? (
-        <div className="grid gap-3 border-t border-border/60 px-3 py-3 sm:px-4">
+        <div className="grid gap-3 border-t border-border px-3 py-3 sm:px-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <p className="text-xs font-medium text-foreground">Agent providers</p>
+              <p className="text-xs font-medium text-strong-foreground">Agent providers</p>
               <p className="text-xs text-muted-foreground">
                 Configure non-secret routing. Headers are write-only.
               </p>
@@ -465,8 +469,10 @@ export function AcpSessionManagementSection(props: {
             <Button
               type="button"
               size="xs"
-              variant="outline"
-              disabled={!canRead || loadingProviders || projectId === null}
+              variant="secondary"
+              disabled={
+                !canRead || loadingProviders || savingProviderId !== null || projectId === null
+              }
               onClick={() => void loadProviders()}
             >
               {loadingProviders ? "Loading" : providers.length === 0 ? "List providers" : "Refresh"}
@@ -500,7 +506,7 @@ export function AcpSessionManagementSection(props: {
           ) : null}
 
           {providers.length > 0 ? (
-            <div className="divide-y divide-border/60 border-y border-border/60">
+            <div className="divide-y divide-border border-y border-border">
               {providers.map((provider) => {
                 const draft = providerDrafts[provider.providerId] ?? {
                   apiType: provider.current?.apiType ?? provider.supported[0] ?? "",
@@ -516,22 +522,23 @@ export function AcpSessionManagementSection(props: {
                   <div key={provider.providerId} className="grid gap-2 py-3">
                     <div className="flex items-center justify-between gap-2">
                       <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-foreground">
+                        <p className="truncate text-label text-strong-foreground">
                           {provider.providerId}
                         </p>
-                        <p className="text-3xs text-muted-foreground">
-                          {provider.current === null ? "Disabled" : "Configured"}
-                          {provider.required ? " · Required" : ""}
-                        </p>
+                        <div className="flex flex-col gap-0.5 text-meta text-muted-foreground">
+                          <span>{provider.current === null ? "Disabled" : "Configured"}</span>
+                          {provider.required ? <span>Required</span> : null}
+                        </div>
                       </div>
                       <div className="flex items-center gap-1">
                         <Button
                           type="button"
                           size="xs"
-                          variant="outline"
+                          variant="secondary"
                           disabled={
                             props.readOnly ||
                             savingProviderId !== null ||
+                            loadingProviders ||
                             draft.apiType.length === 0 ||
                             draft.baseUrl.length === 0
                           }
@@ -544,7 +551,9 @@ export function AcpSessionManagementSection(props: {
                             type="button"
                             size="xs"
                             variant="ghost-muted"
-                            disabled={props.readOnly || savingProviderId !== null}
+                            disabled={
+                              props.readOnly || savingProviderId !== null || loadingProviders
+                            }
                             onClick={() => void disableConfiguredProvider(provider)}
                           >
                             Disable

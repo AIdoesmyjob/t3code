@@ -239,8 +239,15 @@ export function derivePendingUserInputs(
   return [...inputs].toSorted((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
+type PlanProjection = Pick<ThreadStructure, "plans" | "turnItems"> & {
+  readonly runs: ReadonlyArray<
+    Pick<ThreadStructure["runs"][number], "id" | "completedAt" | "startedAt" | "requestedAt">
+  >;
+  readonly thread: Pick<ThreadStructure["thread"], "createdAt">;
+};
+
 function planItemTime(
-  projection: ThreadStructure,
+  projection: PlanProjection,
   plan: Pick<OrchestrationV2PlanArtifact, "id" | "runId">,
 ): string {
   const item = projection.turnItems.findLast(
@@ -259,7 +266,7 @@ function planItemTime(
 }
 
 function toLatestProposedPlanState(
-  projection: ThreadStructure,
+  projection: PlanProjection,
   plan: Extract<OrchestrationV2PlanArtifact, { readonly kind: "proposed_plan" }>,
 ): LatestProposedPlanState {
   const updatedAt = planItemTime(projection, plan);
@@ -274,7 +281,7 @@ function toLatestProposedPlanState(
 }
 
 export function findLatestProposedPlan(
-  projection: ThreadStructure | null,
+  projection: PlanProjection | null,
   latestRunId: RunId | string | null | undefined,
 ): LatestProposedPlanState | null {
   if (projection === null) return null;
@@ -522,7 +529,8 @@ function projectedWorkEntry(row: OrchestrationV2ProjectedTurnItem): WorkLogEntry
         item.steps.find((step) => step.status === "pending");
       return {
         ...common,
-        label: `Tasks ${done}/${item.steps.length}${current ? ` · ${current.text}` : ""}`,
+        label: `Tasks ${done}/${item.steps.length}`,
+        ...(current ? { detail: current.text } : {}),
       };
     }
     case "approval_request":
@@ -711,10 +719,7 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
       continue;
     }
 
-    const mcpApp =
-      item.type === "dynamic_tool" && item.status === "completed"
-        ? mcpAppFromToolItem(item)
-        : undefined;
+    const mcpApp = item.type === "dynamic_tool" ? mcpAppFromToolItem(item) : undefined;
     if (mcpApp !== undefined) {
       entries.push({
         id: item.id,

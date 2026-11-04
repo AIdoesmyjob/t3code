@@ -1,7 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
-import { parseDelimitedPreview } from "./delimitedPreview.ts";
+import { delimitedColumnKinds, parseDelimitedPreview } from "./delimitedPreview.ts";
 
 describe("delimited file previews", () => {
+  it("classifies number, date and text columns from body cells", () => {
+    expect(
+      delimitedColumnKinds(
+        [
+          ["2026-09-20", "codex", "1,204,881", "$18.42", "", "12"],
+          ["2026-09-21T10:00:00Z", "claude", "640210", "-4.5%", "", "n/a"],
+        ],
+        6,
+      ),
+    ).toEqual(["date", "text", "number", "number", "text", "text"]);
+  });
+
   it("preserves quoted separators, escaped quotes, blank cells and line breaks", () => {
     expect(
       parseDelimitedPreview('\ufeffname,notes,empty\r\n"A, B","say ""hi""\nagain",\r\n', ","),
@@ -58,6 +70,39 @@ describe("delimited file previews", () => {
     expect(table.rows[0]).toHaveLength(30);
     expect(table.rows[0]?.[0]).toHaveLength(2000);
     expect(parseDelimitedPreview('a,"unfinished', ",").truncated).toBe(true);
+  });
+  describe.each([",", "\t"] as const)("Unicode cells with delimiter %j", (delimiter) => {
+    it.each([false, true])("does not split surrogate pairs in quoted=%s cells", (quoted) => {
+      const prefix = "x".repeat(1999);
+      const value = `${prefix}😀tail`;
+      const input = `${quoted ? `"${value}"` : value}${delimiter}next\nlast`;
+      expect(parseDelimitedPreview(input, delimiter)).toEqual({
+        rows: [[prefix, "next"], ["last"]],
+        truncated: true,
+      });
+    });
+    it("keeps pairs that fit and truncates later characters", () => {
+      const value = `${"x".repeat(1998)}😀`;
+      expect(parseDelimitedPreview(value, delimiter)).toEqual({
+        rows: [[value]],
+        truncated: false,
+      });
+      expect(parseDelimitedPreview(`${value}tail`, delimiter)).toEqual({
+        rows: [[value]],
+        truncated: true,
+      });
+    });
+    it("keeps escaped quotes and BMP text at the same limit", () => {
+      const prefix = "x".repeat(1999);
+      expect(parseDelimitedPreview(`"${prefix}""tail"`, delimiter)).toEqual({
+        rows: [[`${prefix}"`]],
+        truncated: true,
+      });
+      expect(parseDelimitedPreview(`${prefix}éextra`, delimiter)).toEqual({
+        rows: [[`${prefix}é`]],
+        truncated: true,
+      });
+    });
   });
   it("reads worker pages beyond the old row, column and cell limits", () => {
     const text = Array.from({ length: 128 }, (_, row) =>

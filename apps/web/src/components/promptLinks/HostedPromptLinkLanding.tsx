@@ -1,3 +1,4 @@
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import {
   type LinkedPrompt,
   parseNewThreadLink,
@@ -23,9 +24,16 @@ const OPENER_STORAGE_KEY = "t3code:prompt-link-opener";
 const Opener = Schema.NullOr(Schema.Literals(["app", "browser"]));
 
 interface LinkSummary {
+  readonly title: string;
+  readonly description: string;
   readonly prompt: LinkedPrompt | null;
   readonly details: ReadonlyArray<string>;
 }
+
+const PROMPT_HEADER = {
+  title: "Open this prompt",
+  description: "It opens as a draft. Nothing runs until you press Send.",
+};
 
 function summarize(
   appPath: string,
@@ -33,9 +41,19 @@ function summarize(
   const url = new URL(appPath, window.location.origin);
   if (url.pathname !== "/new") {
     const prompt = parseThreadLinkPrompt(url.search);
-    return prompt.ok
-      ? { ok: true, value: { prompt: prompt.value, details: ["Opens one of your threads."] } }
-      : prompt;
+    if (!prompt.ok) return prompt;
+    return {
+      ok: true,
+      value:
+        prompt.value === null
+          ? {
+              title: "Open this thread",
+              description: "It opens in T3 Code if you're connected to the machine it runs on.",
+              prompt: null,
+              details: [],
+            }
+          : { ...PROMPT_HEADER, prompt: prompt.value, details: ["Opens one of your threads."] },
+    };
   }
   const link = parseNewThreadLink(url.search);
   if (!link.ok) return link;
@@ -43,13 +61,18 @@ function summarize(
     const { owner, name, number } = link.value.pullRequest;
     return {
       ok: true,
-      value: { prompt: link.value.prompt, details: [`Pull request ${owner}/${name}#${number}`] },
+      value: {
+        ...PROMPT_HEADER,
+        prompt: link.value.prompt,
+        details: [`Pull request ${owner}/${name}#${number}`],
+      },
     };
   }
   const { repository, provider, model } = link.value;
   return {
     ok: true,
     value: {
+      ...PROMPT_HEADER,
       prompt: link.value.prompt,
       details: [
         repository ? `Repository ${repository.owner}/${repository.name}` : "No project",
@@ -113,19 +136,16 @@ function HostedPromptLinkLanding({
 
   if (!summary.ok) {
     return (
-      <StandalonePage>
+      <StandalonePage tone="error">
         <StandalonePageHeader title="Could not open the link" description={summary.error} />
       </StandalonePage>
     );
   }
 
-  const { prompt, details } = summary.value;
+  const { title, description, prompt, details } = summary.value;
   return (
-    <StandalonePage>
-      <StandalonePageHeader
-        title="Open this prompt"
-        description="It opens as a draft. Nothing runs until you press Send."
-      />
+    <StandalonePage tone="plain">
+      <StandalonePageHeader title={title} description={description} />
       {prompt !== null && prompt.hiddenCharacters > 0 ? (
         <Alert className="mt-5" variant="error">
           <AlertTitle>This prompt had hidden characters, it may be malicious</AlertTitle>
@@ -136,17 +156,30 @@ function HostedPromptLinkLanding({
         </Alert>
       ) : null}
       {prompt !== null ? (
-        <pre className="mt-5 max-h-72 overflow-auto rounded-lg border border-border bg-background p-3 text-sm whitespace-pre-wrap">
+        <pre className="mt-5 max-h-72 overflow-auto rounded-lg border border-border bg-background p-3 text-body whitespace-pre-wrap">
           {prompt.text}
         </pre>
       ) : null}
-      <p className="mt-3 text-xs text-muted-foreground">{details.join(" · ")}</p>
+      {details.length > 0 ? (
+        <div className="mt-3 text-meta text-muted-foreground">
+          <Tooltip disabled={details.length < 2}>
+            <TooltipTrigger render={<span tabIndex={0} />}>{details[0]}</TooltipTrigger>
+            <TooltipPopup>
+              {details.slice(1).map((detail) => (
+                <span className="block" key={detail}>
+                  {detail}
+                </span>
+              ))}
+            </TooltipPopup>
+          </Tooltip>
+        </div>
+      ) : null}
       <div className="mt-6 flex flex-wrap gap-2">
         <Button render={<a href={deepLink} />} onClick={() => onChoose("app", remember)}>
           {onPhone ? "Open in app" : "Open in desktop app"}
         </Button>
         {canContinue ? (
-          <Button variant="outline" onClick={() => onChoose("browser", remember)}>
+          <Button variant="secondary" onClick={() => onChoose("browser", remember)}>
             Continue here
           </Button>
         ) : null}
@@ -154,7 +187,7 @@ function HostedPromptLinkLanding({
           Get T3 Code
         </Button>
       </div>
-      <label className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+      <label className="mt-4 flex items-center gap-2 text-body text-muted-foreground">
         <Checkbox checked={remember} onCheckedChange={(checked) => setRemember(checked === true)} />
         Remember my choice
       </label>

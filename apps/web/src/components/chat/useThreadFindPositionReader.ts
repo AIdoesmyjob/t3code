@@ -1,14 +1,16 @@
 import { useLayoutEffect } from "react";
-import type { RunId } from "@t3tools/contracts";
-import type { TimelineEntry } from "../../session-logic";
+import { type RunId } from "@t3tools/contracts";
+import { type TimelineEntry } from "../../session-logic";
 import {
   timelineTurnFoldRunIdsByEntryId,
   type MessagesTimelineRow,
   type TimelineLatestRun,
+  type TimelineTurnFoldKey,
 } from "./MessagesTimeline.logic";
-import type { ThreadFindPositionReader } from "./threadFind";
+import { type ThreadFindPositionReader } from "./threadFind";
 import { attachThreadFindTimeline } from "./threadFindStore";
 import { readThreadFindPosition } from "./threadFindPosition";
+import { useLayoutPane } from "../../layout/layoutPaneContext";
 
 /** Hands thread find how to read the find position of this timeline's viewport. */
 export function useThreadFindPositionReader({
@@ -27,7 +29,7 @@ export function useThreadFindPositionReader({
   readonly threadKey: string;
   readonly navigate: () => void;
   readonly timelineViewportElement: HTMLDivElement | null;
-  readonly findFoldRunIds: ReadonlyMap<string, RunId> | null;
+  readonly findFoldRunIds: ReadonlyMap<string, TimelineTurnFoldKey> | null;
   readonly timelineEntries: ReadonlyArray<TimelineEntry>;
   readonly latestRun: TimelineLatestRun | null;
   readonly runningRunId: RunId | null;
@@ -36,10 +38,11 @@ export function useThreadFindPositionReader({
   readonly rows: MessagesTimelineRow[];
   readonly contentInsetEndAdjustment: number;
 }) {
+  const { focused } = useLayoutPane();
   // Layout effect so a find opened right after a thread switch reads this viewport.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- attaches the timeline viewport's position reader to the thread find registry
   useLayoutEffect(() => {
-    if (!timelineViewportElement) return;
+    if (!focused || !timelineViewportElement) return;
     const read: ThreadFindPositionReader = (query) => {
       const foldRunIds =
         findFoldRunIds ??
@@ -66,7 +69,7 @@ export function useThreadFindPositionReader({
             const entry = timelineEntries.find((entry) => {
               const runId =
                 row.kind === "turn-fold"
-                  ? foldRunIds.get(entry.id)
+                  ? foldRunIds.get(entry.id)?.runId
                   : entry.kind === "message"
                     ? entry.message.runId
                     : entry.kind === "proposed-plan"
@@ -89,6 +92,7 @@ export function useThreadFindPositionReader({
     return attachThreadFindTimeline({ threadKey, readPosition: read, navigate });
   }, [
     contentInsetEndAdjustment,
+    focused,
     findFoldRunIds,
     isWorking,
     navigate,

@@ -1,9 +1,10 @@
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { ClientSettings } from "@t3tools/contracts/settings";
 import { createBrowserHistory, createHashHistory } from "@tanstack/react-router";
+import * as Schema from "effect/Schema";
 
 import { applyAppearanceContrast } from "./appearanceContrast";
-import { applyAppearanceFontVariables } from "./appearanceFonts";
+import { applyAppearanceFontVariables, TYPOGRAPHY_ADVANCED_STORAGE_KEY } from "./appearanceFonts";
 import { startElectronBrowserHost } from "./browser/ElectronBrowserHost";
 import { startBrowserProfileReporting } from "./browser/BrowserProfileReporter";
 import { startPreviewTitleRecording } from "./browserHistoryStore";
@@ -30,10 +31,14 @@ import {
 } from "./composerDraftStore";
 import { startDefaultThemeAdoption } from "./hooks/useDefaultTheme";
 import { startEnvironmentThemeRepaint } from "./hooks/useEnvironmentTheme";
+import { readLocalStorageValue, subscribeLocalStorageKey } from "./hooks/useLocalStorage";
 import {
   getClientSettings,
+  getClientSettingsHydratedSnapshot,
+  startLegacyLayoutSettingsMigration,
   startModelPreferencesMigration,
   subscribeClientSettings,
+  subscribeClientSettingsHydration,
 } from "./hooks/useSettings";
 import { syncBrowserChromeTheme } from "./hooks/useTheme";
 import { startThreadVisitedMigration } from "./hooks/useThreadVisitedMigration";
@@ -44,6 +49,7 @@ import {
 } from "./lib/windowControlsOverlay";
 import { startProviderAuthDelivery } from "./providerAuthDelivery";
 import { getRouter, type AppRouter } from "./router";
+import { trackNavigationHistory } from "./navigationHistory";
 import { appAtomRegistry } from "./rpc/atomRegistry";
 import { primaryServerConfigAtom } from "./state/server";
 import { environmentShell } from "./state/shell";
@@ -58,26 +64,37 @@ import { resolveThreadRouteTarget } from "./threadRoutes";
 function startClientAppearance(): void {
   const root = document.documentElement;
   let applied: ClientSettings | null = null;
+  let appliedSeparateFonts: boolean | null = null;
+  let appliedSurfaceStyle: ClientSettings["surfaceStyle"] | null = null;
   const apply = () => {
     const settings = getClientSettings();
     const previous = applied;
     applied = settings;
+    const separateFonts = readLocalStorageValue(
+      TYPOGRAPHY_ADVANCED_STORAGE_KEY,
+      false,
+      Schema.Boolean,
+    );
+    const previousSeparateFonts = appliedSeparateFonts;
+    appliedSeparateFonts = separateFonts;
     if (previous?.diffColorScheme !== settings.diffColorScheme) {
       root.dataset.diffColorScheme = settings.diffColorScheme;
     }
     if (previous?.chatWidth !== settings.chatWidth) {
       root.dataset.chatWidth = settings.chatWidth;
     }
+    // Keep index.html's stored surface until hydration supplies the saved preference.
+    if (getClientSettingsHydratedSnapshot() && appliedSurfaceStyle !== settings.surfaceStyle) {
+      appliedSurfaceStyle = settings.surfaceStyle;
+      root.dataset.surfaceStyle = settings.surfaceStyle;
+      try {
+        window.localStorage.setItem("t3code:surface-style", settings.surfaceStyle);
+      } catch {
+        // The current page still uses the selected surface without persistence.
+      }
+    }
     if (previous?.appearanceContrast !== settings.appearanceContrast) {
       applyAppearanceContrast(root, settings.appearanceContrast);
-    }
-    if (previous?.glassOpacity !== settings.glassOpacity) {
-      root.style.setProperty("--glass-opacity", `${settings.glassOpacity}%`);
-      if (settings.glassOpacity === 100) {
-        root.style.setProperty("--glass-blur", "0px");
-      } else {
-        root.style.removeProperty("--glass-blur");
-      }
     }
     if (
       previous?.fontFamilySans !== settings.fontFamilySans ||
@@ -86,7 +103,8 @@ function startClientAppearance(): void {
       previous.fontSizeInterface !== settings.fontSizeInterface ||
       previous.fontSizePrompt !== settings.fontSizePrompt ||
       previous.fontSizeCode !== settings.fontSizeCode ||
-      previous.fontSmoothing !== settings.fontSmoothing
+      previous.fontSmoothing !== settings.fontSmoothing ||
+      previousSeparateFonts !== separateFonts
     ) {
       applyAppearanceFontVariables(root, {
         sans: settings.fontFamilySans,
@@ -96,10 +114,13 @@ function startClientAppearance(): void {
         sizePrompt: settings.fontSizePrompt,
         sizeCode: settings.fontSizeCode,
         smoothing: settings.fontSmoothing,
+        separate: separateFonts,
       });
     }
   };
   subscribeClientSettings(apply);
+  subscribeLocalStorageKey(TYPOGRAPHY_ADVANCED_STORAGE_KEY, apply);
+  subscribeClientSettingsHydration(apply);
   apply();
 }
 
@@ -127,6 +148,7 @@ function startBrowserChromeThemeSync(router: AppRouter): void {
   const resync = () => window.requestAnimationFrame(syncBrowserChromeTheme);
   router.subscribe("onRendered", resync);
   router.subscribe("onResolved", resync);
+  window.matchMedia("(max-width: 767px)").addEventListener("change", resync);
 }
 
 /** Chat overlays belong to the thread they were opened in, so leaving its route drops them. */
@@ -157,10 +179,13 @@ export function startAppServices(): AppRouter {
 
   // Electron loads the app from a file-backed shell, so hash history avoids path resolution issues.
   const router = getRouter(isElectron ? createHashHistory() : createBrowserHistory());
+  trackNavigationHistory(router.history);
 
   if (isElectron) {
     syncDocumentElectronPlatformClasses(navigator.platform);
     syncDocumentWindowControlsOverlayClass();
+    // A reload keeps the window, including traffic lights hidden by the collapsed sidebar.
+    void window.desktopBridge?.setWindowButtonsVisible?.(true);
   }
 
   installDesktopPasteAsText(window.desktopBridge, window);
@@ -171,6 +196,7 @@ export function startAppServices(): AppRouter {
   startBrowserChromeThemeSync(router);
   startDefaultThemeAdoption();
   startModelPreferencesMigration();
+  startLegacyLayoutSettingsMigration();
   startAgentOpenedPreviews();
   if (isElectron) startElectronBrowserHost();
   startPreviewTitleRecording();

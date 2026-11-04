@@ -14,6 +14,7 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import * as Dialog from "../../components/ui/Dialog";
 import { Menu } from "../../components/ui/Menu";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
+import { relayEnvironmentDiscovery } from "../../state/relay";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   deregisterManagedRelayEnvironmentCommand,
@@ -46,6 +47,9 @@ export function T3ConnectProfilePage() {
   const deregisterEnvironment = useAtomCommand(deregisterManagedRelayEnvironmentCommand, {
     reportFailure: false,
   });
+  const refreshRelayEnvironments = useAtomCommand(relayEnvironmentDiscovery.refreshAfterMutation, {
+    reportFailure: false,
+  });
   const [deregisteringEnvironmentId, setDeregisteringEnvironmentId] =
     useState<EnvironmentId | null>(null);
   const mutationPendingRef = useRef(false);
@@ -75,6 +79,7 @@ export function T3ConnectProfilePage() {
         return { accountId, linkedAtById };
       });
       environmentsState.refresh();
+      void refreshRelayEnvironments();
       return;
     }
     if (isAtomCommandInterrupted(result)) return;
@@ -209,7 +214,7 @@ const ENVIRONMENT_MENU_ACTIONS = [
 
 function ClerkSectionHeader(props: { readonly children: string }) {
   return (
-    <Text className="min-h-4 border-b border-clerk-border px-6 pt-8 pb-4 text-xs font-medium tracking-[0.3px] text-clerk-foreground-muted uppercase">
+    <Text className="min-h-4 border-b border-clerk-border px-6 pt-8 pb-4 text-xs font-medium text-clerk-foreground-muted">
       {props.children}
     </Text>
   );

@@ -1,4 +1,7 @@
 import {
+  CheckpointId,
+  CheckpointRef,
+  CheckpointScopeId,
   MessageId,
   ContextHandoffId,
   ProviderThreadId,
@@ -25,7 +28,7 @@ import {
   projectTurnItemForWire,
   projectTurnItemForDetail,
   projectDomainEventForWire,
-} from "./WireProjection.ts";
+} from "@t3tools/shared/wireProjection";
 import { threadShellFromProjection } from "./ProjectionStore.ts";
 import { MAX_TOOL_OUTPUT_IMAGES, toolOutputImages } from "@t3tools/shared/toolOutput";
 
@@ -172,7 +175,9 @@ describe("orchestration V2 wire projection", () => {
   });
 
   it("truncates detail at a UTF-8 boundary without changing the source", () => {
-    const progress = "a".repeat(32_767) + "😀" + "x".repeat(100_000);
+    const marker = "\n… output truncated for transport";
+    const prefixBytes = 32_768 - Buffer.byteLength(marker);
+    const progress = "a".repeat(prefixBytes - 1) + "😀" + "x".repeat(100_000);
     const item = {
       ...base,
       type: "subagent" as const,
@@ -181,13 +186,17 @@ describe("orchestration V2 wire projection", () => {
       driver: ProviderDriverKind.make("codex"),
       providerInstanceId: ProviderInstanceId.make("codex"),
       childThreadId: null,
-      prompt: "Inspect code",
+      prompt: "漢".repeat(12_000),
       result: null,
       progress,
     };
     const projected = projectTurnItemForWire(item);
+    expect(projectTurnItemForWire(projected)).toEqual(projected);
+    expect(
+      Buffer.byteLength(projected.type === "subagent" ? projected.prompt : ""),
+    ).toBeLessThanOrEqual(32_768);
     expect(projected.type === "subagent" ? projected.progress : null).toBe(
-      "a".repeat(32_767) + "\n… output truncated for transport",
+      "a".repeat(prefixBytes - 1) + marker,
     );
     expect(item.progress).toBe(progress);
   });
@@ -256,6 +265,104 @@ describe("orchestration V2 wire projection", () => {
       outputIndicatesFailure: true,
       exitCode: 2,
     });
+  });
+
+  it.each([
+    "logs/app.log:12: Error: ENOENT: no such file or directory",
+    "fixtures/ci.txt:3: Process exited with exit code 2",
+  ])("trusts a zero exit code over failure text in the output: %s", (output) => {
+    const projected = projectTurnItemForWire({
+      ...base,
+      type: "command_execution" as const,
+      input: "rg -n error logs fixtures",
+      output,
+      exitCode: 0,
+    });
+    expect(projected).not.toHaveProperty("outputIndicatesFailure");
+    expect(projected).toMatchObject({ exitCode: 0, outputOmitted: true });
+  });
+
+  it("keeps the failed test count from a test runner summary", () => {
+    const item = {
+      ...base,
+      type: "command_execution" as const,
+      input: "pnpm vitest run ChatComposer",
+      output: `${"x".repeat(40_000)}\n      Tests  2 failed | 12 passed (14)`,
+      exitCode: 1,
+    };
+    const projected = projectTurnItemForWire(item);
+    expect(projected).not.toHaveProperty("output");
+    expect(projected).toMatchObject({ outputIndicatesFailure: true, failedTestCount: 2 });
+    expect(
+      projectTurnItemForWire({ ...item, input: "bun typecheck", output: "Tests  2 failed" }),
+    ).not.toHaveProperty("failedTestCount");
+  });
+
+  it("counts header-like changed lines inside each file's hunks", () => {
+    const diffStr = [
+      "diff --git a/a.sql b/a.sql",
+      "--- a/a.sql",
+      "+++ b/a.sql",
+      "@@ -1,2 +1 @@",
+      "--- comment",
+      "----",
+      "+++counter",
+      "diff --git a/b.txt b/b.txt",
+      "--- a/b.txt",
+      "+++ b/b.txt",
+      "@@ -1 +1 @@",
+      "--- old",
+      "+++new",
+    ].join("\n");
+    expect(
+      projectTurnItemForWire({ ...base, type: "file_change", fileName: "a.sql", diffStr }),
+    ).toMatchObject({ additions: 2, deletions: 3 });
+  });
+
+  it("derives change counts from the diffs providers report", () => {
+    const fileChange = { ...base, type: "file_change" as const, fileName: "src/main.ts" };
+    expect(
+      projectTurnItemForWire({
+        ...fileChange,
+        diffStr: "@@ -1,3 +1,3 @@\n a\n-b\n+c\n+d\n@@ -9 +10 @@\n-e",
+      }),
+    ).toMatchObject({ additions: 2, deletions: 2 });
+    const claudeEdit = JSON.stringify({
+      filePath: "src/main.ts",
+      oldString: '-"not counted"',
+      originalFile: '+ "[\\"-x\\"]"',
+      structuredPatch: [{ oldStart: 1, lines: [" keep", "-old", "+new", '+"quoted"'] }],
+    });
+    const projected = projectTurnItemForWire({ ...fileChange, diffStr: claudeEdit });
+    expect(projected).toMatchObject({ additions: 2, deletions: 1 });
+    expect(projected).not.toHaveProperty("diffStr");
+    expect(
+      projectTurnItemForWire({
+        ...fileChange,
+        diffStr: JSON.stringify({ type: "create", content: "a\nb\nc\n", structuredPatch: [] }),
+      }),
+    ).toMatchObject({ additions: 3, deletions: 0 });
+    expect(
+      projectTurnItemForWire({ ...fileChange, oldStr: "a\nb\nc", newStr: "a\nx\ny\nc" }),
+    ).toMatchObject({ additions: 2, deletions: 1 });
+    expect(projectTurnItemForWire({ ...fileChange, diffStr: "not a diff" })).not.toHaveProperty(
+      "additions",
+    );
+    for (const operation of ["add", "delete"] as const) {
+      for (const content of ["hi\n", "\nhi\n\n", '{"hello": true}\n', ""]) {
+        const lines = content === "" ? 0 : content.split("\n").length - 1;
+        expect(
+          projectTurnItemForWire({
+            ...fileChange,
+            diffStr: content,
+            changes: [{ operation, path: fileChange.fileName }],
+          }),
+        ).toMatchObject({
+          additions: operation === "add" ? lines : 0,
+          deletions: operation === "delete" ? lines : 0,
+        });
+      }
+    }
   });
 
   it("omits inline file bodies but preserves file identity and change counts", () => {
@@ -379,6 +486,46 @@ describe("live body deduper", () => {
       [3, message(3, "ab").event.payload],
       [4, { ...reply(4, "ab").event.payload, text: "", textOmitted: true }],
     ]);
+  });
+
+  it("caps a large checkpoint's files for the wire and still dedupes its item", () => {
+    const files = Array.from({ length: 250 }, (_, index) => ({
+      path: `vendor/file-${index}.ts`,
+      kind: "modified",
+      additions: 2,
+      deletions: 1,
+    }));
+    const checkpointId = CheckpointId.make("checkpoint-large");
+    const scopeId = CheckpointScopeId.make("scope-large");
+    const captured = event(1, {
+      type: "checkpoint.captured",
+      payload: {
+        id: checkpointId,
+        threadId: base.threadId,
+        scopeId,
+        runId: null,
+        nodeId: NodeId.make("node-large"),
+        parentCheckpointId: null,
+        ordinalWithinScope: 1,
+        appRunOrdinal: null,
+        ref: CheckpointRef.make("refs/t3/checkpoints/large"),
+        status: "ready",
+        files,
+        capturedAt: at,
+      },
+    });
+    const item = event(2, {
+      type: "turn-item.updated",
+      payload: { ...base, type: "checkpoint", checkpointId, scopeId, files },
+    });
+    const dedupe = makeLiveBodyDeduper();
+    const [record, card] = [captured, item].map((streamed) =>
+      dedupe({ ...streamed, event: projectDomainEventForWire(streamed.event) }),
+    );
+
+    const filesTotal = { count: 250, additions: 500, deletions: 250 };
+    expect(payloadOf(record!)).toMatchObject({ files: files.slice(0, 200), filesTotal });
+    expect(payloadOf(card!)).toMatchObject({ files: [], filesOmitted: true, filesTotal });
   });
 
   it("ships a reply whole when its message arrives after it", () => {

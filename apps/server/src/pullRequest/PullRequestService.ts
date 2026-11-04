@@ -114,6 +114,15 @@ function supersedesReading(current: PullRequestReading | undefined, next: PullRe
   return (next.observedAt ?? -Infinity) >= (current.observedAt ?? -Infinity);
 }
 
+// Retry a shared flight canceled by its previous reader after that flight leaves the cache.
+const getShared = <Key, A, E, R>(cache: Cache.Cache<Key, A, E, R>, key: Key) =>
+  Cache.get(cache, key).pipe(
+    Effect.catchCauseIf(
+      (cause) => Cause.hasInterruptsOnly(cause),
+      (_cause) => Cache.get(cache, key),
+    ),
+  );
+
 // Providers request one extra row; 99 stays within GitHub/GitLab's 100-row API limit.
 const DEFAULT_REPOSITORY_LIST_LIMIT = 99;
 const REPOSITORY_CONCURRENCY = 12;
@@ -215,6 +224,10 @@ export class PullRequestService extends Context.Service<
     ) => Effect.Effect<void, PullRequestError>;
     readonly subscribeRefreshes: Stream.Stream<number>;
     readonly refreshAfterTurn: (projectId: ProjectId) => Effect.Effect<void>;
+    /** Project and remote lookups inside `effect` read once per filter, e.g. across one sync sweep. */
+    readonly withSharedProjectReads: <A, E, R>(
+      effect: Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E, R>;
     readonly detail: (input: PullRequestRef) => Effect.Effect<PullRequestDetail, PullRequestError>;
     readonly preview: (
       input: PullRequestRef,
@@ -333,6 +346,12 @@ interface WorkspaceProjects {
   >;
   readonly viewerRoots: ReadonlyMap<string, ReadonlyArray<string>>;
 }
+
+// Inherited by fibers forked inside the scope, so it is closed, not just dropped, when the scope ends.
+const sharedProjectReads = Context.Reference<{
+  open: boolean;
+  readonly reads: Map<string, Effect.Effect<WorkspaceProjects, PullRequestError>>;
+} | null>("t3/PullRequestService/sharedProjectReads", { defaultValue: () => null });
 
 interface RepositoryBatch {
   readonly key: string;
@@ -505,6 +524,7 @@ function withRateLimitBackoff(
       ? {}
       : { unavailableRequirement: api.unavailableRequirement }),
     ...(api.repositoryKey === undefined ? {} : { repositoryKey: api.repositoryKey }),
+    ...(api.servesHost === undefined ? {} : { servesHost: api.servesHost }),
     ...(api.readsPublicHostWithoutCheckout === undefined
       ? {}
       : { readsPublicHostWithoutCheckout: api.readsPublicHostWithoutCheckout }),
@@ -528,6 +548,9 @@ function withRateLimitBackoff(
           listChangeRequestStats: wrap("listChangeRequestStats", api.listChangeRequestStats),
         }),
     getChangeRequest: wrap("getChangeRequest", api.getChangeRequest),
+    ...(api.forgetChangeRequestReads === undefined
+      ? {}
+      : { forgetChangeRequestReads: api.forgetChangeRequestReads }),
     ...(api.getChangeRequestPreview === undefined
       ? {}
       : { getChangeRequestPreview: wrap("getChangeRequestPreview", api.getChangeRequestPreview) }),
@@ -826,6 +849,34 @@ export const make = Effect.gen(function* () {
   const listWorkspaceProjects = (
     filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
   ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
+    Effect.flatMap(sharedProjectReads, (shared) => {
+      if (shared === null || !shared.open) return readWorkspaceProjects(filter);
+      const key = JSON.stringify([filter.projectId, filter.projectIds, filter.host]);
+      const existing = shared.reads.get(key);
+      if (existing !== undefined) return existing;
+      return Effect.cached(readWorkspaceProjects(filter)).pipe(
+        Effect.tap((read) => Effect.sync(() => shared.reads.set(key, read))),
+        Effect.flatten,
+      );
+    });
+
+  const withSharedProjectReads = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.suspend(() => {
+      const shared = { open: true, reads: new Map() };
+      return effect.pipe(
+        Effect.provideService(sharedProjectReads, shared),
+        Effect.ensuring(
+          Effect.sync(() => {
+            shared.open = false;
+            shared.reads.clear();
+          }),
+        ),
+      );
+    });
+
+  const readWorkspaceProjects = (
+    filter: Pick<PullRequestListInput, "projectId" | "projectIds" | "host">,
+  ): Effect.Effect<WorkspaceProjects, PullRequestError> =>
     (filter.projectId === undefined
       ? projects.listShells(
           filter.projectIds === undefined ? undefined : { projectIds: filter.projectIds },
@@ -884,7 +935,8 @@ export const make = Effect.gen(function* () {
           if (filter.host !== undefined && host !== filter.host.toLowerCase()) {
             continue;
           }
-          const api = registry.get(kind);
+          const registered = registry.get(kind);
+          const api = registered?.servesHost?.(host) === false ? null : registered;
           if (api !== null) {
             const roots = viewerRoots.get(host);
             if (roots === undefined) viewerRoots.set(host, [project.workspaceRoot]);
@@ -1126,10 +1178,10 @@ export const make = Effect.gen(function* () {
           const roots =
             viewerRoots.get(host) ?? forHost.map(({ project }) => project.workspaceRoot);
           const key = JSON.stringify([host, api.kind, [...new Set(roots)].sort()]);
-          if (options?.allowPaused === true) return Cache.get(viewerFlights, key);
+          if (options?.allowPaused === true) return getShared(viewerFlights, key);
           // Check pauses outside the shared lookup so background reads cannot spawn repeated failing CLIs and extend the pause.
           return rateLimits.check({ provider: api.kind, host }).pipe(
-            Effect.flatMap(() => Cache.get(viewerFlights, key)),
+            Effect.flatMap(() => getShared(viewerFlights, key)),
             Effect.catch((error) =>
               Effect.succeed<ResolvedViewer>({
                 host,
@@ -1356,19 +1408,24 @@ export const make = Effect.gen(function* () {
                     : null,
               };
             }),
-            Effect.orElseSucceed((): RepositoryBatch => ({
-              key,
-              entries: [],
-              errors: [
-                {
-                  projectId: project.project.id,
-                  projectTitle: project.project.title,
-                  message: `${project.repository} could not be read.`,
-                },
-              ],
-              truncated: false,
-              nextCursor: null,
-            })),
+            Effect.catch((error): Effect.Effect<RepositoryBatch> =>
+              Effect.succeed({
+                key,
+                entries: [],
+                errors: [
+                  {
+                    projectId: project.project.id,
+                    projectTitle: project.project.title,
+                    message:
+                      error.accessHint === undefined
+                        ? `${project.repository} could not be read.`
+                        : `${project.repository} could not be read. ${error.accessHint}`,
+                  },
+                ],
+                truncated: false,
+                nextCursor: null,
+              }),
+            ),
           );
       }
     };
@@ -1820,6 +1877,9 @@ export const make = Effect.gen(function* () {
               reviewThreads: activity.reviewThreads,
               commits: activity.commits,
               ...(activity.reactions === undefined ? {} : { reactions: activity.reactions }),
+              ...(activity.reviewRequests === undefined
+                ? {}
+                : { reviewRequests: activity.reviewRequests }),
             })),
           ),
       ),
@@ -2972,13 +3032,7 @@ export const make = Effect.gen(function* () {
         ? null
         : Object.entries(input.cursors).toSorted(([left], [right]) => left.localeCompare(right)),
     ]);
-    // A replacement reader can join a lookup still finishing its previous reader's cancellation.
-    return Cache.get(listCache, key).pipe(
-      Effect.catchCauseIf(
-        (cause) => Cause.hasInterruptsOnly(cause),
-        (_cause) => Cache.get(listCache, key),
-      ),
-    );
+    return getShared(listCache, key);
   };
 
   const checksCache = yield* Cache.makeWith(
@@ -3184,7 +3238,7 @@ export const make = Effect.gen(function* () {
   const detail: PullRequestService["Service"]["detail"] = (input) => {
     const key = refCacheKey(input);
     // Skip reads older than strict summaries; caching them would preserve regressions without asking the host again.
-    const read = Cache.get(detailCache, key).pipe(
+    const read = getShared(detailCache, key).pipe(
       Effect.tap((value) => {
         if (value.state === "merged") noteMerged(input);
         const summary = summaryFromDetail(value, lastGoodSummary.peek(key));
@@ -3254,7 +3308,7 @@ export const make = Effect.gen(function* () {
     return Cache.getSuccess(detailCache, key).pipe(
       Effect.flatMap(
         Option.match({
-          onNone: () => Cache.get(previewCache, key),
+          onNone: () => getShared(previewCache, key),
           onSome: (detail) => Effect.succeed(previewFields(detail)),
         }),
       ),
@@ -3262,7 +3316,7 @@ export const make = Effect.gen(function* () {
   };
   const activity: PullRequestService["Service"]["activity"] = (input) => {
     const key = refCacheKey(input);
-    return Cache.get(activityCache, key);
+    return getShared(activityCache, key);
   };
 
   const diffCache = yield* Cache.makeWith(
@@ -3333,7 +3387,7 @@ export const make = Effect.gen(function* () {
       ),
       Effect.uninterruptible,
     );
-    const read = Cache.get(diffCache, key).pipe(
+    const read = getShared(diffCache, key).pipe(
       Effect.ensuring(evictDiffs),
       Effect.ensuring(Effect.sync(armDiffSweep)),
     );
@@ -3358,7 +3412,7 @@ export const make = Effect.gen(function* () {
   const filesViewed: PullRequestService["Service"]["filesViewed"] = (input) =>
     canonicalRef(input).pipe(
       Effect.flatMap((ref) =>
-        Cache.get(filesViewedCache, JSON.stringify([refCacheKey(ref), filesViewedEpoch(ref)])),
+        getShared(filesViewedCache, JSON.stringify([refCacheKey(ref), filesViewedEpoch(ref)])),
       ),
     );
 
@@ -3405,12 +3459,7 @@ export const make = Effect.gen(function* () {
     }
     if (missing.size === 0) return { stats: held };
     const key = statsBatchKey(missing.values());
-    const { result, at } = yield* Cache.get(listStatsCache, key).pipe(
-      Effect.catchCauseIf(
-        (cause) => Cause.hasInterruptsOnly(cause),
-        (_cause) => Cache.get(listStatsCache, key),
-      ),
-    );
+    const { result, at } = yield* getShared(listStatsCache, key);
     for (const [key, ref] of missing) {
       const stat = result.stats.find(
         (stat) =>
@@ -3422,6 +3471,13 @@ export const make = Effect.gen(function* () {
     }
     return { stats: [...held, ...result.stats] };
   });
+
+  const forgetProviderReads = (scope?: { readonly repository: string; readonly number?: number }) =>
+    Effect.forEach(
+      registry.kinds,
+      (kind) => registry.get(kind)?.forgetChangeRequestReads?.(scope) ?? Effect.void,
+      { discard: true },
+    );
 
   const invalidate: PullRequestService["Service"]["invalidate"] = Effect.fn(
     "PullRequestService.invalidate",
@@ -3438,13 +3494,15 @@ export const make = Effect.gen(function* () {
     if (reference !== undefined) {
       yield* canonicalRef(reference).pipe(
         Effect.flatMap((ref) =>
-          readCache
-            .invalidate(refScope(ref))
-            .pipe(Effect.andThen(Effect.sync(() => bumpRefEpoch(ref)))),
+          forgetProviderReads({ repository: ref.repository, number: ref.number }).pipe(
+            Effect.andThen(readCache.invalidate(refScope(ref))),
+            Effect.andThen(Effect.sync(() => bumpRefEpoch(ref))),
+          ),
         ),
         Effect.ignore,
       );
     } else {
+      yield* forgetProviderReads();
       listingsEpoch = ++epochCounter;
       everyFileRevisionEpoch = ++epochCounter;
       viewersByHost.clear();
@@ -3455,22 +3513,27 @@ export const make = Effect.gen(function* () {
     }
   });
 
-  const refreshAfterTurn: PullRequestService["Service"]["refreshAfterTurn"] = (projectId) =>
-    Effect.suspend(() => {
-      listingsEpoch = ++epochCounter;
-      projectEpochs.delete(projectId);
-      if (projectEpochs.size >= REF_EPOCH_CAPACITY) {
-        const oldest = projectEpochs.keys().next().value;
-        if (oldest !== undefined) {
-          projectEpochFloor = projectEpochs.get(oldest)!;
-          projectEpochs.delete(oldest);
-        }
+  const refreshAfterTurn: PullRequestService["Service"]["refreshAfterTurn"] = Effect.fn(
+    "PullRequestService.refreshAfterTurn",
+  )(function* (projectId) {
+    // Everything the provider holds, not just the project's repository: a turn can touch a
+    // change request reached through another repository, and no epoch may move until those
+    // reads are gone, or a reader in between keeps the old one under the new epoch.
+    yield* forgetProviderReads();
+    listingsEpoch = ++epochCounter;
+    projectEpochs.delete(projectId);
+    if (projectEpochs.size >= REF_EPOCH_CAPACITY) {
+      const oldest = projectEpochs.keys().next().value;
+      if (oldest !== undefined) {
+        projectEpochFloor = projectEpochs.get(oldest)!;
+        projectEpochs.delete(oldest);
       }
-      projectEpochs.set(projectId, listingsEpoch);
-      return readCache
-        .invalidate(`project:${projectId}`)
-        .pipe(Effect.andThen(SubscriptionRef.set(pullRequestRefreshes, listingsEpoch)));
-    });
+    }
+    projectEpochs.set(projectId, listingsEpoch);
+    const epoch = listingsEpoch;
+    yield* readCache.invalidate(`project:${projectId}`);
+    yield* SubscriptionRef.set(pullRequestRefreshes, epoch);
+  });
 
   const invalidatedByMutation =
     <I extends PullRequestRef>(
@@ -3638,6 +3701,7 @@ export const make = Effect.gen(function* () {
     );
 
   return PullRequestService.of({
+    withSharedProjectReads,
     routing,
     routingIdentity,
     withRoutingCredential,
@@ -3664,9 +3728,9 @@ export const make = Effect.gen(function* () {
     ),
     refreshAfterTurn,
     detail: credentialCached(detail),
-    checks: credentialCached((input) => Cache.get(checksCache, refCacheKey(input))),
+    checks: credentialCached((input) => getShared(checksCache, refCacheKey(input))),
     watchFingerprint: credentialCached((input) =>
-      Cache.get(watchFingerprintCache, refCacheKey(input)),
+      getShared(watchFingerprintCache, refCacheKey(input)),
     ),
     activity: credentialCached(activity),
     preview: credentialCached(preview),

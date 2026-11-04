@@ -24,7 +24,7 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
-import { relativeTime } from "../../lib/time";
+import { RelativeTime } from "../../components/RelativeTime";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useServerConfigs } from "../../state/entities";
 import { useEnvironmentScope } from "../../state/session";
@@ -154,10 +154,7 @@ function ProjectGroupLabel(props: {
         size={18}
         workspaceRoot={props.project.workspaceRoot}
       />
-      <Text
-        className="flex-1 text-xs font-t3-medium tracking-[0.5px] uppercase text-foreground-muted"
-        numberOfLines={1}
-      >
+      <Text className="flex-1 text-xs font-t3-medium text-foreground-muted" numberOfLines={1}>
         {props.project.title}
       </Text>
       {props.environmentLabel ? (
@@ -193,7 +190,6 @@ function ArchivedThreadRow(props: {
     props.thread.environmentId,
     AuthOrchestrationOperateScope,
   );
-  const timestamp = relativeTime(props.thread.archivedAt ?? props.thread.updatedAt);
   const subtitle = [props.environmentLabel, props.thread.branch].filter((part): part is string =>
     Boolean(part),
   );
@@ -219,7 +215,7 @@ function ArchivedThreadRow(props: {
             {props.thread.title}
           </Text>
           <Text className="min-w-[30px] text-right text-xs tabular-nums text-foreground-tertiary">
-            {timestamp}
+            <RelativeTime timestamp={props.thread.archivedAt ?? props.thread.updatedAt} />
           </Text>
         </View>
         {subtitle.length > 0 ? (

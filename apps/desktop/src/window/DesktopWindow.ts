@@ -5,6 +5,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 
 import * as Electron from "electron";
 
@@ -23,6 +24,7 @@ import {
   MENU_ACTION_CHANNEL,
   QUIT_SHORTCUT_CHANNEL,
   SNAP_SHOT_EVENT_CHANNEL,
+  TRACKPAD_SCROLL_BEGIN_CHANNEL,
   TRACKPAD_SCROLL_END_CHANNEL,
   WINDOW_FULLSCREEN_STATE_CHANNEL,
 } from "../ipc/channels.ts";
@@ -41,20 +43,21 @@ const TITLEBAR_HEIGHT = 40;
 const MACOS_WORKSPACE_TOPBAR_HEIGHT = 52;
 const MACOS_WINDOW_BUTTON_RADIUS = 7;
 
+function macosWindowButtonPosition(zoomFactor: number) {
+  return {
+    x: 16,
+    y: Math.round((MACOS_WORKSPACE_TOPBAR_HEIGHT * zoomFactor) / 2 - MACOS_WINDOW_BUTTON_RADIUS),
+  };
+}
+
 function syncMacosWindowButtons(window: Electron.BrowserWindow): void {
   if (window.isDestroyed() || window.isFullScreen()) return;
-  window.setWindowButtonPosition({
-    x: 16,
-    y: Math.round(
-      (MACOS_WORKSPACE_TOPBAR_HEIGHT * window.webContents.getZoomFactor()) / 2 -
-        MACOS_WINDOW_BUTTON_RADIUS,
-    ),
-  });
+  window.setWindowButtonPosition(macosWindowButtonPosition(window.webContents.getZoomFactor()));
 }
 
 const TITLEBAR_COLOR = "#01000000"; // #00000000 does not work correctly on Linux
-const TITLEBAR_LIGHT_SYMBOL_COLOR = "#1f2937";
-const TITLEBAR_DARK_SYMBOL_COLOR = "#f8fafc";
+const TITLEBAR_LIGHT_SYMBOL_COLOR = "#282828";
+const TITLEBAR_DARK_SYMBOL_COLOR = "#fafafa";
 const MAIN_WINDOW_BOUNDS_PERSIST_DEBOUNCE_MS = 500;
 const DEVELOPMENT_LOAD_RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000] as const;
 const RENDERER_RECOVERY_RELOAD_DELAY_MS = 500;
@@ -130,8 +133,10 @@ function getIconOption(
   });
 }
 
+// The default theme's window chrome (--app-chrome-background), so the first
+// paint and resize gaps match the chrome around the content.
 function getInitialWindowBackgroundColor(shouldUseDarkColors: boolean): string {
-  return shouldUseDarkColors ? "#000000" : "#ffffff";
+  return shouldUseDarkColors ? "#000000" : "#e4e4e4";
 }
 
 type DisplayBounds = Pick<Electron.Rectangle, "x" | "y" | "width" | "height">;
@@ -175,19 +180,26 @@ export function resolveInitialMainWindowBounds(
 
 function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
   const background = getInitialWindowBackgroundColor(shouldUseDarkColors);
-  const label = shouldUseDarkColors ? "#9ca3af" : "#6b7280";
-  const accent = shouldUseDarkColors ? "#f8fafc" : "#1f2937";
-  const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
+  const label = shouldUseDarkColors ? "#a2a2a2" : "#727272";
+  const accent = shouldUseDarkColors ? "#fafafa" : "#282828";
+  const track = shouldUseDarkColors ? "rgba(250,250,250,0.18)" : "rgba(40,40,40,0.18)";
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
-function isSameOriginRendererNavigation(input: {
+export function isSameOriginRendererNavigation(input: {
   readonly applicationUrl: string;
   readonly navigationUrl: string;
 }): boolean {
   try {
-    return new URL(input.applicationUrl).origin === new URL(input.navigationUrl).origin;
+    const applicationUrl = new URL(input.applicationUrl);
+    const navigationUrl = new URL(input.navigationUrl);
+    // Node serializes custom-scheme origins as "null", even for different hosts and schemes.
+    return (
+      applicationUrl.host !== "" &&
+      navigationUrl.protocol === applicationUrl.protocol &&
+      navigationUrl.host === applicationUrl.host
+    );
   } catch {
     return false;
   }
@@ -230,10 +242,7 @@ function getWindowTitleBarOptions(
   if (platform === "darwin") {
     return {
       titleBarStyle: "hiddenInset",
-      trafficLightPosition: {
-        x: 16,
-        y: MACOS_WORKSPACE_TOPBAR_HEIGHT / 2 - MACOS_WINDOW_BUTTON_RADIUS,
-      },
+      trafficLightPosition: macosWindowButtonPosition(1),
     };
   }
 
@@ -298,10 +307,17 @@ export const make = Effect.gen(function* () {
   const electronApp = yield* ElectronApp.ElectronApp;
   const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
   const backendReadyRef = yield* Ref.make(false);
+  let backendHasStarted = false;
+  let mainClosedDuringStartup = false;
   const splashWindowRef = yield* Ref.make<Option.Option<Electron.BrowserWindow>>(Option.none());
   const context = yield* Effect.context<DesktopWindowRuntimeServices>();
   const runFork = Effect.runForkWith(context);
   const runPromise = Effect.runPromiseWith(context);
+  const mainWindowMutex = yield* Semaphore.make(1);
+  const pendingMainReveals = new WeakMap<Electron.BrowserWindow, Effect.Effect<void>>();
+  const revealMain = Effect.fn("desktop.window.revealMain")((window: Electron.BrowserWindow) =>
+    Effect.suspend(() => pendingMainReveals.get(window) ?? electronWindow.reveal(window)),
+  );
   let flushMainWindowBounds: Effect.Effect<void> = Effect.void;
 
   const dismissConnectingSplash = Effect.gen(function* () {
@@ -346,7 +362,9 @@ export const make = Effect.gen(function* () {
     const applicationUrl = getDesktopUrl(environment.isDevelopment);
     const iconPaths = yield* assets.iconPaths;
     const iconOption = getIconOption(iconPaths, environment.platform);
-    const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+    // The native background and caption symbols follow the chrome, which stays
+    // dark in the light, black chrome appearance.
+    const shouldUseDarkColors = yield* electronTheme.shouldUseDarkChrome;
     const persistedSettings = yield* desktopSettings.get;
     const persistedBounds = persistedSettings.mainWindowBounds;
     const displayBoundsResult = yield* Effect.sync(() => {
@@ -399,6 +417,7 @@ export const make = Effect.gen(function* () {
       return Option.none();
     }
 
+    pendingMainReveals.set(window, Effect.void);
     yield* rendererHistory.register(window.webContents, { surface: "main" });
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);
@@ -652,7 +671,11 @@ export const make = Effect.gen(function* () {
       }
     });
     window.webContents.on("input-event", (_event, input) => {
-      if (input.type === "gestureScrollEnd") window.webContents.send(TRACKPAD_SCROLL_END_CHANNEL);
+      if (input.type === "gestureScrollBegin") {
+        window.webContents.send(TRACKPAD_SCROLL_BEGIN_CHANNEL);
+      } else if (input.type === "gestureScrollEnd") {
+        window.webContents.send(TRACKPAD_SCROLL_END_CHANNEL);
+      }
     });
     // Ctrl+wheel bypasses menus; guest contents emit their own zoom-changed event.
     window.webContents.on("zoom-changed", (_event, direction) => {
@@ -673,6 +696,23 @@ export const make = Effect.gen(function* () {
     });
 
     if (environment.platform === "darwin") {
+      // Mouse drivers can deliver Back/Forward as macOS swipe gestures instead of buttons.
+      window.on("swipe", (_event, direction) =>
+        runPromise(
+          Effect.gen(function* () {
+            const settings = yield* clientSettings.get.pipe(
+              Effect.orElseSucceed(() => Option.none()),
+            );
+            if (Option.isSome(settings) && settings.value.layoutThreeFingerSwipe) {
+              window.webContents.send(MENU_ACTION_CHANNEL, `layout-swipe-${direction}`);
+              return;
+            }
+            const history = window.webContents.navigationHistory;
+            if (direction === "left" && history.canGoBack()) history.goBack();
+            else if (direction === "right" && history.canGoForward()) history.goForward();
+          }),
+        ),
+      );
       window.on("enter-full-screen", () => {
         window.webContents.send(WINDOW_FULLSCREEN_STATE_CHANNEL, true);
       });
@@ -804,14 +844,27 @@ export const make = Effect.gen(function* () {
     if (environment.platform === "linux") {
       revealSubscribers.push((fire) => window.webContents.once("did-finish-load", fire));
     }
+    let rendererReady = false;
+    let firstRevealComplete = false;
+    const revealWhenReady = Effect.gen(function* () {
+      if (
+        !rendererReady ||
+        firstRevealComplete ||
+        window.isDestroyed() ||
+        (yield* Ref.get(desktopState.quitting))
+      )
+        return;
+      firstRevealComplete = true;
+      pendingMainReveals.delete(window);
+      window.webContents.setBackgroundThrottling(true);
+      if (persistedSettings.mainWindowMaximized) window.maximize();
+      yield* electronWindow.reveal(window);
+      yield* dismissConnectingSplash;
+    });
+    pendingMainReveals.set(window, revealWhenReady);
     bindFirstRevealTrigger(revealSubscribers, () => {
-      if (!window.isDestroyed()) {
-        window.webContents.setBackgroundThrottling(true);
-      }
-      if (persistedSettings.mainWindowMaximized) {
-        window.maximize();
-      }
-      void runPromise(Effect.andThen(electronWindow.reveal(window), dismissConnectingSplash));
+      rendererReady = true;
+      void runPromise(revealWhenReady);
     });
 
     loadApplication();
@@ -820,6 +873,7 @@ export const make = Effect.gen(function* () {
     }
 
     window.on("closed", () => {
+      if (!backendHasStarted) mainClosedDuringStartup = true;
       clearDevelopmentLoadRetry();
       clearBoundsPersist();
       void runPromise(electronWindow.clearMain(Option.some(window)));
@@ -832,6 +886,7 @@ export const make = Effect.gen(function* () {
     const window = yield* createWindow();
     if (Option.isSome(window)) {
       yield* electronWindow.setMain(window.value);
+      mainClosedDuringStartup = false;
       yield* logWindowInfo("main window created");
     }
     return window;
@@ -844,7 +899,7 @@ export const make = Effect.gen(function* () {
       return existingWindow;
     }
     return yield* createMain;
-  }).pipe(Effect.withSpan("desktop.window.ensureMain"));
+  }).pipe(mainWindowMutex.withPermits(1), Effect.withSpan("desktop.window.ensureMain"));
 
   const requireWindow = (window: Option.Option<Electron.BrowserWindow>) =>
     Option.match(window, {
@@ -854,7 +909,7 @@ export const make = Effect.gen(function* () {
 
   const revealOrCreateMain = Effect.gen(function* () {
     const window = yield* ensureMain.pipe(Effect.flatMap(requireWindow));
-    yield* electronWindow.reveal(window);
+    yield* revealMain(window);
     return window;
   }).pipe(Effect.withSpan("desktop.window.revealOrCreateMain"));
 
@@ -866,9 +921,7 @@ export const make = Effect.gen(function* () {
   const createMainIfBackendReady = Effect.gen(function* () {
     if (yield* Ref.get(desktopState.quitting)) return;
     if (yield* waitingForBackend) return;
-    const existingWindow = yield* currentMainWindow;
-    if (Option.isSome(existingWindow)) return;
-    yield* createMain;
+    yield* ensureMain;
   }).pipe(Effect.withSpan("desktop.window.createMainIfBackendReady"));
 
   const showConnectingSplash = Effect.gen(function* () {
@@ -938,7 +991,7 @@ export const make = Effect.gen(function* () {
     });
     // Send before best-effort reveal; another process may refuse to yield foreground focus.
     const dispatch = reveal
-      ? send.pipe(Effect.andThen(electronWindow.reveal(targetWindow).pipe(Effect.ignoreCause)))
+      ? send.pipe(Effect.andThen(revealMain(targetWindow).pipe(Effect.ignoreCause)))
       : send;
     if (targetWindow.webContents.isLoadingMainFrame()) {
       targetWindow.webContents.once("did-finish-load", () => void runPromise(dispatch));
@@ -953,7 +1006,7 @@ export const make = Effect.gen(function* () {
     revealOrCreateMain,
     prepareCaptureReveal: Effect.gen(function* () {
       const existingWindow = yield* currentMainWindow;
-      if (Option.isSome(existingWindow)) {
+      if (Option.isSome(existingWindow) && !pendingMainReveals.has(existingWindow.value)) {
         yield* electronWindow.prepareReveal(existingWindow.value);
       }
     }),
@@ -961,7 +1014,11 @@ export const make = Effect.gen(function* () {
       if (yield* Ref.get(desktopState.quitting)) return;
       const existingWindow = yield* currentMainWindow;
       if (Option.isSome(existingWindow)) {
-        yield* electronWindow.reveal(existingWindow.value);
+        yield* revealMain(existingWindow.value);
+        return;
+      }
+      if (mainClosedDuringStartup) {
+        yield* ensureMain;
         return;
       }
       const backendReady = yield* Ref.get(backendReadyRef);
@@ -977,9 +1034,10 @@ export const make = Effect.gen(function* () {
     createMainIfBackendReady,
     showConnectingSplash,
     handleBackendReady: Effect.fn("desktop.window.handleBackendReady")(function* (httpBaseUrl) {
+      backendHasStarted = true;
       yield* Ref.set(backendReadyRef, true);
       yield* logWindowInfo("backend ready", { source: "http", url: httpBaseUrl.href });
-      yield* createMainIfBackendReady;
+      if (!mainClosedDuringStartup) yield* createMainIfBackendReady;
     }),
     handleBackendNotReady: Ref.set(backendReadyRef, false).pipe(
       Effect.withSpan("desktop.window.handleBackendNotReady"),
@@ -1019,7 +1077,7 @@ export const make = Effect.gen(function* () {
       else webContents.toggleDevTools();
     }),
     syncAppearance: Effect.gen(function* () {
-      const shouldUseDarkColors = yield* electronTheme.shouldUseDarkColors;
+      const shouldUseDarkColors = yield* electronTheme.shouldUseDarkChrome;
       yield* electronWindow.syncAllAppearance((window) =>
         syncWindowAppearance(window, shouldUseDarkColors, environment.platform),
       );

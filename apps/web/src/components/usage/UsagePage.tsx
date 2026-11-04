@@ -10,8 +10,15 @@ import {
   type UsageProviderKind,
   type UsageSummaryInput,
 } from "@t3tools/contracts";
-import { CircleAlertIcon, ChevronDownIcon, InfoIcon, SlidersHorizontalIcon } from "lucide-react";
-import { useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  ChartNoAxesColumnIcon,
+  CircleAlertIcon,
+  ChevronDownIcon,
+  InfoIcon,
+  ServerIcon,
+  SlidersHorizontalIcon,
+} from "lucide-react";
+import { type ReactNode, useEffect, useEffectEvent, useRef, useState } from "react";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import * as AsyncResult from "effect/reactivity/AsyncResult";
 import * as Cause from "effect/Cause";
@@ -56,6 +63,7 @@ import {
   formatUsageContractMismatch,
   formatUsd,
   makeWindow,
+  usageSourceMessages,
 } from "@t3tools/shared/usageFormat";
 import { Button, InlineButton } from "../ui/button";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
@@ -70,6 +78,7 @@ import {
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { AppRouteModal, AppRouteModalClose } from "../AppRouteModal";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../ui/empty";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -80,6 +89,7 @@ import {
   WorkspaceBreadcrumbSeparator,
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
+import { PageEmptyState } from "../PageEmptyState";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
@@ -357,8 +367,8 @@ export function UsagePage() {
 
   const windowLabel =
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
-      ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12)}`
-      : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
+      ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12)} – ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12)}`
+      : `${formatDayShort(shownWindow.sinceDay)} – ${formatDayShort(shownWindow.untilDay)}`;
   const topbarContent = (
     <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
@@ -388,11 +398,6 @@ export function UsagePage() {
           />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {!showingLimits ? (
-        <span className="hidden min-w-0 truncate text-xs text-muted-foreground @7xl/usage-header:block">
-          {windowLabel}
-        </span>
-      ) : null}
       <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
         {/* Limits are always current, so they have no period. The period sits before the metric
             tabs so dropping it never moves them. */}
@@ -504,21 +509,33 @@ export function UsagePage() {
   );
 
   return (
-    <AppRouteModal label="Usage">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
+    <AppRouteModal label="Usage" variant="app-panel">
+      <div data-app-modal-pane="" className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 ps-5 pe-2">
           {topbarContent}
           <AppRouteModalClose />
         </header>
 
         <ScrollArea className="min-h-0 flex-1">
-          <WorkspacePageContainer width="wide">
+          <WorkspacePageContainer
+            width="wide"
+            className="@container/usage-page max-w-[1040px] gap-5 pt-5.5"
+          >
             {selectedEnvironments.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                {environments.length === 0
-                  ? `Connect an environment to see ${showingLimits ? "limits" : "usage"}.`
-                  : `Select an environment to see ${showingLimits ? "limits" : "usage"}.`}
-              </p>
+              <PageEmptyState
+                fill
+                icon={<ServerIcon />}
+                title={
+                  environments.length === 0
+                    ? "No environments connected"
+                    : "No environment selected"
+                }
+                description={
+                  environments.length === 0
+                    ? `Connect an environment to see ${showingLimits ? "limits" : "usage"}.`
+                    : `Select an environment to see ${showingLimits ? "limits" : "usage"}.`
+                }
+              />
             ) : showingLimits ? (
               <UsageLimitsSection
                 selectedEnvironmentIds={selectedEnvironmentIds}
@@ -539,19 +556,40 @@ export function UsagePage() {
             ) : shown === null ? (
               <UsageSkeleton />
             ) : !canReadDiagnostics ? (
-              <div className="space-y-2 py-12 text-center text-sm text-muted-foreground">
-                {selectedEnvironments.map((environment) => (
-                  <p key={environment.environmentId}>
-                    {selectedEnvironments.length > 1 ? `${environment.label}: ` : null}
-                    {environment.error}
-                  </p>
-                ))}
-              </div>
+              <UsageNotice
+                icon={CircleAlertIcon}
+                title="Usage unavailable"
+                description={
+                  selectedEnvironments
+                    .filter((environment) => environment.error !== null)
+                    .map((environment) =>
+                      selectedEnvironments.length > 1
+                        ? `${environment.label}: ${environment.error}`
+                        : environment.error,
+                    )
+                    .join(" ") || "Checking access to usage."
+                }
+              />
+            ) : selectedEnvironments.every((environment) => environment.error !== null) ? (
+              <UsageNotice
+                icon={CircleAlertIcon}
+                title="Could not read usage"
+                description={selectedEnvironments
+                  .map((environment) => `${environment.label}: ${environment.error}`)
+                  .join(" ")}
+              >
+                <Button size="sm" variant="secondary" onClick={() => void refresh()}>
+                  <RefreshIcon size="sm" />
+                  Retry
+                </Button>
+              </UsageNotice>
             ) : (
               <UsageOverview
                 merged={merged}
                 shownWindow={shownWindow}
                 hour12={hour12}
+                windowDays={windowDays}
+                windowLabel={windowLabel}
                 days={days}
                 hours={hours}
                 showingKept={showingKept}
@@ -601,10 +639,18 @@ export function UsagePage() {
   );
 }
 
+// Breakdown tables: a 28px head over a hairline, 34px rows on a fainter one.
+const TABLE_HEAD_ROW =
+  "h-7 border-b border-border text-left text-xs text-muted-foreground [&>th]:py-0";
+const TABLE_ROW =
+  "h-[34px] border-b border-border/60 transition-colors hover:bg-muted/50 [&>td]:py-0";
+
 function UsageOverview({
   merged,
   shownWindow,
   hour12,
+  windowDays,
+  windowLabel,
   days,
   hours,
   showingKept,
@@ -620,6 +666,8 @@ function UsageOverview({
   readonly merged: MergedUsage;
   readonly shownWindow: UsageSummaryInput;
   readonly hour12: boolean;
+  readonly windowDays: number;
+  readonly windowLabel: string;
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
@@ -650,23 +698,14 @@ function UsageOverview({
   const chartLoadingProviders = new Set(
     activeProviders.filter((provider) => loadingProviders.has(provider)),
   );
-  const sourceMessages = [
-    ...new Set(
-      selectedEnvironments.flatMap(
-        (environment) =>
-          environment.summary?.sources.flatMap((source) =>
-            source.message &&
-            !source.action &&
-            !hiddenProviders.has(source.fingerprint.provider) &&
-            (source.status === "partial" ||
-              source.status === "failed" ||
-              source.fingerprint.provider === "cursor")
-              ? [source.message]
-              : [],
-          ) ?? [],
-      ),
+  const sourceMessages = usageSourceMessages(
+    selectedEnvironments.flatMap(
+      (environment) =>
+        environment.summary?.sources.filter(
+          (source) => !hiddenProviders.has(source.fingerprint.provider),
+        ) ?? [],
     ),
-  ];
+  );
   const breakdownPeriods: readonly (DailyTotals | HourlyTotals)[] = (
     shownHourly ? merged.hourly : merged.daily
   ).toReversed();
@@ -693,14 +732,32 @@ function UsageOverview({
       .map((provider) => ({ kind: "usage" as const, provider })),
   ];
 
+  if (
+    merged.sessions === 0 &&
+    sourceMessages.length === 0 &&
+    cursorAccessEnvironments.length === 0
+  ) {
+    // A kept empty answer says nothing about the newly requested period.
+    return showingKept ? (
+      <UsageSkeleton />
+    ) : (
+      <PageEmptyState
+        fill
+        icon={<ChartNoAxesColumnIcon />}
+        title={`No usage in the ${periodPhrase(windowDays)}`}
+        description="Sessions from your providers show up here once they run. Pick a longer period to look further back."
+      />
+    );
+  }
+
   return (
-    <div aria-busy={loadingPartial} className="flex flex-col gap-6">
+    <div aria-busy={loadingPartial} className="flex flex-col gap-5">
       {sourceMessages.map((message) => (
         <p key={message} className="mb-4 text-sm text-muted-foreground">
           {message}
         </p>
       ))}
-      <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
+      <section className="grid gap-6 @min-[48rem]/usage-page:grid-cols-[18rem_minmax(0,1fr)]">
         <div className="flex min-w-0 flex-col gap-5">
           <div className="flex flex-col gap-1">
             <span
@@ -712,12 +769,16 @@ function UsageOverview({
               {metric === "cost" ? formatUsd(merged.costUsd) : formatTokens(merged.totalTokens)}
             </span>
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-              <span>
-                <span className={figureClass(loadingPartial)}>
-                  {formatCount(merged.sessions)} sessions
-                </span>
-                {metric === "cost" && " · API estimate"}
-              </span>
+              <Tooltip>
+                <TooltipTrigger render={<span tabIndex={0} />}>
+                  <span className={figureClass(loadingPartial)}>
+                    {formatCount(merged.sessions)} sessions
+                  </span>
+                </TooltipTrigger>
+                <TooltipPopup>
+                  {metric === "cost" ? "API cost estimate" : "Sessions with processed tokens"}
+                </TooltipPopup>
+              </Tooltip>
               {metric === "cost" && merged.costQuality.unpricedShare > 0 && (
                 <Popover>
                   <PopoverTrigger
@@ -776,11 +837,15 @@ function UsageOverview({
                       }}
                     />
                     <ProviderMark provider={provider} className="size-4" />
-                    <span className="flex min-w-0 items-baseline gap-1.5">
-                      <span className="truncate">{PROVIDER_PRESENTATION[provider].label}</span>
+                    {/* The name and the session count stay whole; a count with no
+                        room left wraps under the name. */}
+                    <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5">
+                      <span className="whitespace-nowrap">
+                        {PROVIDER_PRESENTATION[provider].label}
+                      </span>
                       <span
                         className={cn(
-                          "shrink-0 whitespace-nowrap text-2xs text-muted-foreground tabular-nums",
+                          "whitespace-nowrap text-2xs text-muted-foreground tabular-nums",
                           figureClass(providerLoading),
                           awaitingData && "invisible",
                         )}
@@ -802,16 +867,24 @@ function UsageOverview({
                         : formatTokens(totals?.totalTokens ?? 0)}
                   </span>
                 </div>
+                {}
                 <span
                   className={cn(
-                    "text-xs text-muted-foreground",
+                    "text-meta text-muted-foreground",
                     figureClass(providerLoading),
                     awaitingData && "invisible",
                   )}
                 >
-                  {metric === "cost"
-                    ? `${formatPercent(share)} of cost · ${formatTokens(totals?.totalTokens ?? 0)} tokens`
-                    : `${formatPercent(share)} of tokens · ${formatUsd(totals?.costUsd ?? 0)}`}
+                  <Tooltip>
+                    <TooltipTrigger render={<span tabIndex={0} />}>
+                      {formatPercent(share)} of {metric === "cost" ? "cost" : "tokens"}
+                    </TooltipTrigger>
+                    <TooltipPopup>
+                      {metric === "cost"
+                        ? `${formatTokens(totals?.totalTokens ?? 0)} tokens`
+                        : formatUsd(totals?.costUsd ?? 0)}
+                    </TooltipPopup>
+                  </Tooltip>
                 </span>
               </div>
             );
@@ -819,9 +892,12 @@ function UsageOverview({
         </div>
 
         <div className="flex min-w-0 flex-col gap-3">
-          <h2 className="text-sm font-medium text-foreground">
-            {shownHourly ? "Hourly" : "Daily"} {metric === "tokens" ? "processed tokens" : "cost"}
-          </h2>
+          <div className="flex flex-col gap-1">
+            <h2 className="min-w-0 truncate text-label text-foreground">
+              {shownHourly ? "Hourly" : "Daily"} {metric === "tokens" ? "processed tokens" : "cost"}
+            </h2>
+            <span className="text-label text-foreground tabular-nums">{windowLabel}</span>
+          </div>
           <UsageProviderChart
             providers={activeProviders}
             loadingProviders={chartLoadingProviders}
@@ -838,8 +914,10 @@ function UsageOverview({
         </div>
       </section>
 
+      {/* Section headings sit in a 28px row, 8px above their content, with or
+          without actions (the settings rhythm). The skeleton keeps the same rows. */}
       <section className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium text-foreground">Totals</h2>
+        <h2 className="flex min-h-7 items-center text-sm font-medium text-foreground">Totals</h2>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
           <Metric
             loading={loadingPartial}
@@ -899,8 +977,8 @@ function UsageOverview({
         </section>
       ) : null}
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
+      <section className="flex flex-col gap-2">
+        <div className="flex min-h-7 items-center justify-between gap-3">
           <h2 className="text-sm font-medium text-foreground">Breakdown</h2>
           <ToggleGroup
             aria-label="Usage breakdown"
@@ -925,25 +1003,30 @@ function UsageOverview({
         </div>
 
         {breakdown === "model" ? (
-          <table className="w-full text-sm">
+          <table className="w-full table-fixed text-sm">
+            <colgroup>
+              <col />
+              <col className="w-30" />
+              <col className="w-30" />
+              <col className="w-30" />
+            </colgroup>
             <thead>
-              <tr className="border-b border-border text-right text-xs text-muted-foreground">
-                <th className="py-2 pr-3 text-left font-normal">#</th>
-                <th className="w-full py-2 text-left font-normal">Model</th>
-                <th className="py-2 pl-6 font-normal">Cost</th>
-                <th className="hidden py-2 pl-6 font-normal sm:table-cell">Share</th>
-                <th className="py-2 pl-6 font-normal">Tokens</th>
+              <tr className={TABLE_HEAD_ROW}>
+                <th className="font-normal">Model</th>
+                <th className="text-right font-normal">Cost</th>
+                <th className="text-right font-normal">Share</th>
+                <th className="text-right font-normal">Tokens</th>
               </tr>
             </thead>
             <tbody>
               {breakdownModels.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
+                  <td colSpan={4} className="py-6 text-center text-muted-foreground">
                     No activity in this window.
                   </td>
                 </tr>
               ) : (
-                breakdownModels.map((model, index) => {
+                breakdownModels.map((model) => {
                   const key = `${model.provider}:${model.model}`;
                   const value = metric === "tokens" ? model.totalTokens : model.costUsd;
                   const hasBar = value > 0 && breakdownPeak > 0;
@@ -952,21 +1035,20 @@ function UsageOverview({
                   return (
                     <tr
                       key={key}
-                      className="relative border-b border-border/50 text-right whitespace-nowrap text-muted-foreground tabular-nums transition-colors hover:bg-muted/50 has-focus-visible:bg-muted/50"
+                      className={cn(TABLE_ROW, "relative has-focus-visible:bg-muted/50")}
                     >
-                      <td className="py-2.5 pr-3 text-left text-xs">{index + 1}</td>
-                      <td className="py-2.5 text-left whitespace-normal">
+                      <td className="text-foreground">
+                        {}
                         <button
                           type="button"
+                          aria-label={model.model}
                           onClick={() => onSelectModel(key)}
-                          className={cn(
-                            "flex items-center gap-2 text-left text-foreground outline-none after:absolute after:inset-0",
-                            !hasBar && "py-1",
-                          )}
-                        >
+                          className="absolute inset-0 outline-none"
+                        />
+                        <span className={cn("flex min-w-0 items-center gap-2", !hasBar && "py-1")}>
                           <ProviderMark provider={model.provider} className="size-3.5" />
-                          {model.model}
-                        </button>
+                          <span className="truncate">{model.model}</span>
+                        </span>
                         {hasBar ? (
                           <div aria-hidden className={cn("mt-1.5 h-0.5 max-w-48", rowFigures)}>
                             <div
@@ -979,17 +1061,21 @@ function UsageOverview({
                           </div>
                         ) : null}
                       </td>
-                      <td className={cn("py-2.5 pl-6 text-foreground", rowFigures)}>
+                      <td className={cn("text-right text-foreground tabular-nums", rowFigures)}>
                         {isModelCostUnknown(model) ? (
                           <span className="text-muted-foreground">Unpriced</span>
                         ) : (
                           formatUsd(model.costUsd)
                         )}
                       </td>
-                      <td className={cn("hidden py-2.5 pl-6 sm:table-cell", rowFigures)}>
-                        {share === null ? "" : formatPercent(share)}
+                      <td
+                        className={cn("text-right text-muted-foreground tabular-nums", rowFigures)}
+                      >
+                        {share === null ? "-" : formatPercent(share)}
                       </td>
-                      <td className={cn("py-2.5 pl-6", rowFigures)}>
+                      <td
+                        className={cn("text-right text-muted-foreground tabular-nums", rowFigures)}
+                      >
                         {formatTokens(model.totalTokens)}
                       </td>
                     </tr>
@@ -1010,15 +1096,15 @@ function UsageOverview({
                 <col className="w-2/5" />
               </colgroup>
               <thead>
-                <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                  <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
+                <tr className={TABLE_HEAD_ROW}>
+                  <th className="font-normal">{shownHourly ? "Hour" : "Day"}</th>
                   {activeProviders.map((provider) => (
-                    <th key={provider} className="py-2 pl-4 text-right font-normal">
+                    <th key={provider} className="pl-4 text-right font-normal">
                       {PROVIDER_PRESENTATION[provider].label}
                     </th>
                   ))}
-                  <th className="py-2 pl-4 text-right font-normal">Total</th>
-                  <th className="py-2 pl-4 text-right font-normal">Tokens</th>
+                  <th className="pl-4 text-right font-normal">Total</th>
+                  <th className="pl-4 text-right font-normal">Tokens</th>
                 </tr>
               </thead>
               <tbody>
@@ -1035,9 +1121,9 @@ function UsageOverview({
                   breakdownPeriods.map((period) => (
                     <tr
                       key={"hourStart" in period ? period.hourStart : period.day}
-                      className="border-b border-border/50 transition-colors hover:bg-muted/50"
+                      className={TABLE_ROW}
                     >
-                      <td className="py-2 text-foreground">
+                      <td className="text-foreground">
                         {"hourStart" in period
                           ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12)
                           : formatDayShort(period.day)}
@@ -1046,7 +1132,7 @@ function UsageOverview({
                         <td
                           key={provider}
                           className={cn(
-                            "py-2 pl-4 text-right text-muted-foreground tabular-nums",
+                            "pl-4 text-right text-muted-foreground tabular-nums",
                             figureClass(loadingProviders.has(provider)),
                           )}
                         >
@@ -1055,7 +1141,7 @@ function UsageOverview({
                       ))}
                       <td
                         className={cn(
-                          "py-2 pl-4 text-right text-foreground tabular-nums",
+                          "pl-4 text-right text-foreground tabular-nums",
                           figureClass(loadingPartial),
                         )}
                       >
@@ -1063,7 +1149,7 @@ function UsageOverview({
                       </td>
                       <td
                         className={cn(
-                          "py-2 pl-4 text-right text-muted-foreground tabular-nums",
+                          "pl-4 text-right text-muted-foreground tabular-nums",
                           figureClass(loadingPartial),
                         )}
                       >
@@ -1121,7 +1207,7 @@ function CursorEnableButton({
   ) : (
     <Button
       size="sm"
-      variant="outline"
+      variant="secondary"
       disabled={pending}
       aria-busy={pending}
       aria-label={`Enable Cursor usage from ${label}`}
@@ -1159,7 +1245,12 @@ function CursorEnableRow({
           style={{ backgroundColor: PROVIDER_PRESENTATION.cursor.color }}
         />
         <ProviderMark provider="cursor" className="size-4" />
-        <span className="truncate">Cursor{showEnvironment ? ` · ${label}` : ""}</span>
+        <Tooltip disabled={!showEnvironment}>
+          <TooltipTrigger render={<span tabIndex={showEnvironment ? 0 : undefined} />}>
+            Cursor
+          </TooltipTrigger>
+          <TooltipPopup>{label}</TooltipPopup>
+        </Tooltip>
       </span>
       <CursorEnableButton
         environmentId={environmentId}
@@ -1179,8 +1270,8 @@ function CursorEnableLimits({
   readonly onEnabled: () => void;
 }) {
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+    <section className="flex flex-col gap-2">
+      <h2 className="flex min-h-7 items-center gap-2 text-sm font-medium text-foreground">
         <ProviderInstanceIcon
           driverKind={ProviderDriverKind.make("cursor")}
           displayName="Cursor"
@@ -1190,7 +1281,7 @@ function CursorEnableLimits({
         />
         Cursor
       </h2>
-      <div className="flex flex-col items-start gap-3 rounded-lg border border-border/60 p-4">
+      <div className="flex flex-col items-start gap-3 rounded-card border border-transparent surface-card-settings p-4">
         <p className="text-xs text-muted-foreground">{CURSOR_KEYCHAIN_COPY}</p>
         <div className="flex flex-wrap gap-2">
           {environments.map((environment) => (
@@ -1430,6 +1521,34 @@ function UsageEnvironmentFilter({
   );
 }
 
+/** The page's empty and error notice, in the shape the pull requests list uses. */
+function UsageNotice({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  readonly icon: typeof ServerIcon;
+  readonly title: string;
+  readonly description: string;
+  readonly children?: ReactNode;
+}) {
+  return (
+    <Empty size="compact">
+      <Icon aria-hidden className="size-5.5 text-dim-foreground" />
+      <EmptyHeader>
+        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyDescription>{description}</EmptyDescription>
+      </EmptyHeader>
+      {children}
+    </Empty>
+  );
+}
+
+function periodPhrase(days: number): string {
+  return days === 1 ? "past 24 hours" : `past ${days} days`;
+}
+
 function UsageProviderFilter({
   hiddenProviders,
   onChange,
@@ -1492,7 +1611,7 @@ function UsageProviderFilter({
 function UsageSkeleton() {
   return (
     <>
-      <section className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
+      <section className="grid gap-6 @min-[48rem]/usage-page:grid-cols-[18rem_minmax(0,1fr)]">
         <div className="flex flex-col gap-5">
           <div className="flex flex-col gap-1">
             <Skeleton className="h-10 w-36" />
@@ -1523,7 +1642,7 @@ function UsageSkeleton() {
       </section>
 
       <section className="flex flex-col gap-2">
-        <h2 className="text-sm font-medium text-foreground">Totals</h2>
+        <h2 className="flex min-h-7 items-center text-sm font-medium text-foreground">Totals</h2>
         <MetricSkeletons
           labels={["Processed tokens", "Cached input", "Uncached input", "Output", "Cache savings"]}
         />
@@ -1537,8 +1656,8 @@ function UsageSkeleton() {
         </div>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
+      <section className="flex flex-col gap-2">
+        <div className="flex min-h-7 items-center justify-between gap-3">
           <h2 className="text-sm font-medium text-foreground">Breakdown</h2>
           <Skeleton shape="card" className="h-7 w-28" />
         </div>
@@ -1553,7 +1672,7 @@ function MetricSkeletons({ labels }: { readonly labels: readonly string[] }) {
     <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
       {labels.map((label) => (
         <div key={label} className="flex flex-col gap-0.5">
-          <span className="text-xs text-muted-foreground">{label}</span>
+          <span className="text-meta text-muted-foreground">{label}</span>
           <Skeleton className="h-6 w-16" />
         </div>
       ))}

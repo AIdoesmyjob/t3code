@@ -110,12 +110,44 @@ export function useMediaActions(source: MediaActionSource) {
   return { save, copyImage, canReadMedia, assertCanReadMedia };
 }
 
+export type MediaByteAction = "save" | "copy-image";
+
+/** Saves or copies media with the same progress and failure toasts as the media menu. */
+export function useMediaByteAction(source: MediaActionSource) {
+  const { save, copyImage } = useMediaActions(source);
+  return async (action: MediaByteAction) => {
+    const noun = source.kind === "image" ? "image" : "video";
+    const progressToast = toastManager.add({
+      type: "loading",
+      title: action === "save" ? `Preparing ${noun} download…` : "Copying image…",
+    });
+    try {
+      await (action === "save" ? save() : copyImage());
+      toastManager.update(progressToast, {
+        type: "success",
+        title: action === "save" ? "Download started" : "Image copied",
+      });
+    } catch (error) {
+      toastManager.update(
+        progressToast,
+        stackedThreadToast({
+          type: "error",
+          title: action === "save" ? `Could not save ${noun}` : "Could not copy image",
+          description: error instanceof Error ? error.message : "The media action failed.",
+        }),
+      );
+    }
+  };
+}
+
 export function MediaActions({
   source,
   children,
+  showTooltip = true,
 }: {
   source: MediaActionSource;
   children: ReactElement;
+  showTooltip?: boolean;
 }) {
   const { save, copyImage, canReadMedia, assertCanReadMedia } = useMediaActions(source);
   const [tooltipOpen, setTooltipOpen] = useState(false);
@@ -204,7 +236,7 @@ export function MediaActions({
   };
 
   return (
-    <Tooltip open={tooltipOpen} onOpenChange={setTooltipOpen}>
+    <Tooltip disabled={!showTooltip} open={tooltipOpen} onOpenChange={setTooltipOpen}>
       <TooltipTrigger
         render={children}
         tabIndex={0}
