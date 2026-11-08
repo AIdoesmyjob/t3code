@@ -10,6 +10,7 @@ import {
   AuthPreviewOperateScope,
   AuthTerminalOperateScope,
   AuthTerminalReadScope,
+  DEFAULT_RUNTIME_MODE,
   type PreviewAnnotationPayload,
   type ProjectId,
   type ScopedThreadRef,
@@ -220,6 +221,11 @@ export function useThreadSurfaceOpeners(threadRef: ScopedThreadRef) {
       context.serverConfig?.environment.capabilities.sideChats === true
         ? threadRef
         : null,
+    // Side chats start with the parent's permission mode and model, as in the chat view.
+    readSettings: () => ({
+      runtimeMode: context.serverThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+      modelSelection: context.serverThread?.modelSelection,
+    }),
     onError: (description) =>
       toastManager.add({ type: "error", title: "Could not open side chat", description }),
   });

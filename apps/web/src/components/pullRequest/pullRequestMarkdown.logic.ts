@@ -110,12 +110,20 @@ export function pullRequestAttachments(body: string) {
       caption: caption || `${media === "image" ? "Image" : "Video"} ${attachments.length + 1}`,
     });
   };
-  for (const segment of splitPullRequestBody(body)) {
-    if (segment.kind === "attachment") {
-      if (segment.media !== "unknown") add(segment.url, segment.media, "");
-      continue;
+  const visit = (segments: ReturnType<typeof splitPullRequestBody>) => {
+    for (const segment of segments) {
+      if (segment.kind === "table") {
+        // Before/after tables hold their media in cells; keep body order across them.
+        for (const row of segment.rows) for (const cell of row) visit(cell.segments);
+        continue;
+      }
+      if (segment.kind === "attachment") {
+        if (segment.media !== "unknown") add(segment.url, segment.media, "");
+        continue;
+      }
+      for (const url of chatMarkdownImageSources(segment.text)) add(url, "image", "");
     }
-    for (const url of chatMarkdownImageSources(segment.text)) add(url, "image", "");
-  }
+  };
+  visit(splitPullRequestBody(body));
   return attachments;
 }

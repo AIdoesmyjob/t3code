@@ -10,6 +10,7 @@ import { useAtomMount } from "@effect/atom-react";
 import { Schema } from "effect";
 import {
   ArrowUpRight,
+  CircleAlert,
   CloudIcon,
   Info,
   Monitor,
@@ -56,6 +57,7 @@ import {
 } from "~/components/ui/select";
 import { Switch } from "~/components/ui/switch";
 import { Dialog } from "~/components/ui/dialog";
+import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { WizardPopup } from "~/components/ui/wizard";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
@@ -69,7 +71,12 @@ import {
 import { formatEnvironmentQueryError } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { DeviceLoadingView } from "./DeviceLoadingView";
-import { DeviceSetup, deviceHubReadiness, isAndroidDiscoveryUncertain } from "./DeviceSetup";
+import {
+  DeviceSetup,
+  deviceHubReadiness,
+  incompleteListings,
+  isAndroidDiscoveryUncertain,
+} from "./DeviceSetup";
 import { DeviceWorkspace } from "./DeviceWorkspace";
 import { PreviewPanelShell, type PreviewPanelMode } from "../preview/PreviewPanelShell";
 
@@ -266,7 +273,14 @@ export function DevicePanel(props: {
     const status = state.hostStatuses[host.id];
     const detail = status?.detail ?? (host.kind === "local" ? state.hostStatusDetail : undefined);
     return detail && (status?.status ?? state.hostStatus) === "ready"
-      ? [{ hostId: host.id, label: host.label, detail }]
+      ? [
+          {
+            hostId: host.id,
+            label: host.label,
+            detail,
+            incompletePlatforms: incompleteListings(status),
+          },
+        ]
       : [];
   });
   const availability = selectedHost
@@ -321,9 +335,11 @@ export function DevicePanel(props: {
           <div hidden={showsWorkspace}>
             {diagnostics.map((diagnostic) => (
               <DeviceDiscoveryWarning
-                key={`${environmentId}\u0000${diagnostic.hostId}\u0000${diagnostic.detail}`}
+                key={`${environmentId}\u0000${diagnostic.hostId}`}
                 label={diagnostic.label}
                 detail={diagnostic.detail}
+                incompletePlatforms={diagnostic.incompletePlatforms}
+                onRetry={() => list({ environmentId, input: {} })}
               />
             ))}
           </div>
@@ -640,31 +656,76 @@ function DeviceRow(props: {
   );
 }
 
-function DeviceDiscoveryWarning(props: { readonly label: string; readonly detail: string }) {
-  const [dismissed, setDismissed] = useState(false);
-  if (dismissed) return null;
+function DeviceDiscoveryWarning(props: {
+  readonly label: string;
+  readonly detail: string;
+  readonly incompletePlatforms: readonly DevicePlatform[];
+  readonly onRetry: () => Promise<unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [dismissedCause, setDismissedCause] = useState<string | null>(null);
+  const cause = `${props.incompletePlatforms.join()}\u0000${props.detail}`;
+  // A dismissal hides one occurrence; a cause that returns later shows again.
+  if (dismissedCause !== null && dismissedCause !== cause) setDismissedCause(null);
+  if (dismissedCause === cause) return null;
+  const platforms = props.incompletePlatforms.map((platform) =>
+    platform === "ios" ? "iOS" : "Android",
+  );
   return (
-    <Alert variant="warning" controlAlignment="first-line">
-      <TriangleAlert />
-      <AlertTitle>Device discovery warning</AlertTitle>
-      <AlertDescription
-        className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words"
-        tabIndex={0}
-      >
-        <span className="block">{props.label}</span>
-        {props.detail}
-      </AlertDescription>
-      <AlertAction>
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-x-2 gap-y-0.5 border-b px-3 py-1 text-xs text-muted-foreground"
+    >
+      <span className="flex min-w-0 flex-1 basis-56 items-start gap-2">
+        <CircleAlert className="mt-px size-3.5 shrink-0 text-warning-foreground" />
+        <span className="min-w-0">
+          {platforms.length > 0
+            ? `${platforms.join(" and ")} ${platforms.length > 1 ? "lists" : "list"} on ${props.label} may be incomplete.`
+            : `Device discovery on ${props.label} reported a warning.`}
+        </span>
+      </span>
+      <span className="ml-auto flex shrink-0 items-center gap-0.5">
+        {platforms.length > 0 ? (
+          <Button
+            size="micro"
+            variant="ghost"
+            disabled={retrying}
+            aria-label={`Retry device discovery on ${props.label}`}
+            onClick={() => {
+              setRetrying(true);
+              void props.onRetry().finally(() => setRetrying(false));
+            }}
+          >
+            {retrying ? "Retrying…" : "Retry"}
+          </Button>
+        ) : null}
+        <Popover open={open} onOpenChange={setOpen}>
+          <PopoverTrigger
+            aria-label={`Details for ${props.label}`}
+            render={<Button size="micro" variant="ghost" />}
+          >
+            Details
+          </PopoverTrigger>
+          <PopoverPopup side="bottom" align="end" width="lg" padding="compact">
+            <p className="whitespace-pre-wrap break-words font-mono text-xs text-muted-foreground">
+              {props.detail}
+            </p>
+          </PopoverPopup>
+        </Popover>
         <Button
-          size="icon-xs"
+          size="icon-micro"
           variant="ghost"
-          aria-label="Dismiss device warning"
-          onClick={() => setDismissed(true)}
+          aria-label={`Dismiss device warning for ${props.label}`}
+          onClick={() => {
+            setOpen(false);
+            setDismissedCause(cause);
+          }}
         >
           <X />
         </Button>
-      </AlertAction>
-    </Alert>
+      </span>
+    </div>
   );
 }
 

@@ -25,6 +25,9 @@ export function AppRouteModal({
   // Focus the surface, not its first control: no stray focus ring, no phone keyboard.
   // On close, leave focus alone; returning it to the opener paints a focus ring.
   const popupRef = useRef<HTMLDivElement>(null);
+  // Clear the native window controls (macOS traffic lights, the Windows and Linux caption
+  // buttons). Below sm the modal fills the window and leaves that strip empty; up to lg its
+  // 1.5rem inset is shorter than the strip.
 
   return (
     <Dialog
