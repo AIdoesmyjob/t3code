@@ -83,7 +83,18 @@ it("leaves thread shortcuts and their hints to the preview when their rules excl
   };
   const firstPath = `/${ENVIRONMENT_ID}/${first.id}`;
 
-  await userEvent.click(page.getByRole("button", { name: "Reload" }));
+  // The redesign shell animates and autofocuses the composer once the thread settles, so a
+  // pointer click waits on a moving target and an earlier focus is taken back. Wait for
+  // that autofocus, then move focus into the preview chrome.
+  await vi.waitFor(() =>
+    expect(document.activeElement?.closest("[contenteditable=true]")).not.toBeNull(),
+  );
+  // A late composer effect can still take focus back, so focus until it holds.
+  const reload = previewChrome.querySelector("button")!;
+  await vi.waitFor(async () => {
+    await act(() => reload.focus());
+    expect(document.activeElement).toBe(reload);
+  });
   await press();
   expect(router.history.location.pathname).toBe(firstPath);
   await whileHoldingControl(() => expect(jumpHint()).toBeNull());
