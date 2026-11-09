@@ -25,10 +25,10 @@ it.each([
       String.raw`\\HOST\SHARE\e.png`,
       "/tmp/C.png",
     ],
-    expected: String.raw`![A](</tmp/a b.png>) ![B](c:\Users\me\.codex\b.png) ![C][a\*b] ![D][unc]
+    expected: String.raw`![A](</tmp/a b.png>) ![B](<c:/Users/me/.codex/b.png>) ![C][a\*b] ![D][unc]
 
-[a\*b]: c:\Users\me\.codex\c.png
-[unc]: <\\HOST\Share\d.png>
+[a\*b]: <c:/Users/me/.codex/c.png>
+[unc]: <file://HOST/Share/d.png>
 
 ![E](file://host/share/e.png)
 
@@ -69,6 +69,23 @@ it.each([
     ],
     expected:
       "![](<C:/Users/me/a b%231.png>)\n\n![](<file://host/share/a.png>)\n\n![](</tmp/a%23b%3F100%2525%26copy;%5C!%0A\\<x\\>.png>)",
+  },
+  {
+    name: "reserved path characters are encoded once in new and existing embeds",
+    text: "![raw](</tmp/a#b.png>) ![encoded](/tmp/a%23b.png) ![percent](</tmp/100%25.png>) ![percent encoded](/tmp/100%2525.png) ![query][generated]\n\n[generated]: /tmp/q?x.png\n\n![unc](file://host/share/a#b%25.png) ![unc encoded](file://HOST/SHARE/a%23b%2525.png)",
+    saved: [
+      "/tmp/a#b.png",
+      "/tmp/100%25.png",
+      "/tmp/q?x.png",
+      "\\\\host\\share\\a#b%25.png",
+      "/tmp/new#image?100%25.png",
+      "/tmp/a&copy;.png",
+      "C:\\Users\\Me#100%25\\new.png",
+      "/tmp/a\\!b.png",
+      "/tmp/line\nbreak.png",
+    ],
+    expected:
+      "![raw](</tmp/a%23b.png>) ![encoded](/tmp/a%23b.png) ![percent](</tmp/100%2525.png>) ![percent encoded](/tmp/100%2525.png) ![query][generated]\n\n[generated]: </tmp/q%3Fx.png>\n\n![unc](<file://host/share/a%23b%2525.png>) ![unc encoded](file://HOST/SHARE/a%23b%2525.png)\n\n![](</tmp/new%23image%3F100%2525.png>)\n\n![](</tmp/a%26copy;.png>)\n\n![](<C:/Users/Me%23100%2525/new.png>)\n\n![](</tmp/a%5C!b.png>)\n\n![](</tmp/line%0Abreak.png>)",
   },
 ])("generated image embeds: $name", ({ text, saved, expected }) => {
   const result = appendGeneratedImageEmbeds(text, saved);
