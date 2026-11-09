@@ -191,7 +191,9 @@ export function useSpeechUnavailableReason(speech: {
       ? gt("{destination} is not connected. Check Settings > Voice.", { destination: where })
       : gt("The voice destination is not connected. Check Settings > Voice.");
   }
-  if (environment.serverConfig.environment.capabilities.voiceTranscription !== true) {
+  // Cloud destinations transcribe through a provider, so they need the cloud capability.
+  const capability = destination.cloudProvider ? "cloudVoiceTranscription" : "voiceTranscription";
+  if (environment.serverConfig.environment.capabilities[capability] !== true) {
     return where
       ? gt("{destination} can't transcribe voice. Pick another destination in Settings > Voice.", {
           destination: where,
