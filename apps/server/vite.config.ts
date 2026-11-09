@@ -71,6 +71,35 @@ const packExecutableTargets = packExecutableTarget
 
 // The root config's `projects` route repo-root runs to package configs,
 // including this one. Inheriting them would make this config a container.
+// Skofo: SEA loads external packages from disk only with require; the hoisted platform-node
+// `import ... from "undici"` fails build-exe, so require it as src/outboundHttp.ts does.
+const UNDICI_IMPORT = /^import\s+([^;]+?)\s+from\s*["']undici["'];?[ \t]*$/gm;
+const undiciRequireBinding = (clause: string): string =>
+  clause
+    .split(/,(?![^{]*\})/)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      if (part.startsWith("* as ")) return `const ${part.slice(5).trim()} = __t3Undici;`;
+      if (part.startsWith("{")) return `const ${part.replace(/\s+as\s+/g, ": ")} = __t3Undici;`;
+      return `const ${part} = __t3Undici;`;
+    })
+    .join("\n");
+const undiciRequirePlugin = {
+  name: "skofo:undici-require",
+  renderChunk(code: string) {
+    let first = true;
+    const next = code.replace(UNDICI_IMPORT, (_line, clause: string) => {
+      const prelude = first
+        ? 'import { createRequire as __t3CreateRequire } from "node:module";\nconst __t3Undici = __t3CreateRequire(import.meta.url)("undici");\n'
+        : "";
+      first = false;
+      return prelude + undiciRequireBinding(clause);
+    });
+    return next === code ? null : { code: next, map: null };
+  },
+};
+
 const { projects: _rootTestProjects, ...baseTestConfig } = baseConfig.test ?? {};
 // Workspace cache configuration is invalid on a package config.
 const { run: _rootRunConfig, ...basePackageConfig } = baseConfig;
@@ -115,6 +144,7 @@ export default mergeConfig(
             },
           }
         : {}),
+      ...(packExecutable ? { plugins: [undiciRequirePlugin] } : {}),
       deps: {
         // alwaysBundle=false has no opinion; neverBundle must retain transitive native acceleration.
         alwaysBundle: shouldBundleCliDependency,
