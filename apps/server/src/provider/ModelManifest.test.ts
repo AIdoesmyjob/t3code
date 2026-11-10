@@ -24,14 +24,14 @@ describe("resolveProviderCatalog", () => {
     const catalog = resolveClaudeModelCatalog(providerCatalog ?? undefined);
     assert.strictEqual(
       resolveClaudeModelSlug(catalog, DEFAULT_MODEL_BY_PROVIDER[claude] ?? ""),
-      "claude-fable-5-1",
+      "claude-fable-5-2",
     );
-    assert.strictEqual(providerCatalog?.defaultChatModel, "claude-fable-5-1");
+    assert.strictEqual(providerCatalog?.defaultChatModel, "claude-fable-5-2");
     assert.include(providerCatalog?.models.map((model) => model.slug) ?? [], "claude-opus-5-5");
     assert.strictEqual(resolveClaudeModelSlug(catalog, "claude-opus-5-5"), "claude-opus-5-5");
     assert.deepStrictEqual(
       catalog.models.filter(({ model }) => model.isDefault).map(({ model }) => model.slug),
-      ["claude-fable-5-1"],
+      ["claude-fable-5-2"],
     );
   });
 
@@ -44,7 +44,7 @@ describe("resolveProviderCatalog", () => {
       providers: {
         claudeAgent: {
           ...source,
-          models: source.models.filter((model) => model.slug !== "claude-fable-5-1"),
+          models: source.models.filter((model) => model.slug !== "claude-fable-5-2"),
         },
       },
     };
@@ -334,11 +334,11 @@ describe("ModelManifest service", () => {
       // Store upstream data unchanged; apply preference only at the validated catalog boundary.
       assert.strictEqual(manifest.providers?.claudeAgent?.defaults?.chat, "claude-opus-5-5");
       const resolved = ModelManifest.resolveProviderCatalog(manifest, claude);
-      assert.strictEqual(resolved?.defaultChatModel, "claude-fable-5-1");
+      assert.strictEqual(resolved?.defaultChatModel, "claude-fable-5-2");
       const catalog = resolveClaudeModelCatalog(resolved ?? undefined);
       assert.deepStrictEqual(
         catalog.models.filter(({ model }) => model.isDefault).map(({ model }) => model.slug),
-        ["claude-fable-5-1"],
+        ["claude-fable-5-2"],
       );
       assert.include(resolved?.models.map((model) => model.slug) ?? [], "claude-opus-5-5");
       assert.strictEqual(resolveClaudeModelSlug(catalog, "claude-opus-5-5"), "claude-opus-5-5");
