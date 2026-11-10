@@ -168,7 +168,7 @@
     },
     "claudeAgent": {
       "defaults": {
-        "chat": "claude-fable-5-1"
+        "chat": "claude-fable-5-2"
       },
       "profiles": {
         "fable-5": {
