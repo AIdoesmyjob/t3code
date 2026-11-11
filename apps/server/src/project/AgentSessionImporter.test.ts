@@ -28,7 +28,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as TestClock from "effect/testing/TestClock";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
