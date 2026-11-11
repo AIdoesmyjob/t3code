@@ -78,24 +78,11 @@ function dedupeProvidersByDriver<T extends ServerProvider>(providers: ReadonlyAr
   return [...latestProviderByDriver.values()];
 }
 
-function getProviderUpdatedTitle(
-  provider: Pick<ServerProvider, "driver" | "version" | "installedVersion">,
-): string {
+function getProviderUpdatedTitle(provider: Pick<ServerProvider, "driver" | "version">): string {
   const providerName = PROVIDER_DISPLAY_NAMES[provider.driver] ?? provider.driver;
-  const version = provider.installedVersion ?? provider.version;
-  return version ? `${providerName} updated: ${formatVersion(version)}` : `${providerName} updated`;
-}
-
-// Only OpenCode reports an installed CLI apart from a running external server.
-export function getProviderRestartNotice(
-  provider: Pick<ServerProvider, "version" | "installedVersion" | "updateState">,
-): string | null {
-  return provider.updateState?.status === "succeeded" &&
-    provider.installedVersion != null &&
-    provider.version != null &&
-    provider.installedVersion !== provider.version
-    ? provider.updateState.message
-    : null;
+  return provider.version
+    ? `${providerName} updated: ${formatVersion(provider.version)}`
+    : `${providerName} updated`;
 }
 
 function getProviderUpdatedDescription(providerCount: number): string {
@@ -213,8 +200,7 @@ export interface ProviderUpdateRun {
 export function getProviderUpdateRunOutcome(
   run: ProviderUpdateRun,
 ):
-  | { readonly status: "interrupted" }
-  | { readonly status: "updated"; readonly message: string | null }
+  | { readonly status: "interrupted" | "updated" }
   | { readonly status: "failed"; readonly line: string } {
   if (isAtomCommandInterrupted(run.result)) return { status: "interrupted" };
   const label = PROVIDER_DISPLAY_NAMES[run.driver] ?? run.driver;
@@ -225,13 +211,11 @@ export function getProviderUpdateRunOutcome(
       line: `${label}: ${error instanceof Error ? error.message : "Provider update failed."}\n${run.machineLabel}`,
     };
   }
-  const provider = run.result.value.providers.find(
-    (candidate) => candidate.instanceId === run.instanceId,
-  );
-  const updateState = provider?.updateState;
-  const restartNotice = provider ? getProviderRestartNotice(provider) : null;
+  const updateState = run.result.value.providers.find(
+    (provider) => provider.instanceId === run.instanceId,
+  )?.updateState;
   return updateState?.status === "succeeded"
-    ? { status: "updated", message: restartNotice ? `${label}: ${restartNotice}` : null }
+    ? { status: "updated" }
     : {
         status: "failed",
         line: `${label}: ${updateState?.message ?? "Provider update did not finish."}\n${run.machineLabel}`,
@@ -252,18 +236,11 @@ export function getProviderUpdateRunToastView(runs: ReadonlyArray<ProviderUpdate
   const failureLines = settled.flatMap((outcome) =>
     outcome.status === "failed" ? [outcome.line] : [],
   );
-  const successMessages = [
-    ...new Set(
-      settled.flatMap((outcome) =>
-        outcome.status === "updated" && outcome.message ? [outcome.message] : [],
-      ),
-    ),
-  ];
   if (failureLines.length === 0) {
     return {
       type: "success",
       title: settled.length === 1 ? "Provider updated" : `${settled.length} providers updated`,
-      description: successMessages.join("\n") || getProviderUpdatedDescription(settled.length),
+      description: getProviderUpdatedDescription(settled.length),
     };
   }
   return {
@@ -274,7 +251,7 @@ export function getProviderUpdateRunToastView(runs: ReadonlyArray<ProviderUpdate
         : settled.length === 1
           ? "Provider update failed"
           : "Provider updates failed",
-    description: [...failureLines, ...successMessages].join("\n"),
+    description: failureLines.join("\n"),
   };
 }
 
@@ -421,9 +398,7 @@ export function getProviderUpdateSidebarPillView(
         succeededProviders.length === 1
           ? getProviderUpdatedTitle(succeededProvider)
           : `${succeededProviders.length} providers updated`,
-      description:
-        [...new Set(succeededProviders.map(getProviderRestartNotice).filter(Boolean))].join("\n") ||
-        getProviderUpdatedDescription(succeededProviders.length),
+      description: getProviderUpdatedDescription(succeededProviders.length),
       dismissAfterVisibleMs: PROVIDER_UPDATE_SUCCESS_VISIBLE_MS,
     });
   }

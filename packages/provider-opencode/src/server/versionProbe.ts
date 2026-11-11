@@ -55,7 +55,7 @@ function classifyOpenCodeProbeResponse(
   return probed(Option.getOrUndefined(version));
 }
 
-export const probeOpenCodeBinary = Effect.fn("probeOpenCodeBinary")(function* (
+const probeOpenCodeBinary = Effect.fn("probeOpenCodeBinary")(function* (
   binaryPath: string,
   environment: NodeJS.ProcessEnv | undefined,
 ) {
