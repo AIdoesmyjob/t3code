@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/desktop",
-  "version": "0.1.9-skofo.20261111.1-beta-ui",
+  "version": "0.1.10-skofo.20261112.1-beta-ui",
   "private": true,
   "type": "module",
   "main": "dist-electron/boot.cjs",
