@@ -87,7 +87,14 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
-import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import { isLocalAssetToken } from "../assets/AssetAccess.ts";
+import { runtimeOriginForConfig } from "../serverRuntimeState.ts";
+import {
+  installPdfDocumentNavigation,
+  isPdfAssetUrl,
+  type LocalAssetRouting,
+} from "./PdfDocumentNavigation.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 const RENDER_SCALE = 2;
@@ -504,6 +511,21 @@ const make = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const runSyncExit = Effect.runSyncExitWith(yield* Effect.context<never>());
   const launchServices = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
+  // Clients mint asset URLs for the origin they reach this server on, which this
+  // host often cannot reach itself; the server's tabs load them from the listener.
+  const assetSigner = yield* Effect.serviceOption(AssetSigner.AssetSigner);
+  const localAssets: LocalAssetRouting | undefined =
+    config.port > 0 && Option.isSome(assetSigner)
+      ? {
+          localOrigin: runtimeOriginForConfig(config, config.port),
+          isLocalToken: (token) =>
+            runPromise(
+              isLocalAssetToken(token).pipe(
+                Effect.provideService(AssetSigner.AssetSigner, assetSigner.value),
+              ),
+            ),
+        }
+      : undefined;
   // sudo resets the environment, so the command has to name this server's home.
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND, [
     "--base-dir",
@@ -913,7 +935,8 @@ const make = Effect.gen(function* () {
     const page = adopted?.page ?? desktop?.page ?? (await context.newPage());
     if (!desktop) opened.push(() => page.close());
     const cdp = await context.newCDPSession(page);
-    await installPdfDocumentNavigation(cdp);
+    // A desktop page runs beside its own server, not this host.
+    await installPdfDocumentNavigation(cdp, desktop ? undefined : localAssets);
     // The desktop's page is already a normal browser. A popup's first request
     // went out before it became a tab; everything after presents as Chrome.
     if (!desktop) await presentAsChrome(cdp, host);

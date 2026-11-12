@@ -875,6 +875,16 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   };
 });
 
+/** Whether this server signed `token`, the first path segment after the asset route. */
+export const isLocalAssetToken = Effect.fn("AssetAccess.isLocalAssetToken")(function* (
+  token: string,
+) {
+  const [encodedPayload, signature] = token.split(".");
+  if (!encodedPayload || !signature) return false;
+  const signer = yield* AssetSigner.AssetSigner;
+  return yield* signer.verify(encodedPayload, signature).pipe(Effect.orElseSucceed(() => false));
+});
+
 export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   token: string,
   relativePath: string,
