@@ -95,7 +95,14 @@ import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as PreviewBrowserHost from "./PreviewBrowserHost.ts";
 import { presentAsChrome, ServerBrowserContexts } from "./ServerBrowserContexts.ts";
 import { BrowserControlInterrupted, SessionControl } from "./SessionControl.ts";
-import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
+import * as AssetSigner from "../assets/AssetSigner.ts";
+import { isLocalAssetToken } from "../assets/AssetAccess.ts";
+import { runtimeOriginForConfig } from "../serverRuntimeState.ts";
+import {
+  installPdfDocumentNavigation,
+  isPdfAssetUrl,
+  type LocalAssetRouting,
+} from "./PdfDocumentNavigation.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
 // Each client's report is capped, but the saved catalog is their union, so it has no cap.
@@ -715,6 +722,21 @@ const make = Effect.gen(function* () {
   const runPromise = Effect.runPromiseWith(yield* Effect.context<never>());
   const runSyncExit = Effect.runSyncExitWith(yield* Effect.context<never>());
   const launchServices = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
+  // Clients mint asset URLs for the origin they reach this server on, which this
+  // host often cannot reach itself; the server's tabs load them from the listener.
+  const assetSigner = yield* Effect.serviceOption(AssetSigner.AssetSigner);
+  const localAssets: LocalAssetRouting | undefined =
+    config.port > 0 && Option.isSome(assetSigner)
+      ? {
+          localOrigin: runtimeOriginForConfig(config, config.port),
+          isLocalToken: (token) =>
+            runPromise(
+              isLocalAssetToken(token).pipe(
+                Effect.provideService(AssetSigner.AssetSigner, assetSigner.value),
+              ),
+            ),
+        }
+      : undefined;
   // sudo resets the environment, so the command has to name this server's home.
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND, [
     "--base-dir",
@@ -1406,7 +1428,7 @@ const make = Effect.gen(function* () {
         requestAuth(tab, event.requestId, event.authChallenge),
       );
     // Desktop tabs keep the desktop shell's own handling of HTTP auth.
-    await installPdfDocumentNavigation(cdp, { handleAuthRequests: !desktop });
+    await installPdfDocumentNavigation(cdp, { handleAuthRequests: !desktop }, desktop ? undefined : localAssets);
     // The desktop's page is already a normal browser. A popup's first request
     // precedes this override, so its Sec-CH-UA brands still name HeadlessChrome.
     if (!desktop) await presentAsChrome(cdp, host);
