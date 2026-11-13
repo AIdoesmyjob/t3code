@@ -18,6 +18,8 @@ import {
 } from "./mcpApps.ts";
 import {
   PeerLink,
+  PeerLinkBrowserPairingInput,
+  PeerLinkBrowserPairingResult,
   PeerLinkCreateInput,
   PeerLinkError,
   PeerLinkRemoveInput,
@@ -523,6 +525,7 @@ export const WS_METHODS = {
   peerLinksLink: "peerLinks.link",
   peerLinksUnlink: "peerLinks.unlink",
   peerLinksAnswerRequest: "peerLinks.answerRequest",
+  peerLinksBrowserPairing: "peerLinks.browserPairing",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverSearchAcpRegistry: "server.searchAcpRegistry",
@@ -854,6 +857,12 @@ const WsPeerLinksLinkRpc = Rpc.make(WS_METHODS.peerLinksLink, {
 const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
   payload: PeerLinkRemoveInput,
   success: PeerLinkRemoveResult,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksBrowserPairingRpc = Rpc.make(WS_METHODS.peerLinksBrowserPairing, {
+  payload: PeerLinkBrowserPairingInput,
+  success: PeerLinkBrowserPairingResult,
   error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
 });
 
@@ -2131,6 +2140,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,
   WsPeerLinksAnswerRequestRpc,
+  WsPeerLinksBrowserPairingRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerSearchAcpRegistryRpc,
   WsServerPrepareAcpRegistryAgentRpc,
