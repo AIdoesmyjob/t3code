@@ -204,6 +204,10 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
   linkClientPairing: Schema.optionalKey(Schema.Boolean),
   /** The same route also mints a pairing code for a link from another environment. */
   linkPairingForLink: Schema.optionalKey(Schema.Boolean),
+  /** Issues browser sign-ins to an environment linked here with full access,
+      so a browser signed in there can open this one through its
+      `/linked/<environmentId>/` relay. */
+  linkedBrowserRelay: Schema.optionalKey(Schema.Boolean),
   /** Mints pairing codes that approve one agent sign-in at a set level (`AUTO-…`). */
   mcpApprovalCodes: Schema.optionalKey(Schema.Boolean),
   peerLinkPairingCodes: Schema.optionalKey(Schema.Boolean),
