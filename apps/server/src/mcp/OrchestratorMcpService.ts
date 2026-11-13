@@ -101,7 +101,7 @@ import type {
   ProjectionRecordFilter,
 } from "../orchestration-v2/ProjectionStore.ts";
 import {
-  delegatedTaskAwaitsSubagents,
+  delegatedTaskAwaitsWork,
   delegatedTaskResultRun,
   delegatedTaskRuns,
   runOutcome,
@@ -1527,7 +1527,7 @@ const make = Effect.gen(function* () {
         ? progress.state
         : !isTerminalTaskStatus(taskStatusForRun(taskResultRun))
           ? "working"
-          : delegatedTaskAwaitsSubagents(followupRuns, childControls.subagents)
+          : delegatedTaskAwaitsWork(followupRuns, childControls)
             ? "waiting_for_children"
             : "result_available";
     const resultRunIds = [
