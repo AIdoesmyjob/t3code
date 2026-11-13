@@ -270,6 +270,9 @@ function rpcSocketUrl(wsBaseUrl: string): URL {
   const url = new URL(wsBaseUrl);
   if (url.pathname === "" || url.pathname === "/") {
     url.pathname = "/ws";
+  } else if (url.pathname.endsWith("/")) {
+    // A base under a path, such as a linked environment's relay.
+    url.pathname = `${url.pathname}ws`;
   }
   return url;
 }
