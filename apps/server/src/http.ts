@@ -492,13 +492,24 @@ export const layerOtlpTracesProxyRoute = HttpRouter.add(
 
 const UNTRACED_REQUEST_PATHS: ReadonlySet<string> = new Set([OTLP_TRACES_PROXY_PATH]);
 
+// Relayed URLs can include peer credentials in paths or query parameters.
+const isLinkedRelayRequest = (request: HttpServerRequest.HttpServerRequest) =>
+  request.url.startsWith("/linked/");
+
 // HttpRouter.serve builds routes privately; provide the server-wide TracerDisabledWhen to the served layer.
 const layerUntracedRequests = Layer.succeed(HttpMiddleware.TracerDisabledWhen)((request) => {
   const queryIndex = request.url.indexOf("?");
-  return UNTRACED_REQUEST_PATHS.has(
-    queryIndex === -1 ? request.url : request.url.slice(0, queryIndex),
-  );
+  const path = queryIndex === -1 ? request.url : request.url.slice(0, queryIndex);
+  return UNTRACED_REQUEST_PATHS.has(path) || isLinkedRelayRequest(request);
 });
+
+export const layerUnloggedSignedRequests = HttpRouter.middleware(
+  (httpEffect) =>
+    Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+      isLinkedRelayRequest(request) ? HttpMiddleware.withLoggerDisabled(httpEffect) : httpEffect,
+    ),
+  { global: true },
+);
 
 // Signed URLs carry their bearer token in the path; spans and request logs record it as REDACTED.
 const SIGNED_URL_ROUTE_OPTIONS = { redactedParams: ["*"] };
