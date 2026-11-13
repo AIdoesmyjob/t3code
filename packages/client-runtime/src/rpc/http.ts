@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
+import { urlUnderBase } from "@t3tools/shared/basePath";
 
 const isEnvironmentHttpCommonError = Schema.is(EnvironmentHttpCommonError);
 
@@ -81,13 +82,8 @@ export const layerRemoteHttpClient = (
     HttpObservability.layer,
   );
 
-const remoteApiBaseUrl = (httpBaseUrl: string): string => {
-  const url = new URL(httpBaseUrl);
-  url.pathname = "/";
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-};
+// Keeps the base path: a linked environment's API sits under its relay prefix.
+const remoteApiBaseUrl = (httpBaseUrl: string): string => urlUnderBase(httpBaseUrl, "/").toString();
 
 export const makeEnvironmentHttpApiClient = (httpBaseUrl: string) =>
   HttpApiClient.make(EnvironmentHttpApi, {

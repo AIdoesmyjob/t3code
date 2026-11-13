@@ -1,9 +1,7 @@
 export * from "@t3tools/shared/advertisedEndpoint";
 
-export const environmentEndpointUrl = (httpBaseUrl: string, pathname: string): string => {
-  const url = new URL(httpBaseUrl);
-  url.pathname = pathname;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-};
+import { urlUnderBase } from "@t3tools/shared/basePath";
+
+/** `pathname` on the environment, under its base path (a linked environment's relay). */
+export const environmentEndpointUrl = (httpBaseUrl: string, pathname: string): string =>
+  urlUnderBase(httpBaseUrl, pathname).toString();

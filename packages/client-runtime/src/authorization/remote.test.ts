@@ -180,6 +180,26 @@ describe("remote environment authorization", () => {
     }),
   );
 
+  it.effect("keeps a relay's base path for the ticket and the socket", () =>
+    Effect.gen(function* () {
+      const fetch = recordedFetch(
+        Response.json(
+          { ticket: "ws-ticket", expiresAt: "2026-05-01T12:05:00.000Z" },
+          { status: 200 },
+        ),
+      );
+      const url = yield* resolveRemoteWebSocketConnectionUrl({
+        wsBaseUrl: "wss://t3.example.com/linked/env-1/",
+        httpBaseUrl: "https://t3.example.com/linked/env-1/",
+        bearerToken: "bearer-token",
+      }).pipe(provideRemoteHttp(fetch.fetchFn));
+      expect(String(fetch.calls[0]![0])).toBe(
+        "https://t3.example.com/linked/env-1/api/auth/websocket-ticket/rpc",
+      );
+      expect(url.startsWith("wss://t3.example.com/linked/env-1/ws?wsTicket=ws-ticket")).toBe(true);
+    }),
+  );
+
   it.effect("mints a websocket url that targets the rpc route with a short-lived ticket", () =>
     Effect.gen(function* () {
       const fetch = recordedFetch(

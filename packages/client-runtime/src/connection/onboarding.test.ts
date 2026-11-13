@@ -280,6 +280,37 @@ describe("connection onboarding", () => {
     }),
   );
 
+  it.effect("prepares a linked environment reached through a relay under its path", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const registration = yield* preparePairingRegistration({
+        expectedEnvironmentId: PAIRED_ENVIRONMENT_ID,
+        linkedRelay: {
+          httpBaseUrl: "https://t3.example.test/linked/environment-paired/",
+          wsBaseUrl: "wss://t3.example.test/linked/environment-paired/",
+          credential: "relay-pairing-token",
+        },
+      }).pipe(Effect.provide(layerPairingOnboarding(undefined, calls)));
+
+      expect(registration).toMatchObject({
+        target: {
+          connectionId:
+            "bearer:environment-paired:https://t3.example.test/linked/environment-paired",
+        },
+        profile: {
+          httpBaseUrl: "https://t3.example.test/linked/environment-paired/",
+          wsBaseUrl: "wss://t3.example.test/linked/environment-paired/",
+          relay: "linked",
+        },
+        credential: { token: "bearer-token" },
+      });
+      expect(calls.map((call) => call.url)).toEqual([
+        "https://t3.example.test/linked/environment-paired/.well-known/t3/environment",
+        "https://t3.example.test/linked/environment-paired/oauth/token",
+      ]);
+    }),
+  );
+
   it.effect("turns a switched-off environment back on when it is paired again", () =>
     Effect.gen(function* () {
       const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
