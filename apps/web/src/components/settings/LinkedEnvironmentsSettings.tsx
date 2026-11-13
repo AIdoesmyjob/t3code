@@ -19,6 +19,8 @@ import { PlusIcon } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
+import { useEnvironmentIdentities, usePrimaryEnvironmentId } from "~/state/environments";
+import { canOpenLinkedEnvironment, useOpenLinkedEnvironment } from "~/state/linkedRelay";
 import { mintPairingCodeOn } from "~/state/peerPairingCode";
 import { peerLinkEnvironment, useLinkableMachines } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
@@ -106,6 +108,25 @@ function LinkedEnvironmentRow({
   const health = peerLinkHealth(link, DateTime.makeUnsafe(nowMinute));
   const unlink = useAtomCommand(peerLinkEnvironment.unlink, { label: "unlink environment" });
   const canUnlink = useAtomValue(peerLinkEnvironment.unlink.permissionAtom(environmentId));
+  const canPair = useAtomValue(peerLinkEnvironment.browserPairing.permissionAtom(environmentId));
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const identities = useEnvironmentIdentities();
+  const openLinked = useOpenLinkedEnvironment(environmentId);
+  const [opening, setOpening] = useState(false);
+  // The relay checks this page's own session, so only the environment serving it relays.
+  const canOpenHere =
+    canPair &&
+    environmentId === primaryEnvironmentId &&
+    canOpenLinkedEnvironment(link) &&
+    !identities.some((identity) => identity.environmentId === link.environmentId);
+  const openHere = async () => {
+    setOpening(true);
+    const result = await openLinked(link.environmentId);
+    setOpening(false);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      failureToast(`Could not open ${link.label} here`, String(squashAtomCommandFailure(result)));
+    }
+  };
   const [busy, setBusy] = useState(false);
   const forget = async () => {
     const confirmed = await (requestConfirmDialog(
@@ -158,16 +179,28 @@ function LinkedEnvironmentRow({
           </Tooltip>
           <p className="truncate text-meta text-muted-foreground/80">{link.urls.join(", ")}</p>
         </div>
-        {canUnlink ? (
+        {canUnlink || canOpenHere ? (
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              disabled={busy}
-              onClick={() => void forget()}
-            >
-              {busy ? "Forgetting…" : "Forget"}
-            </Button>
+            {canOpenHere ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={opening}
+                onClick={() => void openHere()}
+              >
+                {opening ? "Opening…" : "Open in this browser"}
+              </Button>
+            ) : null}
+            {canUnlink ? (
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                disabled={busy}
+                onClick={() => void forget()}
+              >
+                {busy ? "Forgetting…" : "Forget"}
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </div>
