@@ -29,8 +29,48 @@ export type PeerLinkStatus = typeof PeerLinkStatus.Type;
 export const PeerLinkSummary = Schema.Struct({
   ...PeerLink.fields,
   status: PeerLinkStatus,
+  /**
+   * A browser signed in here can open the peer through this environment's
+   * `/linked/<environmentId>/` relay: the link has full access and the peer
+   * issues browser sign-ins to it. Absent from older servers.
+   */
+  browserRelay: Schema.optionalKey(Schema.Boolean),
 });
 export type PeerLinkSummary = typeof PeerLinkSummary.Type;
+
+/** The path, on this environment's origin, that relays a browser to a linked peer. */
+export const linkedEnvironmentRelayPath = (environmentId: EnvironmentId) =>
+  `/linked/${encodeURIComponent(environmentId)}/`;
+
+export const PeerLinkBrowserPairingInput = Schema.Struct({
+  environmentId: EnvironmentId,
+  /** How the peer lists the browser among its clients, e.g. "Chrome on Android". */
+  clientLabel: Schema.optionalKey(Schema.String),
+});
+export type PeerLinkBrowserPairingInput = typeof PeerLinkBrowserPairingInput.Type;
+
+/**
+ * A one-time pairing code from the peer for this browser, redeemed through the
+ * relay at `relayPath`. It signs the browser in to the peer itself; this
+ * environment only passes it on.
+ */
+export const PeerLinkBrowserPairingResult = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: Schema.String,
+  credential: Schema.String,
+  expiresAt: Schema.DateTimeUtc,
+  relayPath: Schema.String,
+});
+export type PeerLinkBrowserPairingResult = typeof PeerLinkBrowserPairingResult.Type;
+
+/** What a peer answers on `POST /api/peer/browser-pairing`. */
+export const PeerBrowserPairingResponse = Schema.Struct({
+  credential: Schema.String,
+  expiresAt: Schema.DateTimeUtcFromString,
+});
+export type PeerBrowserPairingResponse = typeof PeerBrowserPairingResponse.Type;
+
+export const PEER_BROWSER_PAIRING_PATH = "/api/peer/browser-pairing";
 
 export const PeerLinkCreateInput = Schema.Struct({
   /** Where the peer answers: an https, Tailscale, LAN or loopback base URL. */
