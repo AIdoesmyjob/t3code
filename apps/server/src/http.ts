@@ -397,7 +397,9 @@ const layerUntracedRequests = Layer.succeed(HttpMiddleware.TracerDisabledWhen)((
     UNTRACED_REQUEST_PATHS.has(path) ||
     path.startsWith(`${WEBHOOK_ROUTE_PREFIX}/`) ||
     path.startsWith(`${ASSET_ROUTE_PREFIX}/`) ||
-    path.startsWith(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`)
+    path.startsWith(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`) ||
+    // Relayed peer paths carry the peer's signed URLs and tickets.
+    path.startsWith("/linked/")
   );
 });
 
