@@ -29,6 +29,11 @@ export class BearerConnectionProfile extends Schema.TaggedClass<BearerConnection
      * interface. A bare 100.64.0.0/10 address could belong to any VPN.
      */
     network: Schema.optionalKey(Schema.Literal("tailscale")),
+    /**
+     * "linked" when reached through another environment's relay. Its token
+     * belongs to that relay route only, so no other address is learned for it.
+     */
+    relay: Schema.optionalKey(Schema.Literal("linked")),
   },
 ) {}
 

@@ -165,6 +165,23 @@ describe("learned routes", () => {
     });
   });
 
+  it("learns no other address for a linked environment reached through a relay", () => {
+    const relayed = direct("relayed", "https://t3.example.com/linked/environment-1/");
+    const profile = Option.getOrThrow(relayed.profile) as BearerConnectionProfile;
+    const route: ConnectionRoute = {
+      target: relayed.target,
+      profile: Option.some(new BearerConnectionProfile({ ...profile, relay: "linked" })),
+    };
+    expect(
+      mergeLearnedRoutes({
+        entry: { target: route.target, profile: route.profile, enabled: true },
+        activeRoute: route,
+        reported: [{ httpBaseUrl: "https://desk.example.com/" }],
+        allowInsecure: false,
+      }),
+    ).toBeNull();
+  });
+
   it("replaces a learned LAN address when the server reports a new one", () => {
     const first = mergeLearnedRoutes({
       entry: relayOnly,

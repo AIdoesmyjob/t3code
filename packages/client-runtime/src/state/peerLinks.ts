@@ -30,6 +30,15 @@ export function createPeerLinkEnvironmentAtoms<R, E>(
       onSuccess: ({ environmentId }, registry) =>
         Effect.sync(() => registry.refresh(list({ environmentId, input: {} }))),
     }),
+    // A sign-in from a linked environment for this browser, redeemed through the relay.
+    browserPairing: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:peer-links:browser-pairing",
+      tag: WS_METHODS.peerLinksBrowserPairing,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.environmentId]),
+      },
+    }),
     // An agent's link card. One answer per card at a time.
     answerRequest: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:peer-links:answer-request",
