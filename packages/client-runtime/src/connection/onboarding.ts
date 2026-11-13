@@ -51,6 +51,16 @@ export interface PairingConnectionInput {
   readonly host?: string;
   readonly pairingCode?: string;
   readonly expectedEnvironmentId?: EnvironmentId;
+  /**
+   * A linked environment reached through another environment's relay
+   * (`/linked/<id>/` on its origin), with a pairing code it issued for this
+   * browser. Used as given: the base keeps its path.
+   */
+  readonly linkedRelay?: {
+    readonly httpBaseUrl: string;
+    readonly wsBaseUrl: string;
+    readonly credential: string;
+  };
 }
 
 export interface SshConnectionInput {
@@ -93,6 +103,7 @@ export class ConnectionOnboarding extends Context.Service<
 
 const resolvePairingTarget = Effect.fn("clientRuntime.connection.onboarding.resolvePairingTarget")(
   function* (input: PairingConnectionInput) {
+    if (input.linkedRelay !== undefined) return input.linkedRelay;
     return yield* Effect.try({
       try: () => resolveRemotePairingTarget(input),
       catch: (cause) =>
@@ -107,7 +118,9 @@ const resolvePairingTarget = Effect.fn("clientRuntime.connection.onboarding.reso
 );
 
 function bearerConnectionId(environmentId: EnvironmentId, httpBaseUrl: string): string {
-  return `bearer:${environmentId}:${new URL(httpBaseUrl).origin}`;
+  const url = new URL(httpBaseUrl);
+  // A relayed base keeps its path; a root base names its origin as before.
+  return `bearer:${environmentId}:${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
 function differentMachineError(label: string) {
@@ -150,6 +163,7 @@ export const preparePairingRegistration = Effect.fn(
       label: descriptor.label,
       httpBaseUrl: target.httpBaseUrl,
       wsBaseUrl: target.wsBaseUrl,
+      ...(input.linkedRelay === undefined ? {} : { relay: "linked" as const }),
     }),
   };
   // The registry checks again under its lease; this early check keeps a refused code unspent.
