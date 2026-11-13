@@ -243,6 +243,9 @@ export function mergeLearnedRoutes(input: {
     return null;
   }
   const activeProfile = Option.getOrNull(input.activeRoute.profile);
+  if (activeProfile?._tag === "BearerConnectionProfile" && activeProfile.relay === "linked") {
+    return null;
+  }
   const authorization =
     active._tag === "RelayConnectionTarget" ||
     (activeProfile?._tag === "BearerConnectionProfile" &&

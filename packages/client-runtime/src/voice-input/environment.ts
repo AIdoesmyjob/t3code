@@ -22,6 +22,7 @@ import {
 } from "../rpc/http.ts";
 import { executeAuthenticatedEnvironmentHttpRequest } from "../state/environmentHttpAuth.ts";
 import { VoiceTranscriptionError } from "./transcription.ts";
+import { urlUnderBase } from "@t3tools/shared/basePath";
 
 const INFERENCE_OR_DOWNLOAD_TIMEOUT_MS = 30 * 60_000;
 const isCloudSpeechError = Schema.is(CloudSpeechError);
@@ -172,7 +173,10 @@ export const getEnvironmentSpeechStreamUrl = (prepared: PreparedConnection) => {
     run: ({ client, headers }) => client.webSocketTicketFor({ headers, params: { use: "media" } }),
   }).pipe(
     Effect.map(({ ticket }) => {
-      const url = new URL(SPEECH_STREAM_PATH, endpoint);
+      // The ticket's own URL names the route that answered; keep a relay's base path.
+      const url = new URL(endpoint);
+      url.pathname = urlUnderBase(prepared.httpBaseUrl, SPEECH_STREAM_PATH).pathname;
+      url.search = "";
       url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
       url.searchParams.set("wsTicket", Redacted.value(ticket));
       return url.toString();
