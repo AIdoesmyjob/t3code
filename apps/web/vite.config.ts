@@ -386,7 +386,9 @@ export default defineConfig(({ command }) => {
                   // Keep the client's Host: OAuth metadata, cookie Origin checks and DPoP proofs
                   // all compare against the URL the client used.
                   changeOrigin: false,
-                  ...(prefix === "/ws" || prefix === "/api" ? { ws: true } : {}),
+                  ...(prefix === "/ws" || prefix === "/api" || prefix === "/linked"
+                    ? { ws: true }
+                    : {}),
                 },
               ]),
             ),
