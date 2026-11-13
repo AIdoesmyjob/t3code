@@ -21,6 +21,8 @@ import {
   PeerLinkClientPairingInput,
   PeerLinkLinkPairingInput,
   PeerLinkClientPairingResult,
+  PeerLinkBrowserPairingInput,
+  PeerLinkBrowserPairingResult,
   PeerLinkCreateInput,
   PeerLinkError,
   PeerLinkName,
@@ -618,6 +620,7 @@ export const WS_METHODS = {
   peerLinksPairClient: "peerLinks.pairClient",
   peerLinksPairLink: "peerLinks.pairLink",
   serverGetSettings: "server.getSettings",
+  peerLinksBrowserPairing: "peerLinks.browserPairing",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverCheckSecretSource: "server.checkSecretSource",
@@ -1035,6 +1038,15 @@ const WsPeerLinksPairClientRpc = Rpc.make(WS_METHODS.peerLinksPairClient, {
 const WsPeerLinksPairLinkRpc = Rpc.make(WS_METHODS.peerLinksPairLink, {
   payload: PeerLinkLinkPairingInput,
   success: PeerLinkClientPairingResult,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksBrowserPairingRpc = Rpc.make(WS_METHODS.peerLinksBrowserPairing, {
+  payload: PeerLinkBrowserPairingInput,
+  success: PeerLinkBrowserPairingResult,
   error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
 });
 
@@ -2575,6 +2587,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPeerLinksThreadItemRpc,
   WsPeerLinksPairClientRpc,
   WsPeerLinksPairLinkRpc,
+  WsPeerLinksBrowserPairingRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerCheckSecretSourceRpc,
   WsServerSearchAcpRegistryRpc,
