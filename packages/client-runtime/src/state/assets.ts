@@ -26,6 +26,7 @@ import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import { request } from "../rpc/client.ts";
 import type { ProjectFaviconCache, ProjectFaviconTarget } from "../projectFaviconCache.ts";
 import { createEnvironmentQueryAtomFamily } from "./runtime.ts";
+import { resolveUnderBase } from "@t3tools/shared/basePath";
 
 const ASSET_URL_REFRESH_INTERVAL_MS = 30 * 60_000;
 const ASSET_URL_IDLE_TTL_MS = 60 * 60_000;
@@ -59,7 +60,7 @@ function parseAssetCollectionKey(
 
 export function resolveAssetUrl(httpBaseUrl: string, relativeUrl: string): string | null {
   try {
-    return new URL(relativeUrl, httpBaseUrl).toString();
+    return resolveUnderBase(httpBaseUrl, relativeUrl).toString();
   } catch {
     return null;
   }
