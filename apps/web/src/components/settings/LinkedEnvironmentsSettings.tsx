@@ -25,7 +25,8 @@ import { T, useGT, useMessages, Var } from "gt-react";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
-import { useEnvironment } from "~/state/environments";
+import { useEnvironment, useEnvironmentIdentities, usePrimaryEnvironmentId } from "~/state/environments";
+import { canOpenLinkedEnvironment, useOpenLinkedEnvironment } from "~/state/linkedRelay";
 import { mintPairingCodeOn } from "~/state/peerPairingCode";
 import {
   peerLinkEnvironment,
@@ -161,6 +162,26 @@ function LinkedEnvironmentRow({
   const canUnlink = useAtomValue(peerLinkEnvironment.unlink.permissionAtom(environmentId));
   const { busy, forget } = useForgetPeerLink(environmentId, link);
   const status = peerLinkStatusText(health, gt);
+  const canPair = useAtomValue(peerLinkEnvironment.browserPairing.permissionAtom(environmentId));
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const identities = useEnvironmentIdentities();
+  const openLinked = useOpenLinkedEnvironment(environmentId);
+  const [opening, setOpening] = useState(false);
+  // The relay checks this page's own session, so only the environment serving it relays.
+  const canOpenHere =
+    canPair &&
+    environmentId === primaryEnvironmentId &&
+    canOpenLinkedEnvironment(link) &&
+    !identities.some((identity) => identity.environmentId === link.environmentId);
+  const openHere = async () => {
+    setOpening(true);
+    const result = await openLinked(link.environmentId);
+    setOpening(false);
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      failureToast(`Could not open ${link.label} here`, String(squashAtomCommandFailure(result)));
+    }
+  };
+
   return (
     <div className={ITEM_ROW_CLASSNAME}>
       <div className={ITEM_ROW_INNER_CLASSNAME}>
@@ -189,16 +210,28 @@ function LinkedEnvironmentRow({
           </Tooltip>
           <p className="truncate text-meta text-muted-foreground/80">{link.urls.join(", ")}</p>
         </div>
-        {canUnlink ? (
+        {canUnlink || canOpenHere ? (
           <div className="flex w-full shrink-0 items-center gap-2 sm:w-auto sm:justify-end">
-            <Button
-              size="xs"
-              variant="destructive-outline"
-              disabled={busy}
-              onClick={() => void forget()}
-            >
-              {busy ? gt("Forgetting…") : gt("Forget")}
-            </Button>
+            {canOpenHere ? (
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={opening}
+                onClick={() => void openHere()}
+              >
+                {opening ? "Opening…" : "Open in this browser"}
+              </Button>
+            ) : null}
+            {canUnlink ? (
+              <Button
+                size="xs"
+                variant="destructive-outline"
+                disabled={busy}
+                onClick={() => void forget()}
+              >
+                {busy ? gt("Forgetting…") : gt("Forget")}
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </div>
