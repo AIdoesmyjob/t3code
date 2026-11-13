@@ -5,8 +5,13 @@ import {
   EnvironmentHttpApi,
   EnvironmentId,
   type ExecutionEnvironmentCapabilities,
+  linkedEnvironmentRelayPath,
   MCP_PEER_LINK_SOFTWARE_ID,
+  PEER_BROWSER_PAIRING_PATH,
+  PeerBrowserPairingResponse,
   type PeerLink,
+  type PeerLinkBrowserPairingInput,
+  type PeerLinkBrowserPairingResult,
   type PeerLinkCreateInput,
   PeerLinkError,
   type PeerLinkName,
@@ -14,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -33,6 +39,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientError from "effect/http/HttpClientError";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
 import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassification";
@@ -56,6 +63,12 @@ export const probeTimeout = (origin: string) =>
   isLocalLoopbackHost(new URL(origin).hostname) ? Duration.seconds(3) : Duration.seconds(10);
 /** How long a listing waits on a link's addresses; a real call still gives a waking peer `probeTimeout`. */
 const LIST_PROBE_TIMEOUT = Duration.seconds(3);
+/**
+ * How long the browser relay reuses an address it found answering as a peer.
+ * Every relayed request asks, and a probe per request would double each one.
+ */
+const RELAY_ORIGIN_TTL_MS = 30_000;
+const BROWSER_PAIRING_TIMEOUT = Duration.seconds(15);
 
 /** Node's TLS verification code in a failed request's cause chain, if any. */
 export const certificateErrorCode = (error: unknown) => {
@@ -124,6 +137,19 @@ export class PeerLinks extends Context.Service<
     readonly resolve: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<ResolvedPeerLink, PeerLinkError>;
+    /**
+     * A one-time sign-in from the peer for a browser signed in here, to open
+     * the peer through this environment's `/linked/<id>/` relay. Needs a
+     * full-access link to a peer that offers it (`linkedBrowserRelay`).
+     */
+    readonly browserPairing: (
+      input: PeerLinkBrowserPairingInput,
+    ) => Effect.Effect<PeerLinkBrowserPairingResult, PeerLinkError>;
+    /**
+     * The address the browser relay forwards to for `environmentId`, under the
+     * same conditions as `browserPairing`. Briefly cached.
+     */
+    readonly relayOrigin: (environmentId: EnvironmentId) => Effect.Effect<string, PeerLinkError>;
     /** Records the outcome of a call, so listing shows whether the peer answered last time. */
     readonly recordOutcome: (
       environmentId: EnvironmentId,
@@ -241,6 +267,12 @@ export const LoopbackHost = Context.Reference<(host: string) => boolean>(
 /** Whether a peer holds a linked agent to its limits and keeps its work within its link. */
 const linkLimitsHold = (peer: { readonly capabilities: ExecutionEnvironmentCapabilities }) =>
   peer.capabilities.mcpModeLimitHeader === true && peer.capabilities.linkFence === true;
+
+/** Whether a browser signed in here may open the peer through this environment's relay. */
+const offersBrowserRelay = (
+  link: Pick<PeerLink, "access">,
+  peer: { readonly capabilities: ExecutionEnvironmentCapabilities },
+) => link.access === "full-access" && peer.capabilities.linkedBrowserRelay === true;
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -636,7 +668,11 @@ const make = Effect.gen(function* () {
       ),
     ).pipe(Effect.timeoutOption(LIST_PROBE_TIMEOUT), Effect.orElseSucceed(Option.none));
     if (Option.isNone(answered)) return { ...link, status: "unreachable" };
-    return { ...(yield* withLabel(link, answered.value.label)), status: "reachable" };
+    return {
+      ...(yield* withLabel(link, answered.value.label)),
+      status: "reachable",
+      browserRelay: offersBrowserRelay(link, answered.value),
+    };
   });
 
   const list: PeerLinks["Service"]["list"] = Effect.gen(function* () {
@@ -727,67 +763,192 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const resolve: PeerLinks["Service"]["resolve"] = Effect.fn("PeerLinks.resolve")(
-    function* (environmentId) {
-      const notLinked = new PeerLinkError({
-        reason: "unknown_link",
-        message: `This environment is not linked to ${environmentId}. t3_environment_links lists the linked ones.`,
+  const resolveDetailed = Effect.fn("PeerLinks.resolveDetailed")(function* (
+    environmentId: EnvironmentId,
+  ) {
+    const notLinked = new PeerLinkError({
+      reason: "unknown_link",
+      message: `This environment is not linked to ${environmentId}. t3_environment_links lists the linked ones.`,
+    });
+    const row = yield* readRow(environmentId);
+    if (Option.isNone(row)) return yield* notLinked;
+    const link = yield* toLink(row.value);
+    if (DateTime.isLessThanOrEqualTo(link.expiresAt, yield* DateTime.now)) {
+      return yield* new PeerLinkError({
+        reason: "expired",
+        message: `The link to ${link.label} expired. Link it again with a new pairing code from ${link.label}.`,
       });
-      const row = yield* readRow(environmentId);
-      if (Option.isNone(row)) return yield* notLinked;
-      const link = yield* toLink(row.value);
-      if (DateTime.isLessThanOrEqualTo(link.expiresAt, yield* DateTime.now)) {
-        return yield* new PeerLinkError({
-          reason: "expired",
-          message: `The link to ${link.label} expired. Link it again with a new pairing code from ${link.label}.`,
-        });
-      }
-      const stored = yield* secrets.get(row.value.secret_name).pipe(Effect.catch(failStorage));
-      if (Option.isNone(stored)) {
-        // An unlink between the two reads removes the row before its secret.
-        if (Option.isNone(yield* readRow(environmentId))) return yield* notLinked;
-        return yield* new PeerLinkError({
-          reason: "unknown_link",
-          message: `The link to ${link.label} lost its credential. Link it again.`,
-        });
-      }
-      // The token goes only to an address that still answers as this peer,
-      // so one that now answers as another machine never receives it. The
-      // addresses race, so a silent one never delays one that answers.
-      const answered =
-        link.urls.length === 0
-          ? Option.none()
-          : yield* Effect.raceAll(
-              link.urls.map((url) =>
-                answersAs(url, environmentId).pipe(
-                  Effect.flatMap(Effect.fromOption),
-                  Effect.map((peer) => ({ url, peer })),
-                ),
+    }
+    const stored = yield* secrets.get(row.value.secret_name).pipe(Effect.catch(failStorage));
+    if (Option.isNone(stored)) {
+      // An unlink between the two reads removes the row before its secret.
+      if (Option.isNone(yield* readRow(environmentId))) return yield* notLinked;
+      return yield* new PeerLinkError({
+        reason: "unknown_link",
+        message: `The link to ${link.label} lost its credential. Link it again.`,
+      });
+    }
+    // The token goes only to an address that still answers as this peer,
+    // so one that now answers as another machine never receives it. The
+    // addresses race, so a silent one never delays one that answers.
+    const answered =
+      link.urls.length === 0
+        ? Option.none()
+        : yield* Effect.raceAll(
+            link.urls.map((url) =>
+              answersAs(url, environmentId).pipe(
+                Effect.flatMap(Effect.fromOption),
+                Effect.map((peer) => ({ url, peer })),
               ),
-            ).pipe(Effect.option);
-      if (Option.isNone(answered)) {
-        return yield* new PeerLinkError({
-          reason: "unreachable",
-          message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
-        });
+            ),
+          ).pipe(Effect.option);
+    if (Option.isNone(answered)) {
+      return yield* new PeerLinkError({
+        reason: "unreachable",
+        message: `${link.label} did not answer at ${link.urls.join(", ")}.`,
+      });
+    }
+    const { url, peer } = answered.value;
+    // A link made before the peer had to fence linked work, or a peer moved
+    // back to such a version, would carry work past those limits.
+    if (!linkLimitsHold(peer)) {
+      return yield* new PeerLinkError({
+        reason: "incompatible",
+        message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
+      });
+    }
+    const resolved: ResolvedPeerLink = {
+      link: yield* withLabel(link, peer.label),
+      url,
+      token: new TextDecoder().decode(stored.value),
+      capabilities: peer.capabilities,
+    };
+    const browserRelay = offersBrowserRelay(link, peer);
+    return { resolved, browserRelay };
+  });
+
+  const resolve: PeerLinks["Service"]["resolve"] = (environmentId) =>
+    resolveDetailed(environmentId).pipe(Effect.map(({ resolved }) => resolved));
+
+  const requireEnabled = enabled.pipe(
+    Effect.flatMap((on) =>
+      on
+        ? Effect.void
+        : Effect.fail(
+            new PeerLinkError({
+              reason: "disabled",
+              message: "Linked environments is off here. Turn it on in Settings → Labs.",
+            }),
+          ),
+    ),
+  );
+
+  /** A link the browser relay may use: on here, full access, and a peer that offers it. */
+  const resolveForBrowser = Effect.fn("PeerLinks.resolveForBrowser")(function* (
+    environmentId: EnvironmentId,
+  ) {
+    yield* requireEnabled;
+    const { resolved, browserRelay } = yield* resolveDetailed(environmentId);
+    if (resolved.link.access !== "full-access") {
+      return yield* new PeerLinkError({
+        reason: "pairing_rejected",
+        message: `Opening ${resolved.link.label} in a browser needs a link with full access. Link it again with full access.`,
+      });
+    }
+    if (!browserRelay) {
+      return yield* new PeerLinkError({
+        reason: "incompatible",
+        message: `${resolved.link.label} runs a T3 Code version that cannot be opened through this one. Update it first.`,
+      });
+    }
+    return resolved;
+  });
+
+  const relayOrigins = new Map<
+    EnvironmentId,
+    { readonly origin: string; readonly until: number }
+  >();
+
+  const relayOrigin: PeerLinks["Service"]["relayOrigin"] = Effect.fn("PeerLinks.relayOrigin")(
+    function* (environmentId) {
+      const now = yield* Clock.currentTimeMillis;
+      const cached = relayOrigins.get(environmentId);
+      if (cached !== undefined && cached.until > now) {
+        // The setting can go off at any time; nothing new may start over a link then.
+        yield* requireEnabled;
+        return cached.origin;
       }
-      const { url, peer } = answered.value;
-      // A link made before the peer had to fence linked work, or a peer moved
-      // back to such a version, would carry work past those limits.
-      if (!linkLimitsHold(peer)) {
-        return yield* new PeerLinkError({
-          reason: "incompatible",
-          message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
-        });
-      }
-      return {
-        link: yield* withLabel(link, peer.label),
-        url,
-        token: new TextDecoder().decode(stored.value),
-        capabilities: peer.capabilities,
-      };
+      relayOrigins.delete(environmentId);
+      const resolved = yield* resolveForBrowser(environmentId);
+      relayOrigins.set(environmentId, { origin: resolved.url, until: now + RELAY_ORIGIN_TTL_MS });
+      return resolved.url;
     },
   );
+
+  const browserPairing: PeerLinks["Service"]["browserPairing"] = Effect.fn(
+    "PeerLinks.browserPairing",
+  )(function* (input) {
+    const resolved = yield* resolveForBrowser(input.environmentId);
+    const label = resolved.link.label;
+    const response = yield* peerHttpClient
+      .execute(
+        HttpClientRequest.post(`${resolved.url}${PEER_BROWSER_PAIRING_PATH}`).pipe(
+          HttpClientRequest.bearerToken(resolved.token),
+          HttpClientRequest.bodyJsonUnsafe(
+            input.clientLabel === undefined ? {} : { clientLabel: input.clientLabel },
+          ),
+        ),
+      )
+      .pipe(
+        Effect.timeout(BROWSER_PAIRING_TIMEOUT),
+        Effect.mapError(
+          (cause) =>
+            new PeerLinkError({
+              reason: "unreachable",
+              message: `${label} did not answer the browser sign-in request.`,
+              cause,
+            }),
+        ),
+      );
+    if (response.status !== 200) {
+      const detail = yield* response.json.pipe(
+        Effect.map((body) =>
+          Predicate.isObject(body) && typeof body.message === "string" ? body.message : null,
+        ),
+        Effect.orElseSucceed(() => null),
+      );
+      const message =
+        response.status === 401
+          ? `${label} no longer accepts this link. Link it again.`
+          : response.status === 404
+            ? `${label} runs a T3 Code version that cannot be opened through this one. Update it first.`
+            : (detail ?? `${label} refused the browser sign-in (HTTP ${response.status}).`);
+      yield* recordOutcome(input.environmentId, { error: message });
+      return yield* new PeerLinkError({
+        reason: response.status === 404 ? "incompatible" : "pairing_rejected",
+        message,
+      });
+    }
+    const body = yield* response.text.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PeerBrowserPairingResponse))),
+      Effect.mapError(
+        (cause) =>
+          new PeerLinkError({
+            reason: "not_a_t3_environment",
+            message: `${label} answered the browser sign-in request with something unexpected.`,
+            cause,
+          }),
+      ),
+    );
+    yield* recordOutcome(input.environmentId, { error: null });
+    return {
+      environmentId: input.environmentId,
+      label,
+      credential: body.credential,
+      expiresAt: body.expiresAt,
+      relayPath: linkedEnvironmentRelayPath(input.environmentId),
+    };
+  });
 
   const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (environmentId, outcome) =>
     DateTime.now.pipe(
@@ -822,6 +983,8 @@ const make = Effect.gen(function* () {
     get,
     unlink,
     resolve,
+    browserPairing,
+    relayOrigin,
     recordOutcome,
     recordExpiry,
   });
