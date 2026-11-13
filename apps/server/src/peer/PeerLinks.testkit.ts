@@ -33,6 +33,7 @@ import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerBrowserPairingRoute from "./PeerBrowserPairingRoute.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -132,6 +133,8 @@ export const servePeer = <E, R>(
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
+      // Browser sign-ins it issues to a full-access link, for that environment's relay.
+      PeerBrowserPairingRoute.layer,
       McpHttpServer.layerMcpTransport(tools).pipe(
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
