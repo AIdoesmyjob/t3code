@@ -41,13 +41,12 @@ export interface PairingConnectionInput {
   readonly expectedEnvironmentId?: EnvironmentId;
   /**
    * A linked environment reached through another environment's relay
-   * (`/linked/<id>/` on its origin), with a pairing code it issued for this
-   * browser. Used as given: the base keeps its path.
+   * (`/linked/<id>/` on its origin). The relay signs in at the peer itself, so
+   * this browser needs no sign-in there. Used as given: the base keeps its path.
    */
   readonly linkedRelay?: {
     readonly httpBaseUrl: string;
     readonly wsBaseUrl: string;
-    readonly credential: string;
   };
 }
 
@@ -84,9 +83,12 @@ export class ConnectionOnboarding extends Context.Service<
   }
 >()("@t3tools/client-runtime/connection/onboarding/ConnectionOnboarding") {}
 
+/** Sent to a linked relay, which drops it and signs in at the peer itself. */
+const LINKED_RELAY_PLACEHOLDER_TOKEN = "linked-relay";
+
 const resolvePairingTarget = Effect.fn("clientRuntime.connection.onboarding.resolvePairingTarget")(
   function* (input: PairingConnectionInput) {
-    if (input.linkedRelay !== undefined) return input.linkedRelay;
+    if (input.linkedRelay !== undefined) return { ...input.linkedRelay, credential: null };
     return yield* Effect.try({
       try: () => resolveRemotePairingTarget(input),
       catch: (cause) =>
@@ -152,17 +154,19 @@ export const preparePairingRegistration = Effect.fn(
   if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
     return yield* compatibilityError;
   }
-  const access = yield* bootstrapRemoteBearerSession({
-    httpBaseUrl: target.httpBaseUrl,
-    credential: target.credential,
-    clientMetadata: presentation.metadata,
-  }).pipe(Effect.mapError(mapRemoteEnvironmentError));
+  // Through a linked relay the relay's own session is used; this token only fills the slot.
+  const token =
+    target.credential === null
+      ? LINKED_RELAY_PLACEHOLDER_TOKEN
+      : (yield* bootstrapRemoteBearerSession({
+          httpBaseUrl: target.httpBaseUrl,
+          credential: target.credential,
+          clientMetadata: presentation.metadata,
+        }).pipe(Effect.mapError(mapRemoteEnvironmentError))).access_token;
 
   return new BearerConnectionRegistration({
     ...route,
-    credential: new BearerConnectionCredential({
-      token: access.access_token,
-    }),
+    credential: new BearerConnectionCredential({ token }),
   });
 });
 
