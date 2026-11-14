@@ -177,6 +177,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       so a browser signed in there can open this one through its
       `/linked/<environmentId>/` relay. */
   linkedBrowserRelay: Schema.optionalKey(Schema.Boolean),
+  /** Sends and receives project folders over a full-access link, for one without a git remote. */
+  linkedProjectCopy: Schema.optionalKey(Schema.Boolean),
   /** Mints pairing codes that approve one agent sign-in at a set level (`AUTO-…`). */
   mcpApprovalCodes: Schema.optionalKey(Schema.Boolean),
   /** Agent sign-ins on its T3 Connect address are approved on the hosted app, without a code. */
