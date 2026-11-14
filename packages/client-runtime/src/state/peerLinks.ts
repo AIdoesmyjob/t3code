@@ -39,6 +39,11 @@ export function createPeerLinkEnvironmentAtoms<R, E>(
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.environmentId]),
       },
     }),
+    // Copies a project folder without a git remote between this machine and linked ones.
+    copyProject: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:peer-links:copy-project",
+      tag: WS_METHODS.peerLinksCopyProject,
+    }),
     // An agent's link card. One answer per card at a time.
     answerRequest: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:peer-links:answer-request",
