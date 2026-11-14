@@ -72,6 +72,42 @@ export type PeerBrowserPairingResponse = typeof PeerBrowserPairingResponse.Type;
 
 export const PEER_BROWSER_PAIRING_PATH = "/api/peer/browser-pairing";
 
+/** A full-access link reads a project folder from a peer here, as a framed file stream. */
+export const PEER_PROJECT_EXPORT_PATH = "/api/peer/project-export";
+/** A full-access link writes a framed file stream into a new folder on a peer here. */
+export const PEER_PROJECT_IMPORT_PATH = "/api/peer/project-import";
+
+/**
+ * Copies a project folder that has no git remote from one machine to another,
+ * each either this environment or one linked here with full access. The target
+ * folder must not exist yet, or be empty; `~` means the target's home folder.
+ */
+export const PeerLinkCopyProjectInput = Schema.Struct({
+  sourceEnvironmentId: EnvironmentId,
+  sourcePath: Schema.String,
+  targetEnvironmentId: EnvironmentId,
+  targetPath: Schema.String,
+});
+export type PeerLinkCopyProjectInput = typeof PeerLinkCopyProjectInput.Type;
+
+export const PeerLinkCopyProjectResult = Schema.Struct({
+  /** The absolute folder the project landed in on the target. */
+  targetPath: Schema.String,
+  files: Schema.Number,
+  bytes: Schema.Number,
+  /** Entries left out, such as symbolic links, as relative paths. */
+  skipped: Schema.Array(Schema.String),
+});
+export type PeerLinkCopyProjectResult = typeof PeerLinkCopyProjectResult.Type;
+
+/** What a peer answers on `PUT /api/peer/project-import`. */
+export const PeerProjectImportResponse = Schema.Struct({
+  targetPath: Schema.String,
+  files: Schema.Number,
+  bytes: Schema.Number,
+});
+export type PeerProjectImportResponse = typeof PeerProjectImportResponse.Type;
+
 export const PeerLinkCreateInput = Schema.Struct({
   /** Where the peer answers: an https, Tailscale, LAN or loopback base URL. */
   url: TrimmedNonEmptyString,
@@ -108,6 +144,7 @@ export class PeerLinkError extends Schema.TaggedError<PeerLinkError>()("PeerLink
     "unknown_link",
     "storage",
     "disabled",
+    "copy_failed",
   ]),
   message: Schema.String,
   cause: Schema.optionalKey(Schema.Defect()),
