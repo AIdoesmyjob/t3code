@@ -42,6 +42,7 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 class PeerTestApi extends HttpApi.make("environment")
   .add(EnvironmentHttpApi.groups.metadata)
+  .add(EnvironmentHttpApi.groups.auth)
   .add(EnvironmentHttpApi.groups.mcpOAuth)
   .add(EnvironmentHttpApi.groups.peerLink) {}
 
@@ -140,6 +141,8 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
         ),
         Layer.provide(PeerHttp.layer.pipe(Layer.provide(PeerClientPairing.layerIssuer))),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
+        // `/oauth/token` and `/api/auth/session`, where a browser relay signs in.
+        Layer.provide(AuthHttp.layer),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
       // Browser sign-ins it issues to a full-access link, for that environment's relay.
@@ -161,6 +164,7 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
     // Fresh, so the peer never shares a toolkit or MCP server with the
     // environment that links to it in the same test.
     yield* HttpRouter.serve(layerRoutes, { disableListenLog: true, disableLogger: true }).pipe(
+      // The auth routes read sessions and secrets per request.
       Layer.provide(Layer.succeedContext(authContext)),
       Layer.fresh,
       Layer.build,

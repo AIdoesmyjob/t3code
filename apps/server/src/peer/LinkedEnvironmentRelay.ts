@@ -20,8 +20,8 @@ import * as PeerLinks from "./PeerLinks.ts";
 
 /**
  * `/linked/<id>/…` relays this server's signed-in browser to a full-access peer's
- * own API, as the desktop app does over SSH. The peer still checks the browser's
- * own sign-in there (`Authorization` or `wsTicket`); cookies never cross.
+ * own API with the one session this environment holds there, so every browser
+ * sees the same machines. A browser's own sign-in is dropped; cookies never cross.
  */
 const LINKED_RELAY_PREFIX = "/linked";
 
@@ -35,6 +35,7 @@ const isRelayedPath = (path: string) =>
 
 /** Headers that describe this hop, carry this server's sign-in, or would let the peer misread the caller. */
 const isDroppedRequestHeader = (name: string) =>
+  name === "authorization" ||
   name === "host" ||
   name === "connection" ||
   name === "keep-alive" ||
@@ -113,9 +114,17 @@ const relayLocation = (location: string, relayBase: string) =>
     ? `${relayBase}${location.slice(1)}`
     : location;
 
+/** Bodies up to this size are held so a request can be sent again with a new session. */
+const MAX_RETRYABLE_BODY_BYTES = 1024 * 1024;
+
+type RelaySession = { readonly origin: string; readonly token: string };
+
 const proxyHttp = Effect.fn("LinkedEnvironmentRelay.proxyHttp")(function* (
+  links: PeerLinks.PeerLinks["Service"],
+  environmentId: EnvironmentId,
+  session: RelaySession,
   request: HttpServerRequest.HttpServerRequest,
-  upstreamUrl: string,
+  peerPathAndQuery: string,
   relayBase: string,
 ) {
   const method = request.method;
@@ -130,17 +139,34 @@ const proxyHttp = Effect.fn("LinkedEnvironmentRelay.proxyHttp")(function* (
   // Fetch would decompress a compressed answer and leave its length wrong; this
   // server compresses what it sends on where that helps.
   headers["accept-encoding"] = "identity";
-  const upstreamRequest = HttpClientRequest.make(method)(upstreamUrl).pipe(
-    HttpClientRequest.setHeaders(headers),
-    method === "GET" || method === "HEAD"
-      ? (self) => self
-      : HttpClientRequest.bodyStream(request.stream, {
-          contentType: request.headers["content-type"],
-        }),
-  );
-  const response = yield* httpClient
-    .execute(upstreamRequest)
-    .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+  const contentType = request.headers["content-type"];
+  const declaredLength = Number(request.headers["content-length"] ?? Number.NaN);
+  const hasBody = method !== "GET" && method !== "HEAD";
+  // A small body is read once so the request can be repeated with a new session.
+  const heldBody =
+    hasBody && Number.isFinite(declaredLength) && declaredLength <= MAX_RETRYABLE_BODY_BYTES
+      ? Option.some(new Uint8Array(yield* request.arrayBuffer))
+      : Option.none<Uint8Array>();
+  const send = (target: RelaySession) =>
+    httpClient
+      .execute(
+        HttpClientRequest.make(method)(`${target.origin}${peerPathAndQuery}`).pipe(
+          HttpClientRequest.setHeaders(headers),
+          HttpClientRequest.bearerToken(target.token),
+          !hasBody
+            ? (self) => self
+            : Option.isSome(heldBody)
+              ? HttpClientRequest.bodyUint8Array(heldBody.value, contentType)
+              : HttpClientRequest.bodyStream(request.stream, { contentType }),
+        ),
+      )
+      .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+  let response = yield* send(session);
+  if (response.status === 401 && (!hasBody || Option.isSome(heldBody))) {
+    // The peer dropped the relay's session (revoked or expired): sign in again once.
+    yield* links.invalidateRelaySession(environmentId, session.token);
+    response = yield* send(yield* links.relaySession(environmentId));
+  }
   const responseHeaders: Record<string, string> = {};
   for (const [name, value] of Object.entries(response.headers)) {
     if (value === undefined || isDroppedResponseHeader(name)) continue;
@@ -151,11 +177,11 @@ const proxyHttp = Effect.fn("LinkedEnvironmentRelay.proxyHttp")(function* (
   }
   // A stream of unknown length (events, media) must reach the browser as it
   // comes; compression here would hold it back.
-  const contentType = responseHeaders["content-type"];
+  const responseType = responseHeaders["content-type"];
   if (
     responseHeaders["content-length"] === undefined ||
-    contentType?.startsWith("text/event-stream") === true ||
-    contentType?.startsWith("multipart/") === true
+    responseType?.startsWith("text/event-stream") === true ||
+    responseType?.startsWith("multipart/") === true
   ) {
     const cacheControl = responseHeaders["cache-control"];
     responseHeaders["cache-control"] =
@@ -164,7 +190,7 @@ const proxyHttp = Effect.fn("LinkedEnvironmentRelay.proxyHttp")(function* (
   return HttpServerResponse.stream(response.stream, {
     status: response.status,
     headers: responseHeaders,
-    ...(contentType ? { contentType } : {}),
+    ...(responseType ? { contentType: responseType } : {}),
   });
 });
 
@@ -180,12 +206,16 @@ const pumpFrames =
 const proxyWebSocket = Effect.fn("LinkedEnvironmentRelay.proxyWebSocket")(function* (
   request: HttpServerRequest.HttpServerRequest,
   upstreamUrl: string,
+  token: string,
 ) {
   const userAgent = request.headers["user-agent"];
   const client = yield* request.upgrade;
   const upstream = yield* Socket.makeWebSocket(upstreamUrl, {
     openTimeout: "10 seconds",
-    ...(userAgent ? { headers: { "user-agent": userAgent } } : {}),
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(userAgent ? { "user-agent": userAgent } : {}),
+    },
   }).pipe(Effect.provide(upstreamWebSocketConstructor));
   yield* Effect.scoped(
     Effect.gen(function* () {
@@ -217,8 +247,8 @@ const handle = Effect.fn("LinkedEnvironmentRelay.handle")(function* (
     return jsonError(404, "not_found", "This path is not available through a linked environment.");
   }
 
-  // This server's own browser session, from its cookie: the Authorization
-  // header, if any, is the browser's sign-in at the peer.
+  // This server's own browser session, from its cookie. An Authorization header
+  // is not this server's and is dropped before the request goes on.
   const auth = yield* EnvironmentAuth.EnvironmentAuth;
   const session = yield* auth.authenticateHttpRequest(request).pipe(Effect.option);
   if (Option.isNone(session) || session.value.method !== "browser-session-cookie") {
@@ -232,18 +262,15 @@ const handle = Effect.fn("LinkedEnvironmentRelay.handle")(function* (
     );
   }
 
-  const origin = yield* links.relayOrigin(environmentId).pipe(Effect.result);
-  if (origin._tag === "Failure") {
-    return jsonError(
-      linkErrorStatus(origin.failure),
-      origin.failure.reason,
-      origin.failure.message,
-    );
+  const relay = yield* links.relaySession(environmentId).pipe(Effect.result);
+  if (relay._tag === "Failure") {
+    return jsonError(linkErrorStatus(relay.failure), relay.failure.reason, relay.failure.message);
   }
-  const upstreamUrl = `${origin.success}${parsed.peerPath}${url.value.search}`;
+  const peerPathAndQuery = `${parsed.peerPath}${url.value.search}`;
 
   if (isWebSocketUpgrade(request)) {
-    return yield* proxyWebSocket(request, upstreamUrl.replace(/^http/, "ws")).pipe(
+    const upstreamUrl = `${relay.success.origin}${peerPathAndQuery}`.replace(/^http/, "ws");
+    return yield* proxyWebSocket(request, upstreamUrl, relay.success.token).pipe(
       Effect.catch((cause) =>
         Effect.logWarning("Linked environment relay could not open the peer's socket", cause).pipe(
           Effect.as(jsonError(502, "unreachable", "The linked environment did not answer.")),
@@ -251,7 +278,14 @@ const handle = Effect.fn("LinkedEnvironmentRelay.handle")(function* (
       ),
     );
   }
-  return yield* proxyHttp(request, upstreamUrl, relayBase).pipe(
+  return yield* proxyHttp(
+    links,
+    environmentId,
+    relay.success,
+    request,
+    peerPathAndQuery,
+    relayBase,
+  ).pipe(
     Effect.catch((cause) =>
       Effect.logWarning("Linked environment relay request failed", cause).pipe(
         Effect.as(jsonError(502, "unreachable", "The linked environment did not answer.")),
