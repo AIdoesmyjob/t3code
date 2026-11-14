@@ -4,14 +4,16 @@ import { AuthSourceControlWriteScope, resolveEnvironmentMachineKind } from "@t3t
 
 import type { EnvironmentOption } from "../components/BranchToolbar.logic";
 import { useEnvironments } from "../state/environments";
+import { useCopyableEnvironmentIds } from "../state/linkedRelay";
 import { useEnvironmentsWithScope } from "../state/session";
 
 export type AddProjectTarget = Pick<EnvironmentOption, "environmentId" | "label" | "machine">;
 
 /**
- * Connected machines that do not have the project yet and can clone it.
- * `projectEnvironments` is the project's current machine list, from
- * `useLogicalProjectEnvironments`. Projects without a git remote get none.
+ * Connected machines that do not have the project yet and can take it: by a
+ * clone for a project with a git remote, or by a folder copy through this
+ * page's environment for one without. `projectEnvironments` is the project's
+ * current machine list, from `useLogicalProjectEnvironments`.
  */
 export function useAddProjectTargets(
   project: EnvironmentProject | null,
@@ -19,7 +21,10 @@ export function useAddProjectTargets(
 ): readonly AddProjectTarget[] {
   const { environments } = useEnvironments();
   const canClone = useEnvironmentsWithScope(environments, AuthSourceControlWriteScope);
-  if (!project?.repositoryIdentity?.locator.remoteUrl) return [];
+  const copyable = useCopyableEnvironmentIds();
+  if (!project) return [];
+  const local = !project.repositoryIdentity?.locator.remoteUrl;
+  if (local && !copyable.has(project.environmentId)) return [];
   const hasProject = new Set([
     project.environmentId,
     ...(projectEnvironments ?? []).map((env) => env.environmentId),
@@ -28,7 +33,9 @@ export function useAddProjectTargets(
     .filter(
       (environment) =>
         !hasProject.has(environment.environmentId) &&
-        canClone.has(environment.environmentId) &&
+        (local
+          ? copyable.has(environment.environmentId)
+          : canClone.has(environment.environmentId)) &&
         canCreateProjectInEnvironment(environment.connection.phase) &&
         environment.serverConfig !== null,
     )
