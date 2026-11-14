@@ -16,7 +16,7 @@ import {
   type ResolvedKeybindingsConfig,
   type VcsStatusResult,
 } from "@t3tools/contracts";
-import { type MouseEvent, type ReactNode, useEffect, useEffectEvent, useState } from "react";
+import { type MouseEvent, type ReactNode, useEffect, useEffectEvent, useId, useState } from "react";
 import {
   ArrowDownToLineIcon,
   ArrowUpFromLineIcon,
@@ -93,6 +93,7 @@ import {
   useVcsPullAction,
 } from "../state/sourceControlActions";
 import { useQuietThreadProjection, useQuietThreadShell } from "~/state/entities";
+import { useProjectClone } from "~/state/projectClones";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useEnvironmentQuery } from "~/state/query";
 import { useFilesystemReadAccess } from "~/state/filesystem";
@@ -116,6 +117,7 @@ import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { THREAD_DETAILS_PANEL_LABEL_CLASS } from "./chat/threadDetailsPanelStyles";
 import { getSourceControlPresentation } from "~/sourceControlPresentation";
 import { PullRequestGlyph } from "./pullRequest/pullRequestIcons";
+import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { formatDiffCount } from "@t3tools/client-runtime/diff-count";
 
 interface GitActionsControlProps {
@@ -291,14 +293,25 @@ function GitActionElapsedTimeLabel({
     return null;
   }
 
-  return <p className={className}>{elapsed}</p>;
+  return (
+    <p aria-live="off" className={className}>
+      {elapsed}
+    </p>
+  );
 }
 
-function GitActionProgressButtonContent({ progress }: { progress: GitActionProgressPresentation }) {
+function GitActionProgressButtonContent({
+  progress,
+  id,
+}: {
+  progress: GitActionProgressPresentation;
+  id: string;
+}) {
   const hasOutput = progress.output !== null;
 
   return (
     <div
+      id={id}
       aria-atomic="false"
       aria-live="polite"
       className={cn(
@@ -386,6 +399,7 @@ export default function GitActionsControl({
   onOpenChanges,
   workspaceMutationId = null,
 }: GitActionsControlProps) {
+  const progressLabelId = useId();
   const isPanel = presentation === undefined;
   const updateThreadMetadata = useAtomCommand(
     threadEnvironment.updateMetadata,
@@ -423,6 +437,8 @@ export default function GitActionsControl({
   const canChangeThreadBranch = canWriteSourceControl && (isLocalDraftThread || canOperateThread);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
   const [isCommitDialogOpen, setIsCommitDialogOpen] = useState(false);
+  // A failed commit hands its message back to the dialog for the retry.
+  const [failedCommitMessage, setFailedCommitMessage] = useState<string | null>(null);
   const [isPublishDialogOpen, setIsPublishDialogOpen] = useState(false);
   const [inlineSuccess, setInlineSuccess] = useState<InlineGitActionSuccess | null>(null);
   const [pendingDefaultBranchAction, setPendingDefaultBranchAction] =
@@ -572,9 +588,17 @@ export default function GitActionsControl({
     activeDraftThread?.envMode === "worktree" &&
     activeDraftThread.worktreePath === null;
 
+  // Until a clone finishes, the status names an unborn HEAD that the repository may never have.
+  const activeProjectClone = useProjectClone(
+    activeDraftThread
+      ? scopeProjectRef(activeDraftThread.environmentId, activeDraftThread.projectId)
+      : null,
+  );
+  const isProjectCloning = activeProjectClone !== null && activeProjectClone.phase !== "done";
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- persists the draft thread branch when the live git status subscription reports a different branch
   useEffect(() => {
-    if (isGitActionRunning || isSelectingWorktreeBase || activeServerThread) {
+    if (isGitActionRunning || isSelectingWorktreeBase || activeServerThread || isProjectCloning) {
       return;
     }
 
@@ -592,6 +616,7 @@ export default function GitActionsControl({
     activeDraftThread?.branch,
     gitStatusForActions,
     isGitActionRunning,
+    isProjectCloning,
     isSelectingWorktreeBase,
   ]);
 
@@ -667,7 +692,7 @@ export default function GitActionsControl({
         !isLocalDraftThread &&
         !readEnvironmentScope(activeEnvironmentId, AuthOrchestrationOperateScope))
     )
-      return;
+      return false;
     const actionStatus = statusOverride ?? gitStatusForActions;
     const actionBranch = actionStatus?.refName ?? null;
     const actionIsDefaultBranch = featureBranch ? false : isDefaultRef;
@@ -687,7 +712,7 @@ export default function GitActionsControl({
         action !== "commit_push" &&
         action !== "commit_push_pr"
       ) {
-        return;
+        return false;
       }
       setPendingDefaultBranchAction({
         action,
@@ -697,7 +722,7 @@ export default function GitActionsControl({
         ...(onConfirmed ? { onConfirmed } : {}),
         ...(filePaths ? { filePaths } : {}),
       });
-      return;
+      return false;
     }
     onConfirmed?.();
     setInlineSuccess(null);
@@ -717,7 +742,7 @@ export default function GitActionsControl({
 
     if (result._tag === "Failure") {
       if (isAtomCommandInterrupted(result)) {
-        return;
+        return false;
       }
 
       const error = squashAtomCommandFailure(result);
@@ -731,7 +756,7 @@ export default function GitActionsControl({
           ...(scopedToastData !== undefined ? { data: scopedToastData } : {}),
         }),
       );
-      return;
+      return false;
     }
 
     const actionResult = result.value;
@@ -746,7 +771,7 @@ export default function GitActionsControl({
         scopeKey: successScopeKey,
         expiresAtMs: inlineSuccessExpiresAt(),
       });
-      return;
+      return true;
     }
     let resultToastId: GitActionToastId | null = null;
     const closeResultToast = () => {
@@ -808,6 +833,7 @@ export default function GitActionsControl({
         data: successToastData,
       });
     }
+    return true;
   }
 
   const continuePendingDefaultBranchAction = (featureBranch: boolean) => {
@@ -951,11 +977,16 @@ export default function GitActionsControl({
 
   const runCommitDialog = (submission: GitCommitDialogSubmission) => {
     setIsCommitDialogOpen(false);
+    setFailedCommitMessage(null);
     void runGitActionWithToast({
       action: "commit",
       ...(submission.commitMessage ? { commitMessage: submission.commitMessage } : {}),
       ...(submission.filePaths ? { filePaths: [...submission.filePaths] } : {}),
       ...(submission.featureBranch ? { featureBranch: true, skipDefaultBranchPrompt: true } : {}),
+    }).then((committed) => {
+      // Keep a typed message for the retry unless the user already started a new one.
+      if (committed || !submission.commitMessage) return;
+      setFailedCommitMessage((current) => current ?? submission.commitMessage);
     });
   };
 
@@ -1323,13 +1354,9 @@ export default function GitActionsControl({
                 className="flex-1"
                 multiline
                 disabled
-                aria-label={
-                  gitActionProgress.output
-                    ? `${gitActionProgress.status} ${gitActionProgress.output}`
-                    : gitActionProgress.status
-                }
+                aria-labelledby={progressLabelId}
               >
-                <GitActionProgressButtonContent progress={gitActionProgress} />
+                <GitActionProgressButtonContent id={progressLabelId} progress={gitActionProgress} />
               </ThreadDetailsControl>
               <GitActionElapsedTime
                 startedAtMs={gitActionProgress.startedAtMs}
@@ -1422,6 +1449,7 @@ export default function GitActionsControl({
         canOpenFiles={canOperateThread && workingTreeRoot !== null}
         onOpenFile={openChangedFileInEditor}
         onSubmit={runCommitDialog}
+        initialCommitMessage={failedCommitMessage}
       />
 
       {showActions ? (

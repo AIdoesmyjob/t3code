@@ -150,6 +150,7 @@ import { Switch } from "../ui/switch";
 import { Textarea } from "../ui/textarea";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { searchableSetting } from "./settingsSearch";
 import {
   SettingsEmptyState,
   SettingsEmptyTile,
@@ -512,6 +513,7 @@ export function ScheduledTasksSettings(target: {
           <ScheduledTaskEnvironmentSection
             key={entry.environmentId}
             environment={entry}
+            {...(index === 0 ? { id: searchableSetting("scheduled-tasks").id } : {})}
             headerAction={index === 0 ? newTaskButton : undefined}
             taskId={linkedEnvironmentId === entry.environmentId ? target.taskId : undefined}
             onEdit={openForEdit}
@@ -604,7 +606,7 @@ function ScheduledTaskEnvironmentList({
   const templateEnvironment = states[0];
   return (
     <>
-      <SettingsSection title="Scheduled tasks" headerAction={headerAction}>
+      <SettingsSection {...searchableSetting("scheduled-tasks")} headerAction={headerAction}>
         {populated.map(({ environment, tasks, timeZone }) => {
           const { primary, secondary } = settingsScopeEnvironmentLabels(environment, environments);
           return (
@@ -711,12 +713,15 @@ function ScheduledTaskEnvironmentSubtitle({
 }
 
 function ScheduledTaskEnvironmentSection({
+  id,
   environment,
   headerAction,
   taskId,
   onEdit,
   onUseTemplate,
 }: {
+  /** Settings search anchor, set on the first environment. */
+  readonly id?: string;
   readonly environment: EnvironmentPresentation;
   readonly headerAction?: ReactNode;
   readonly taskId?: ScheduledTaskId | undefined;
@@ -743,6 +748,7 @@ function ScheduledTaskEnvironmentSection({
   return (
     <>
       <SettingsSection
+        id={id}
         title={environment.label}
         headerAction={headerAction}
         icon={
@@ -882,6 +888,13 @@ function ScheduledTaskRow({
   });
   const act = async (action: "toggle" | "run" | "delete") => {
     if (busy || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return;
+    if (action === "delete") {
+      const message = `Delete "${task.title}"?\nThis cannot be undone.`;
+      const confirmed =
+        (await requestConfirmDialog(message, { variant: "destructive" })) ??
+        window.confirm(message);
+      if (!confirmed) return;
+    }
     setBusy(true);
     const result =
       action === "toggle"
@@ -1319,6 +1332,16 @@ const THREAD_MODE_LABELS: Record<ScheduledTaskThreadMode, string> = {
   fresh_session: "One thread, fresh session each run",
 };
 
+function useScheduledTaskThread(environmentId: EnvironmentId, threadId: ThreadId | null) {
+  const ref = threadId === null ? null : scopeThreadRef(environmentId, threadId);
+  const shell = useThreadShell(ref);
+  // The shell can omit older settled threads; their family read still carries the row.
+  const family = useEnvironmentQuery(
+    ref !== null && shell === null ? threadFamilies.familyAtom(environmentId, ref.threadId) : null,
+  );
+  return shell ?? family.data?.threads.find((row) => row.id === threadId) ?? null;
+}
+
 function ScheduledTaskDestination({
   environmentId,
   projectId,
@@ -1340,12 +1363,7 @@ function ScheduledTaskDestination({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const ref = threadId === null ? null : scopeThreadRef(environmentId, threadId);
-  const shell = useThreadShell(ref);
-  // The shell can omit older settled threads; their family read still carries the title.
-  const family = useEnvironmentQuery(
-    ref !== null && shell === null ? threadFamilies.familyAtom(environmentId, ref.threadId) : null,
-  );
-  const thread = shell ?? family.data?.threads.find((row) => row.id === threadId);
+  const thread = useScheduledTaskThread(environmentId, threadId);
   const currentLabel =
     ref !== null
       ? thread?.title.trim() || `Thread ${ref.threadId}`
@@ -1562,11 +1580,21 @@ function ScheduledTaskEditorForm({
   const activeInstanceId =
     activeSelection?.instanceId ?? firstInstance?.instanceId ?? ("" as ProviderInstanceId);
   const activeModel = activeSelection?.model ?? "";
+  const boundThread = useScheduledTaskThread(
+    environmentId,
+    draft.threadId ? (draft.threadId as ThreadId) : null,
+  );
+  // Bound runs use the thread's current model, so the locked picker shows that one.
+  const shownSelection = draft.threadId
+    ? (boundThread?.modelSelection ?? null)
+    : { instanceId: activeInstanceId, model: activeModel };
+  const shownInstanceId = shownSelection?.instanceId ?? activeInstanceId;
+  const shownModel = shownSelection?.model ?? "";
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
     settings,
     providers,
-    activeInstanceId,
-    activeModel,
+    shownInstanceId,
+    shownModel,
   );
 
   const reportFailure = (title: string, error: unknown) => {
@@ -1920,9 +1948,10 @@ function ScheduledTaskEditorForm({
               <div className="min-w-0">
                 <ProviderModelPicker
                   environmentId={environmentId}
-                  disabled={saving || !connected}
-                  activeInstanceId={activeInstanceId}
-                  model={activeModel}
+                  // The saved selection only seeds new threads; bound runs ignore it.
+                  disabled={saving || !connected || draft.threadId !== ""}
+                  activeInstanceId={shownInstanceId}
+                  model={shownModel}
                   lockedProvider={null}
                   instanceEntries={instanceEntries}
                   modelOptionsByInstance={modelOptionsByInstance}

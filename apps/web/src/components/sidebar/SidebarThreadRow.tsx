@@ -27,6 +27,7 @@ import {
   resolveThreadProviderStack,
 } from "@t3tools/client-runtime/state/models";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { toServerClock } from "@t3tools/client-runtime/clock";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
@@ -87,7 +88,7 @@ import {
   hasUnseenCompletion,
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
-  resolveSidebarThreadStatus,
+  resolveSidebarRowStatus,
   resolveSidebarV2TopStatus,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
@@ -168,18 +169,20 @@ function JumpHintBadge(props: { label: string }) {
 const JUMP_HINT_SLOT_CLASS_NAME =
   "[&>:not([data-jump-hint])]:invisible [&>:not([data-jump-hint])]:absolute";
 
-function WorkingDuration(props: { startedAt: string | null }) {
+function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
   if (Number.isNaN(startedMs)) return null;
-  return <WorkingDurationLabel startedMs={startedMs} />;
+  return <WorkingDurationLabel environmentId={props.environmentId} startedMs={startedMs} />;
 }
 
 // Self-ticking so only this span re-renders each second, not the whole row;
 // the shared tick lands every working row's update in the same frame.
-function WorkingDurationLabel(props: { startedMs: number }) {
+function WorkingDurationLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
   const nowMs = useNowSecond();
   return (
-    <span className="tabular-nums">{formatWorkingDurationLabel(nowMs - props.startedMs)}</span>
+    <span className="tabular-nums">
+      {formatWorkingDurationLabel(toServerClock(props.environmentId, nowMs) - props.startedMs)}
+    </span>
   );
 }
 
@@ -225,6 +228,7 @@ function SidebarWokeLabel(props: { onDismiss: (event: ReactMouseEvent) => void }
 }
 
 function SidebarStatusLabel(props: {
+  environmentId: EnvironmentId;
   kind: SidebarV2TopStatusKind;
   label?: string | null;
   workingStartedAt: string | null;
@@ -243,7 +247,7 @@ function SidebarStatusLabel(props: {
       {!props.compact &&
       (props.kind === "working" || props.kind === "preparing" || props.kind === "waiting") ? (
         <span aria-hidden>
-          <WorkingDuration startedAt={props.workingStartedAt} />
+          <WorkingDuration environmentId={props.environmentId} startedAt={props.workingStartedAt} />
         </span>
       ) : null}
     </span>
@@ -809,7 +813,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
     : null;
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarThreadStatus(thread);
+  const status = resolveSidebarRowStatus({ ...thread, lastVisitedAt });
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -1097,7 +1101,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
       />
     ) : (
       <span
-        aria-hidden
         className={cn(
           "min-w-0 flex-1 text-start text-body leading-5 transition-opacity motion-reduce:transition-none",
           shouldRecede ? "font-normal" : "font-medium",
@@ -1127,7 +1130,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
         {thread.title}
       </span>
     );
-  const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
 
   const handlePrListClick = () => {
     useRightPanelStore.getState().open(threadRef, "pull-requests");
@@ -1318,7 +1320,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
             }
           >
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
-              {accessibleTitle}
               {inFolder ? null : (
                 <span
                   className={cn(
@@ -1372,6 +1373,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                     ) : inFolder && topStatus ? (
                       <SidebarStatusLabel
                         compact
+                        environmentId={thread.environmentId}
                         kind={topStatus}
                         label={topStatusLabel}
                         workingStartedAt={
@@ -1476,9 +1478,11 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
       data-thread-item={threadKey}
       {...sortableRootProps}
       {...(fileDropHandlers ?? {})}
+      // The hints are the rendered heights inside py-0.5. Revealing the open thread measures rows
+      // that have not rendered yet, so a hint off by a pixel lands it a pixel short per row above.
       className={cn(
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
-        metaLineEmpty && "[contain-intrinsic-size:auto_58px]",
+        metaLineEmpty && "[contain-intrinsic-size:auto_60px]",
         sortable?.isDragging && "relative z-20",
       )}
     >
@@ -1505,7 +1509,6 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
             />
           }
         >
-          {accessibleTitle}
           <div
             className={cn(
               "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
@@ -1554,6 +1557,7 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
                       <SidebarWokeLabel onDismiss={handleAcknowledgeWokeClick} />
                     ) : (
                       <SidebarStatusLabel
+                        environmentId={thread.environmentId}
                         kind={topStatus}
                         label={topStatusLabel}
                         workingStartedAt={
@@ -1791,6 +1795,13 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               aria-label={accessibility.label}
               {...dragListeners}
               onMouseMove={props.onHighlight}
+              // Focus stays in the search box, as for Enter. A focused result would lose focus as
+              // the results close, and its recovery scrolls the list away from the opened thread.
+              // dnd-kit ignores a prevented press, so the drag listener runs first.
+              onPointerDown={(event) => {
+                dragListeners?.onPointerDown?.(event);
+                event.preventDefault();
+              }}
               onClick={props.onSelect}
               className={cn(
                 "group/sidebar-row group/v2-row flex min-h-9 w-full cursor-pointer items-center gap-1.5 rounded-control px-2.5 py-1 text-left text-body outline-none",

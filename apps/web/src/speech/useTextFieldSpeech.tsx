@@ -34,7 +34,6 @@ export function useTextFieldSpeech(input: {
     environmentId: input.environmentId,
     projectId: input.projectId,
     ownerKey: input.ownerKey,
-    draftText: input.text,
     disabled: input.disabled,
     offerSetup: false,
     readDraft: () => {

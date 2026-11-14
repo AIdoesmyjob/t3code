@@ -1,5 +1,6 @@
 import { resolveEnvironmentMachineKind } from "@t3tools/contracts";
-import { CheckIcon, LayersIcon, RotateCcwIcon, SearchIcon } from "lucide-react";
+import { fileBasename } from "@t3tools/shared/path";
+import { CheckIcon, FolderIcon, LayersIcon, RotateCcwIcon, SearchIcon } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 
 import { normalizeSearchText } from "~/lib/utils";
@@ -20,9 +21,12 @@ import {
   environmentAxisValue,
   projectAxisValue,
   projectScopeMenuGroups,
+  selectCheckoutAxis,
   selectEnvironmentAxis,
   selectProjectAxis,
   SETTINGS_DEVICE_ONLY_PATHS,
+  settingsScopeCheckoutChoices,
+  settingsScopeCheckoutLabel,
   settingsScopeEnvironmentAddress,
   settingsScopeEnvironmentLabel,
   settingsScopeEnvironmentLabels,
@@ -99,10 +103,19 @@ function ScopePopover({
     : environmentValue !== ALL_ENVIRONMENTS_VALUE
       ? "Unavailable environment"
       : null;
-  const triggerLabel =
+  // Several checkouts of the project on one environment: only this axis can split them.
+  const checkouts = selectedProject ? settingsScopeCheckoutChoices(selectedProject, value) : [];
+  const selectedCheckout = checkouts.find((member) => member.physicalProjectKey === value.checkout);
+  const checkoutLabel = selectedCheckout
+    ? settingsScopeCheckoutLabel(selectedCheckout, checkouts)
+    : checkouts.length > 0 && value.checkout
+      ? "Unavailable checkout"
+      : null;
+  const scopeLabel =
     projectLabel && environmentLabel
       ? `${projectLabel} on ${environmentLabel}`
       : (projectLabel ?? environmentLabel ?? "All");
+  const triggerLabel = checkoutLabel ? `${scopeLabel} in ${checkoutLabel}` : scopeLabel;
 
   const clearOverrides = useClearProjectOverridesOn();
   // Overrides on the environments the selection covers: one, or every connected one.
@@ -164,6 +177,9 @@ function ScopePopover({
     .filter(({ environment, label, secondary }) =>
       matches(`${label} ${secondary} ${environment.environmentId}`),
     );
+  const visibleCheckouts = checkouts.filter((member) =>
+    matches(`${fileBasename(member.workspaceRoot)} ${member.workspaceRoot}`),
+  );
 
   const choose = (next: SettingsScopeSearch) => {
     setOpen(false);
@@ -272,6 +288,28 @@ function ScopePopover({
               ))}
             </ScopeColumn>
           </div>
+          {checkouts.length > 0 ? (
+            <div className="border-t border-border">
+              <ScopeColumn label="Checkout">
+                <ScopeRow
+                  icon={<LayersIcon aria-hidden className="size-3.5" />}
+                  label="All checkouts"
+                  selected={value.checkout === undefined}
+                  onSelect={() => choose(selectCheckoutAxis(value, null))}
+                />
+                {visibleCheckouts.map((member) => (
+                  <ScopeRow
+                    key={member.physicalProjectKey}
+                    icon={<FolderIcon aria-hidden className="size-3.5" />}
+                    label={fileBasename(member.workspaceRoot)}
+                    secondary={member.workspaceRoot}
+                    selected={value.checkout === member.physicalProjectKey}
+                    onSelect={() => choose(selectCheckoutAxis(value, member))}
+                  />
+                ))}
+              </ScopeColumn>
+            </div>
+          ) : null}
           <div className="flex items-center gap-2 border-t border-border px-3.5 py-2">
             <p className="min-w-0 flex-1 truncate text-meta text-dim-foreground">
               {overriddenProjectCount === 0

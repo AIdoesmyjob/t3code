@@ -52,6 +52,7 @@ export function GitCommitDialog({
   canOpenFiles,
   onSubmit,
   onOpenFile,
+  initialCommitMessage = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -63,6 +64,8 @@ export function GitCommitDialog({
   canOpenFiles: boolean;
   onSubmit: (submission: GitCommitDialogSubmission) => void;
   onOpenFile: (path: string) => void;
+  /** The message an opening starts from, such as one kept from a commit that failed. */
+  initialCommitMessage?: string | null;
 }) {
   const branchFieldId = useId();
   const messageFieldId = useId();
@@ -75,7 +78,7 @@ export function GitCommitDialog({
   if (openSeen !== open) {
     setOpenSeen(open);
     if (open) {
-      setCommitMessage("");
+      setCommitMessage(initialCommitMessage ?? "");
       setExcludedFiles(new Set());
       setBranchTarget("current");
     }

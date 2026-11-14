@@ -19,6 +19,7 @@ import {
 import { ChevronDownIcon, ExternalLinkIcon, GitBranchIcon } from "lucide-react";
 import {
   useEffect,
+  useEffectEvent,
   useImperativeHandle,
   useOptimistic,
   useRef,
@@ -34,6 +35,7 @@ import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { readLocalApi } from "../localApi";
 import { useOpenPrLink } from "../lib/openPullRequestLink";
 import { usePaginatedBranches } from "../state/queries";
+import { useProjectClone } from "../state/projectClones";
 import { readThreadShell, useProject, useQuietThreadShell } from "../state/entities";
 import { useEnvironmentQuery } from "../state/query";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
@@ -50,7 +52,9 @@ import { parsePullRequestReference } from "@t3tools/client-runtime/pull-request-
 import { getSourceControlPresentation } from "../sourceControlPresentation";
 import { useComposerMenuProps } from "./chat/composerEventScope";
 import {
+  type BranchHold,
   deriveLocalBranchNameFromRemoteRef,
+  isBranchHoldCurrent,
   isWorktreeChangeBlocked,
   groupLabelsForPickerItems,
   orderRefNamesByGroup,
@@ -58,6 +62,7 @@ import {
   resolveBranchToolbarPrBranch,
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
+  resolveDefaultWorktreeBaseBranch,
   resolveDraftEnvModeAfterBranchChange,
   resolveEffectiveEnvMode,
   sanitizeNewRefName,
@@ -220,7 +225,7 @@ export function BranchToolbarBranchSelector({
   const switchRef = useAtomCommand(vcsEnvironment.switchRef, {
     reportFailure: false,
   });
-  const refreshStatus = useAtomCommand(vcsEnvironment.refreshStatus, {
+  const refreshLocalStatusForPicker = useAtomCommand(vcsEnvironment.refreshLocalStatusForPicker, {
     reportFailure: false,
   });
   const createRefMutation = useAtomCommand(vcsEnvironment.createRef, {
@@ -272,6 +277,7 @@ export function BranchToolbarBranchSelector({
     branch: string | null,
     worktreePath: string | null,
     automatic = false,
+    onMetadataFailure?: () => void,
   ) => {
     if (
       !activeThreadId ||
@@ -308,6 +314,8 @@ export function BranchToolbarBranchSelector({
           worktreePath,
           ...(automatic ? { expectedEmpty: true } : {}),
         },
+      }).then((result) => {
+        if (result._tag !== "Success") onMetadataFailure?.();
       });
     }
     if (hasServerThread) {
@@ -386,7 +394,6 @@ export function BranchToolbarBranchSelector({
     activeThreadBranch,
     currentGitBranch,
   });
-  const defaultBranchName = refs.find((refName) => refName.isDefault)?.name ?? null;
   const normalizedBranchQuery = trimmedBranchQuery.toLowerCase();
   const prReference = parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
@@ -427,8 +434,17 @@ export function BranchToolbarBranchSelector({
     normalizedQuery: normalizedBranchQuery,
     changeRequestGroupLabel: capitalizeTerm(sourceControlPresentation.terminology.plural),
   });
+  const [branchHold, setBranchHold] = useState<BranchHold | null>(null);
+  const branchHoldCurrent =
+    branchHold !== null &&
+    isBranchHoldCurrent(branchHold, {
+      canonicalBranch: canonicalActiveBranch,
+      environmentId,
+      cwd: branchCwd,
+    });
+  if (branchHold !== null && !branchHoldCurrent) setBranchHold(null);
   const [resolvedActiveBranch, setOptimisticBranch] = useOptimistic(
-    canonicalActiveBranch,
+    branchHoldCurrent ? branchHold.branch : canonicalActiveBranch,
     (_currentBranch: string | null, optimisticBranch: string | null) => optimisticBranch,
   );
   const listedActiveBranch =
@@ -465,25 +481,15 @@ export function BranchToolbarBranchSelector({
         : null;
 
   const copyBranchName = (branchName: string) => {
-    void writeTextToClipboard(branchName, "branch name").then(
-      (didCopy) => {
-        if (!didCopy) return;
-        toastManager.add({
-          type: "success",
-          title: "Branch name copied",
-          description: branchName,
-        });
-      },
-      (error: unknown) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Failed to copy branch name",
-            description: toBranchActionErrorMessage(error),
-          }),
-        );
-      },
-    );
+    void writeTextToClipboard(branchName, "branch name").then(undefined, (error: unknown) => {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Failed to copy branch name",
+          description: toBranchActionErrorMessage(error),
+        }),
+      );
+    });
   };
 
   const handleBranchContextMenu = (event: ReactMouseEvent, branchName: string | null) => {
@@ -517,7 +523,6 @@ export function BranchToolbarBranchSelector({
     startBranchActionTransition(async () => {
       await action();
       branchRefState.refresh();
-      branchStatusQuery.refresh();
     });
   };
 
@@ -548,7 +553,10 @@ export function BranchToolbarBranchSelector({
     )
       return;
 
-    if (selectionTarget.reuseExistingWorktree) {
+    if (
+      selectionTarget.reuseExistingWorktree &&
+      !(selectionTarget.staysInActiveCheckout && canWriteSourceControl)
+    ) {
       setThreadBranch(refName.name, selectionTarget.nextWorktreePath);
       setIsBranchMenuOpen(false);
       onComposerFocusRequest?.();
@@ -576,11 +584,37 @@ export function BranchToolbarBranchSelector({
         const nextBranchName = refName.isRemote
           ? (checkoutResult.value.refName ?? selectedBranchName)
           : selectedBranchName;
-        setOptimisticBranch(
-          setThreadBranch(nextBranchName, selectionTarget.nextWorktreePath)
-            ? nextBranchName
-            : previousBranch,
+        const movesCheckout = selectionTarget.checkoutCwd !== branchCwd;
+        let hold: BranchHold | null = null;
+        const applied = setThreadBranch(
+          nextBranchName,
+          selectionTarget.nextWorktreePath,
+          false,
+          // A failed move leaves the thread in its old checkout, which never had the new branch.
+          movesCheckout
+            ? () => setBranchHold((current) => (current === hold ? null : current))
+            : undefined,
         );
+        if (applied) {
+          hold = {
+            branch: nextBranchName,
+            environmentId,
+            // The thread keeps its old checkout until the metadata update moves it to the new one.
+            checkouts: [
+              { cwd: branchCwd, replaces: canonicalActiveBranch },
+              ...(movesCheckout
+                ? [
+                    {
+                      cwd: selectionTarget.checkoutCwd,
+                      replaces: projectStatusQuery.data?.refName ?? null,
+                    },
+                  ]
+                : []),
+            ],
+          };
+          setBranchHold(hold);
+        }
+        setOptimisticBranch(applied ? nextBranchName : previousBranch);
         return;
       }
       setOptimisticBranch(previousBranch);
@@ -617,9 +651,15 @@ export function BranchToolbarBranchSelector({
       });
       if (createBranchResult._tag === "Success") {
         const nextBranchName = createBranchResult.value.refName;
-        setOptimisticBranch(
-          setThreadBranch(nextBranchName, activeWorktreePath) ? nextBranchName : previousBranch,
-        );
+        const applied = setThreadBranch(nextBranchName, activeWorktreePath);
+        if (applied) {
+          setBranchHold({
+            branch: nextBranchName,
+            environmentId,
+            checkouts: [{ cwd: branchCwd, replaces: canonicalActiveBranch }],
+          });
+        }
+        setOptimisticBranch(applied ? nextBranchName : previousBranch);
         return;
       }
       setOptimisticBranch(previousBranch);
@@ -637,7 +677,20 @@ export function BranchToolbarBranchSelector({
 
   const worktreeBaseBranchCandidate = isInitialBranchesLoadPending
     ? null
-    : (defaultBranchName ?? currentGitBranch);
+    : resolveDefaultWorktreeBaseBranch(refs);
+
+  const projectCloneDone = useProjectClone(activeProjectRef)?.phase === "done";
+  const refreshRefsAfterClone = useEffectEvent(() => {
+    if (branchCwd === null) return;
+    void refreshLocalStatusForPicker({
+      environmentId,
+      input: { cwd: branchCwd, localOnly: true },
+    });
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- refs listed while the project was cloning are empty; reload them past the server's snapshot when the clone finishes
+  useEffect(() => {
+    if (projectCloneDone) refreshRefsAfterClone();
+  }, [projectCloneDone]);
 
   // The server sets started threads' branches; defaulting here would detach the agent from its worktree.
   const threadStarted = serverSession !== null;
@@ -665,7 +718,10 @@ export function BranchToolbarBranchSelector({
   const handleOpenChange = (open: boolean) => {
     setIsBranchMenuOpen(open);
     if (open && !isBranchMenuOpen && branchCwd !== null) {
-      void refreshStatus({ environmentId, input: { cwd: branchCwd, localOnly: true } });
+      void refreshLocalStatusForPicker({
+        environmentId,
+        input: { cwd: branchCwd, localOnly: true },
+      });
     }
     if (!open) {
       setFocusBranchSearch(false);
@@ -945,6 +1001,8 @@ export function BranchToolbarBranchSelector({
               }
               className="min-w-0 max-w-full active:scale-100"
               disabled={isInitialBranchesLoadPending || isBranchActionPending}
+              // NVDA browse mode re-reads a combobox when its attributes change, not when its text does.
+              aria-label={`Branch: ${triggerLabel}`}
             >
               <GitBranchIcon
                 className={cn(
@@ -956,7 +1014,12 @@ export function BranchToolbarBranchSelector({
                 {isActiveBranchResolving ? (
                   <Skeleton className="h-3 w-24" />
                 ) : (
-                  <MiddleTruncate value={triggerLabel} variant="cap-aligned" className="w-full" />
+                  <MiddleTruncate
+                    value={triggerLabel}
+                    variant="cap-aligned"
+                    className="w-full"
+                    aria-hidden
+                  />
                 )}
               </ComposerContextLabel>
               {displayMode === "toolbar" ? (

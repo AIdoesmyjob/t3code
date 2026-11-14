@@ -6,6 +6,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { render } from "../../../test/render";
 import { ComposerHandleContext, type ComposerHandleRef } from "../../composerHandleContext";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
   focusRequestedPermission,
   markOpenToPermissions,
@@ -96,6 +97,49 @@ it("returns focus to the editor after a pick", async () => {
   await userEvent.keyboard("{Enter}");
   await expect.element(screen.getByRole("status")).toHaveTextContent("approval-required");
   await vi.waitFor(() => expect(handle.focusAtEnd).toHaveBeenCalled());
+});
+
+// A composer popover that nests the Permissions menu, as the model picker did.
+function PickerWithPermissions() {
+  const [mode, setMode] = useState<RuntimeMode>("full-access");
+  const composerMenuProps = useComposerMenuProps();
+  return (
+    <>
+      <p>Timeline</p>
+      <Popover>
+        <PopoverTrigger>Model</PopoverTrigger>
+        <PopoverPopup {...composerMenuProps}>
+          <ComposerFooterModeControls
+            runtimeMode={mode}
+            runtimeModeOptions={options}
+            accessDisplay="label"
+            onRuntimeModeChange={setMode}
+          />
+        </PopoverPopup>
+      </Popover>
+    </>
+  );
+}
+
+it("on a touch tablet, tapping outside the Permissions menu leaves the editor unfocused", async () => {
+  const realMatchMedia = window.matchMedia.bind(window);
+  using _touch = vi
+    .spyOn(window, "matchMedia")
+    .mockImplementation((query) => realMatchMedia(query === "(pointer: coarse)" ? "all" : query));
+  const { handle, ui } = withComposer(<PickerWithPermissions />);
+  await using screen = await render(ui, { router: false }); // no routes involved
+  await userEvent.click(screen.getByRole("button", { name: "Model" }));
+  await userEvent.click(page.getByRole("button", { name: "Permissions: Full access" }));
+  const fullAccess = page.getByRole("menuitemradio", { name: "Full access" });
+  await expect.element(fullAccess).toBeInTheDocument();
+  const permissionsTrigger = page.getByRole("button", { name: "Permissions: Full access" });
+  // The first outside tap closes the Permissions menu, the second the picker around it.
+  await userEvent.click(document.body, { position: { x: 1, y: 1 } });
+  await expect.element(fullAccess).not.toBeInTheDocument();
+  await userEvent.click(screen.getByText("Timeline"));
+  await expect.element(permissionsTrigger).not.toBeInTheDocument();
+  // Focusing the editor after a tap opens the on-screen keyboard on Android tablets.
+  expect(handle.focusAtEnd).not.toHaveBeenCalled();
 });
 
 it("opens on the checked permission when composer.mode marked the trigger", async () => {

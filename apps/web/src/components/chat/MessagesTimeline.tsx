@@ -15,6 +15,7 @@ import {
   HtmlRenderTimelineRow,
   McpAppTimelineRow,
   ProposedPlanTimelineRow,
+  SentMessageTimelineRow,
 } from "./TimelineAssistantRows";
 import {
   type TimelinePendingRequest,
@@ -126,6 +127,7 @@ import {
   isTimelineMinimapRowVisible,
   resolveTimelineMinimapVisibleRange,
   resolveTimelineMinimapHitStripWidth,
+  TIMELINE_MINIMAP_TARGET_OFFSET,
   timelineTurnFoldRunIdsByEntryId,
   liveAnswerPreview,
   type MessagesTimelineRow,
@@ -1078,9 +1080,18 @@ const ConversationTimeline = memo(function ConversationTimeline({
         strip.dataset.inView = next;
       }
     }
+    // Ignore rows ending within the offset minimap navigation leaves above its target, or
+    // Next turn keeps retargeting the same row. 1px absorbs device-pixel scroll rounding.
+    // The top inset is the header the conversation scrolls under, which navigation also clears.
+    const currentInset = TIMELINE_MINIMAP_TARGET_OFFSET + topInset + 1;
+    const currentRange = resolveTimelineMinimapVisibleRange({
+      ...state,
+      scroll: scroll + currentInset,
+      scrollLength: state.scrollLength - currentInset,
+    });
     const nextCurrentIndex = resolveTimelineMinimapCurrentIndex({
-      visibleStart: visibleRange.start,
-      visibleEnd: visibleRange.end,
+      visibleStart: currentRange.start,
+      visibleEnd: currentRange.end,
       rowIndices: minimapRowIndices,
     });
     setMinimapCurrentIndex((current) =>
@@ -1705,6 +1716,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
               onScroll={handleScroll}
               onItemSizeChanged={scheduleMinimapRefresh}
               onMetricsChange={scheduleMinimapRefresh}
+              // Keyboard scrolling only moves the focused element; F6 and clicks land here.
+              tabIndex={-1}
+              data-workspace-focus-default
               className="messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 scroll-pt-[var(--timeline-top-inset,0px)] overflow-x-hidden overscroll-y-contain [overflow-anchor:none]"
               ListHeaderComponent={listHeader}
               ListFooterComponent={timelineListFooter}
@@ -1722,7 +1736,9 @@ const ConversationTimeline = memo(function ConversationTimeline({
                 void listRef.current?.scrollToIndex({
                   index: item.rowIndex,
                   animated: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-                  viewOffset: 24 + readTimelineTopInset(listRef.current?.getScrollableNode()),
+                  viewOffset:
+                    TIMELINE_MINIMAP_TARGET_OFFSET +
+                    readTimelineTopInset(listRef.current?.getScrollableNode()),
                 });
               }}
             />
@@ -1872,6 +1888,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
                       row.kind === "event" ||
                       row.kind === "attempt-fold" ||
                       row.kind === "html-render" ||
+                      row.kind === "sent-message" ||
                       row.kind === "mcp-app"
                     ? "pb-2"
                     : "pb-4",
@@ -1931,6 +1948,7 @@ const TimelineRowContent = memo(function TimelineRowContent({ row }: { row: Time
       {row.kind === "assistant-meta" ? <AssistantMetaTimelineRow row={row} /> : null}
       {row.kind === "proposed-plan" ? <ProposedPlanTimelineRow row={row} /> : null}
       {row.kind === "html-render" ? <HtmlRenderTimelineRow row={row} /> : null}
+      {row.kind === "sent-message" ? <SentMessageTimelineRow row={row} /> : null}
       {row.kind === "mcp-app" ? <McpAppTimelineRow row={row} /> : null}
       {row.kind === "working" ? <WorkingTimelineRow row={row} /> : null}
       {row.kind === "worktree-setup" ? <WorktreeSetupTimelineRow row={row} /> : null}

@@ -234,7 +234,9 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
       }
       if (
         target instanceof HTMLElement &&
-        target.closest('[contenteditable]:not([contenteditable="false"])')
+        target.closest(
+          'select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [aria-modal="true"], [role="menu"], [role="combobox"], [data-slot$="popup"]',
+        )
       ) {
         return;
       }
@@ -356,6 +358,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                 text={activeQuestion.question}
                 cwd={cwd}
                 threadRef={threadRef}
+                lineBreaks
                 className={cn("text-foreground", questionTextAlign)}
               />
             </ComposerRequestCard.Body>
