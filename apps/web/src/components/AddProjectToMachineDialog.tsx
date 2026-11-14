@@ -18,7 +18,7 @@ import {
   cloneUrlProtocol,
 } from "@t3tools/shared/cloneUrl";
 import { ArrowRightIcon } from "lucide-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { create } from "zustand";
 
 import { type DraftId, useComposerDraftStore } from "../composerDraftStore";
@@ -57,6 +57,8 @@ import { Toggle, ToggleGroup } from "./ui/toggle-group";
 interface AddProjectToMachineRequest {
   readonly projectRef: ScopedProjectRef;
   readonly targetEnvironmentId: EnvironmentId | null;
+  /** Starts at once with the defaults and opens the dialog only if that fails. */
+  readonly auto?: boolean;
 }
 
 const useRequest = create<{ request: AddProjectToMachineRequest | null; session: number }>(() => ({
@@ -207,6 +209,16 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
       setSubmitting(false);
     }
   };
+
+  // Picked from "Run on": the defaults go as soon as the file list is in.
+  const autoStarted = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- one automatic start per request, once its inputs have loaded
+  useEffect(() => {
+    if (request.auto !== true || autoStarted.current || unavailable) return;
+    autoStarted.current = true;
+    void submit();
+  });
+  if (request.auto === true && error === null) return null;
 
   return (
     <Dialog
