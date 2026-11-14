@@ -9,7 +9,7 @@ import { Atom } from "effect/reactivity";
 
 import { connectPairing } from "../connection/onboarding";
 import { isElectron } from "../env";
-import { useEnvironmentIdentities, usePrimaryEnvironmentId } from "./environments";
+import { useEnvironmentIdentities, useEnvironments, usePrimaryEnvironmentId } from "./environments";
 import { offersLinkedEnvironmentsAtom, peerLinkEnvironment } from "./peerLinks";
 import { useEnvironmentQuery } from "./query";
 import { useAtomCommand } from "./use-atom-command";
@@ -82,4 +82,42 @@ export function useUnopenedLinkedEnvironments(): {
       (link) => canOpenLinkedEnvironment(link) && !known.has(link.environmentId),
     ),
   };
+}
+
+const NO_ENVIRONMENTS: ReadonlySet<EnvironmentId> = new Set();
+
+/**
+ * Machines a project folder can be copied between, through the environment
+ * serving this page: itself and those it links with full access, when each
+ * runs a version that copies projects.
+ */
+export function useCopyableEnvironmentIds(): ReadonlySet<EnvironmentId> {
+  const primary = usePrimaryEnvironmentId();
+  const offered = useAtomValue(
+    primary === null ? NO_LINKS_ATOM : offersLinkedEnvironmentsAtom(primary),
+  );
+  const permitted = useAtomValue(
+    primary === null ? NO_LINKS_ATOM : peerLinkEnvironment.copyProject.permissionAtom(primary),
+  );
+  const enabled = linkedRelayAvailable && primary !== null && offered && permitted;
+  const links = useEnvironmentQuery(
+    enabled ? peerLinkEnvironment.list({ environmentId: primary, input: {} }) : null,
+  );
+  const { environments } = useEnvironments();
+  if (!enabled) return NO_ENVIRONMENTS;
+  const copies = (environmentId: EnvironmentId) =>
+    environments.find((environment) => environment.environmentId === environmentId)?.serverConfig
+      ?.environment.capabilities.linkedProjectCopy === true;
+  if (!copies(primary)) return NO_ENVIRONMENTS;
+  const ids = new Set<EnvironmentId>([primary]);
+  for (const link of links.data?.links ?? []) {
+    if (
+      link.status === "reachable" &&
+      link.access === "full-access" &&
+      copies(link.environmentId)
+    ) {
+      ids.add(link.environmentId);
+    }
+  }
+  return ids;
 }

@@ -13,6 +13,8 @@ import type {
 import { create } from "zustand";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
+import { toastManager } from "../components/ui/toast";
+import { peerLinkEnvironment } from "../state/peerLinks";
 import { suggestAppAccessForRemote } from "../components/sourceControlAppAccessToast";
 import { environmentProjectClonesAtom, silenceProjectCloneToasts } from "../state/projectClones";
 import { projectEnvironment } from "../state/projects";
@@ -199,4 +201,70 @@ export async function addProjectToMachine(input: AddProjectToMachineInput): Prom
     );
   })();
   return projectId;
+}
+
+export interface CopyLocalProjectInput {
+  /** The environment serving this page, which holds the links to the other machines. */
+  readonly hostEnvironmentId: EnvironmentId;
+  readonly source: { readonly environmentId: EnvironmentId; readonly cwd: string };
+  readonly target: { readonly environmentId: EnvironmentId; readonly label: string };
+  readonly projectId: ProjectId;
+  readonly title: string;
+  readonly destinationPath: string;
+}
+
+/**
+ * Copies a project without a git remote onto another machine, folder and all,
+ * through the environment serving this page, then adds it there. Resolves with
+ * the new project once it is registered on the target.
+ */
+export async function copyLocalProjectToMachine(input: CopyLocalProjectInput): Promise<ProjectId> {
+  const toastId = toastManager.add({
+    type: "loading",
+    title: `Copying ${input.title} to ${input.target.label}…`,
+    timeout: 0,
+  });
+  try {
+    const copied = await runAtomCommand(
+      appAtomRegistry,
+      peerLinkEnvironment.copyProject,
+      {
+        environmentId: input.hostEnvironmentId,
+        input: {
+          sourceEnvironmentId: input.source.environmentId,
+          sourcePath: input.source.cwd,
+          targetEnvironmentId: input.target.environmentId,
+          targetPath: input.destinationPath,
+        },
+      },
+      { label: "Copy project to machine", reportFailure: false },
+    );
+    if (copied._tag === "Failure") throw new Error(failureMessage(copied));
+    const created = await runAtomCommand(
+      appAtomRegistry,
+      projectEnvironment.create,
+      {
+        environmentId: input.target.environmentId,
+        input: {
+          projectId: input.projectId,
+          title: input.title,
+          workspaceRoot: copied.value.targetPath,
+          createWorkspaceRootIfMissing: false,
+          defaultModelSelection: null,
+        },
+      },
+      { label: "Add copied project", reportFailure: false },
+    );
+    if (created._tag === "Failure") throw new Error(failureMessage(created));
+    if (copied.value.skipped.length > 0) {
+      toastManager.add({
+        type: "warning",
+        title: `Copied ${input.title} to ${input.target.label} without ${copied.value.skipped.length} linked ${copied.value.skipped.length === 1 ? "entry" : "entries"}`,
+        description: copied.value.skipped.slice(0, 5).join(", "),
+      });
+    }
+    return input.projectId;
+  } finally {
+    toastManager.close(toastId);
+  }
 }
