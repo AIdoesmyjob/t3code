@@ -53,13 +53,12 @@ export interface PairingConnectionInput {
   readonly expectedEnvironmentId?: EnvironmentId;
   /**
    * A linked environment reached through another environment's relay
-   * (`/linked/<id>/` on its origin), with a pairing code it issued for this
-   * browser. Used as given: the base keeps its path.
+   * (`/linked/<id>/` on its origin). The relay signs in at the peer itself, so
+   * this browser needs no sign-in there. Used as given: the base keeps its path.
    */
   readonly linkedRelay?: {
     readonly httpBaseUrl: string;
     readonly wsBaseUrl: string;
-    readonly credential: string;
   };
 }
 
@@ -101,9 +100,12 @@ export class ConnectionOnboarding extends Context.Service<
   }
 >()("@t3tools/client-runtime/connection/onboarding/ConnectionOnboarding") {}
 
+/** Sent to a linked relay, which drops it and signs in at the peer itself. */
+const LINKED_RELAY_PLACEHOLDER_TOKEN = "linked-relay";
+
 const resolvePairingTarget = Effect.fn("clientRuntime.connection.onboarding.resolvePairingTarget")(
   function* (input: PairingConnectionInput) {
-    if (input.linkedRelay !== undefined) return input.linkedRelay;
+    if (input.linkedRelay !== undefined) return { ...input.linkedRelay, credential: null };
     return yield* Effect.try({
       try: () => resolveRemotePairingTarget(input),
       catch: (cause) =>
@@ -175,6 +177,13 @@ export const preparePairingRegistration = Effect.fn(
   // An outdated server is still saved so it can be updated from this client.
   if (compatibilityError !== null && compatibilityError.serverUpdateRequired !== true) {
     return yield* compatibilityError;
+  }
+  // Through a linked relay the relay's own session is used; this token only fills the slot.
+  if (target.credential === null) {
+    return new BearerConnectionRegistration({
+      ...route,
+      credential: new BearerConnectionCredential({ token: LINKED_RELAY_PLACEHOLDER_TOKEN }),
+    });
   }
   // A key-bound session renews itself, but only on a host that can renew it. The proof is made
   // before the one-time code is sent, so a device that cannot sign keeps the code for bearer.
