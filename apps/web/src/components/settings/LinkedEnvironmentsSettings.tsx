@@ -111,7 +111,7 @@ function LinkedEnvironmentRow({
   const canPair = useAtomValue(peerLinkEnvironment.browserPairing.permissionAtom(environmentId));
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const identities = useEnvironmentIdentities();
-  const openLinked = useOpenLinkedEnvironment(environmentId);
+  const openLinked = useOpenLinkedEnvironment();
   const [opening, setOpening] = useState(false);
   // The relay checks this page's own session, so only the environment serving it relays.
   const canOpenHere =
