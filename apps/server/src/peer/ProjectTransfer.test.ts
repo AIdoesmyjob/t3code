@@ -26,7 +26,7 @@ const makeProject = Effect.gen(function* () {
   return root;
 });
 
-const collect = (stream: Stream.Stream<Uint8Array, unknown>) =>
+const collect = <E>(stream: Stream.Stream<Uint8Array, E>) =>
   Stream.runCollect(stream).pipe(
     Effect.map((chunks) => {
       const all = [...chunks];
