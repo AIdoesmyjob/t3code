@@ -13,12 +13,17 @@ import {
   linkedEnvironmentRelayPath,
   MCP_PEER_LINK_SOFTWARE_ID,
   PEER_BROWSER_PAIRING_PATH,
+  PEER_PROJECT_EXPORT_PATH,
+  PEER_PROJECT_IMPORT_PATH,
   PeerBrowserPairingResponse,
   type PeerLink,
   type PeerLinkBrowserPairingInput,
   type PeerLinkBrowserPairingResult,
+  type PeerLinkCopyProjectInput,
+  type PeerLinkCopyProjectResult,
   type PeerLinkCreateInput,
   PeerLinkError,
+  PeerProjectImportResponse,
   type PeerLinkSummary,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -29,6 +34,9 @@ import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
@@ -49,7 +57,9 @@ import { isLocalLoopbackHost, isTailnetHost } from "@t3tools/shared/hostClassifi
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import { expandHomePath } from "../os-jank.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ProjectTransfer from "./ProjectTransfer.ts";
 
 const PeerHttpApi = HttpApi.make(EnvironmentHttpApi.identifier)
   .add(EnvironmentHttpApi.groups.metadata)
@@ -147,6 +157,13 @@ export class PeerLinks extends Context.Service<
     readonly relaySession: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<{ readonly origin: string; readonly token: string }, PeerLinkError>;
+    /**
+     * Copies a project folder between this environment and machines linked here
+     * with full access, for a project without a git remote. Streams the folder.
+     */
+    readonly copyProject: (
+      input: PeerLinkCopyProjectInput,
+    ) => Effect.Effect<PeerLinkCopyProjectResult, PeerLinkError>;
     /** Drops `token` after the peer rejected it, so the next call makes a new session. */
     readonly invalidateRelaySession: (
       environmentId: EnvironmentId,
@@ -247,6 +264,8 @@ const make = Effect.gen(function* () {
   const environment = yield* ServerEnvironment.ServerEnvironment;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const isOwnLoopback = yield* LoopbackHost;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const pathService = yield* Path.Path;
   const enabled = serverSettings.getSettings.pipe(
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
@@ -706,6 +725,7 @@ const make = Effect.gen(function* () {
     let fenced = true;
     let label = link.label;
     let browserRelay = false;
+    let projectCopy = false;
     const url = yield* Effect.findFirst(link.urls, (candidate) =>
       answersAs(candidate, environmentId).pipe(
         Effect.map((found) => {
@@ -713,6 +733,8 @@ const make = Effect.gen(function* () {
           fenced = linkLimitsHold(found.value);
           label = found.value.label;
           browserRelay = offersBrowserRelay(link, found.value);
+          projectCopy =
+            link.access === "full-access" && found.value.capabilities.linkedProjectCopy === true;
           return true;
         }),
       ),
@@ -736,7 +758,7 @@ const make = Effect.gen(function* () {
       url: url.value,
       token: new TextDecoder().decode(stored.value),
     };
-    return { resolved, browserRelay };
+    return { resolved, browserRelay, projectCopy };
   });
 
   const resolve: PeerLinks["Service"]["resolve"] = (environmentId) =>
@@ -961,6 +983,153 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const withFiles = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, pathService),
+    );
+
+  const copyFailed = (message: string, cause?: unknown) =>
+    new PeerLinkError({
+      reason: "copy_failed",
+      message,
+      ...(cause === undefined ? {} : { cause }),
+    });
+
+  const resolveForCopy = Effect.fn("PeerLinks.resolveForCopy")(function* (
+    environmentId: EnvironmentId,
+  ) {
+    const { resolved, projectCopy } = yield* resolveDetailed(environmentId);
+    if (resolved.link.access !== "full-access") {
+      return yield* new PeerLinkError({
+        reason: "pairing_rejected",
+        message: `Copying a project to or from ${resolved.link.label} needs a link with full access.`,
+      });
+    }
+    if (!projectCopy) {
+      return yield* new PeerLinkError({
+        reason: "incompatible",
+        message: `${resolved.link.label} runs a T3 Code version that cannot copy projects. Update it first.`,
+      });
+    }
+    return resolved;
+  });
+
+  /** A peer's refusal, in its own words when it gave them. */
+  const peerRefusal = <E>(
+    response: { readonly status: number; readonly json: Effect.Effect<unknown, E> },
+    label: string,
+  ) =>
+    response.json.pipe(
+      Effect.map((body) =>
+        Predicate.isObject(body) && typeof body.message === "string"
+          ? body.message
+          : `${label} refused the copy (HTTP ${response.status}).`,
+      ),
+      Effect.orElseSucceed(() => `${label} refused the copy (HTTP ${response.status}).`),
+    );
+
+  const copyProject: PeerLinks["Service"]["copyProject"] = Effect.fn("PeerLinks.copyProject")(
+    function* (input) {
+      yield* requireEnabled;
+      const own = yield* environment.getEnvironmentId;
+      if (input.sourceEnvironmentId === input.targetEnvironmentId) {
+        return yield* copyFailed("The project is already on that machine.");
+      }
+
+      // Where the folder comes from: this machine's disk, or the peer's export.
+      let source: { stream: Stream.Stream<Uint8Array, unknown>; skipped: ReadonlyArray<string> };
+      if (input.sourceEnvironmentId === own) {
+        const exported = yield* withFiles(ProjectTransfer.exportProject(input.sourcePath)).pipe(
+          Effect.mapError((error) => copyFailed(error.message, error)),
+        );
+        source = { stream: exported.stream, skipped: exported.skipped };
+      } else {
+        const peer = yield* resolveForCopy(input.sourceEnvironmentId);
+        const response = yield* peerHttpClient
+          .execute(
+            HttpClientRequest.get(`${peer.url}${PEER_PROJECT_EXPORT_PATH}`).pipe(
+              HttpClientRequest.setUrlParam("path", input.sourcePath),
+              HttpClientRequest.bearerToken(peer.token),
+            ),
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new PeerLinkError({
+                  reason: "unreachable",
+                  message: `${peer.link.label} did not answer the copy request.`,
+                  cause,
+                }),
+            ),
+          );
+        if (response.status !== 200) {
+          return yield* copyFailed(yield* peerRefusal(response, peer.link.label));
+        }
+        const skippedHeader = response.headers["x-t3-project-skipped"];
+        const skipped = yield* Effect.try({
+          try: () => decodeURIComponent(skippedHeader ?? "[]"),
+          catch: (cause) => copyFailed("The skipped-file list could not be read.", cause),
+        }).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Schema.String))),
+          ),
+          Effect.orElseSucceed((): ReadonlyArray<string> => []),
+        );
+        source = { stream: response.stream, skipped };
+      }
+
+      // Where it goes: this machine's disk, or the peer's import.
+      if (input.targetEnvironmentId === own) {
+        const targetPath = yield* withFiles(
+          expandHomePath(input.targetPath).pipe(
+            Effect.map((expanded) => pathService.resolve(expanded)),
+          ),
+        );
+        const imported = yield* withFiles(
+          ProjectTransfer.importProject(targetPath, source.stream),
+        ).pipe(Effect.mapError((error) => copyFailed(error.message, error)));
+        return { ...imported, skipped: source.skipped };
+      }
+      const target = yield* resolveForCopy(input.targetEnvironmentId);
+      const response = yield* peerHttpClient
+        .execute(
+          HttpClientRequest.put(`${target.url}${PEER_PROJECT_IMPORT_PATH}`).pipe(
+            HttpClientRequest.setUrlParam("path", input.targetPath),
+            HttpClientRequest.bearerToken(target.token),
+            HttpClientRequest.bodyStream(
+              source.stream.pipe(
+                Stream.mapError((cause) => copyFailed("The project could not be read.", cause)),
+              ),
+              { contentType: "application/octet-stream" },
+            ),
+          ),
+        )
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new PeerLinkError({
+                reason: "unreachable",
+                message: `${target.link.label} did not take the copy.`,
+                cause,
+              }),
+          ),
+        );
+      if (response.status !== 200) {
+        return yield* copyFailed(yield* peerRefusal(response, target.link.label));
+      }
+      const imported = yield* response.text.pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(PeerProjectImportResponse)),
+        ),
+        Effect.mapError((cause) =>
+          copyFailed(`${target.link.label} answered the copy with something unexpected.`, cause),
+        ),
+      );
+      return { ...imported, skipped: source.skipped };
+    },
+  );
+
   const invalidateRelaySession: PeerLinks["Service"]["invalidateRelaySession"] = (
     environmentId,
     token,
@@ -1002,6 +1171,7 @@ const make = Effect.gen(function* () {
     relayOrigin,
     relaySession,
     invalidateRelaySession,
+    copyProject,
     recordOutcome,
   });
 });

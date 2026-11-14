@@ -291,6 +291,7 @@ export const make = Effect.gen(function* () {
       mcpModeLimitHeader: true,
       linkFence: true,
       linkedBrowserRelay: true,
+      linkedProjectCopy: true,
       mcpApprovalCodes: true,
       mcpHostedApproval: true,
       shellThreadFamilies: true,

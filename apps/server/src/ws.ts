@@ -2648,6 +2648,7 @@ export const layerWsRpc = (
           peerLinks.list.pipe(Effect.map((links) => ({ links }))),
         [WS_METHODS.peerLinksLink]: (input) => peerLinks.link(input),
         [WS_METHODS.peerLinksBrowserPairing]: (input) => peerLinks.browserPairing(input),
+        [WS_METHODS.peerLinksCopyProject]: (input) => peerLinks.copyProject(input),
         [WS_METHODS.peerLinksUnlink]: ({ environmentId }) =>
           peerLinks.unlink(environmentId).pipe(Effect.map((removed) => ({ removed }))),
         [WS_METHODS.peerLinksAnswerRequest]: (input) =>
