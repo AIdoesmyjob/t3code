@@ -21,7 +21,6 @@ import {
   FolderIcon,
   GitBranchIcon,
   HistoryIcon,
-  PlusIcon,
   ScaleIcon,
 } from "lucide-react";
 import {
@@ -39,7 +38,6 @@ import { useComposerDraftStore, type DraftId } from "../composerDraftStore";
 import { EnvironmentMachineIcon } from "./EnvironmentMachineIcon";
 import { useProject, useServerConfigs, useThreadShellsForProjectRefs } from "../state/entities";
 import {
-  ADD_TO_MACHINE_LABEL_CLASS,
   type EnvMode,
   type EnvironmentOption,
   readContextStripCompaction,
@@ -82,9 +80,6 @@ import {
   MenuRadioGroup,
   MenuRadioItem,
   MenuSeparator,
-  MenuSub,
-  MenuSubPopup,
-  MenuSubTrigger,
   MenuTrigger,
 } from "./ui/menu";
 import { MiddleTruncate } from "./ui/middle-truncate";
@@ -573,31 +568,22 @@ const MachineMenu = memo(function MachineMenu({
               </MenuRadioItem>
             )}
           </MenuRadioGroup>
-          {addTargets.length > 0 ? (
-            <MenuSub>
-              <MenuSubTrigger>
-                <span className={ADD_TO_MACHINE_LABEL_CLASS}>
-                  <PlusIcon className="size-3" />
-                  <span className="min-w-0 truncate">
-                    <T>Add to another machine</T>
-                  </span>
-                </span>
-              </MenuSubTrigger>
-              <MenuSubPopup {...composerFloatingLayerProps}>
-                {addTargets.map((target) => (
-                  <MenuItem
-                    key={target.environmentId}
-                    onClick={() => onAddToMachine(target.environmentId)}
-                  >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <EnvironmentMachineIcon kind={target.machine} className="size-3" />
-                      <span className="min-w-0 truncate">{target.label}</span>
-                    </span>
-                  </MenuItem>
-                ))}
-              </MenuSubPopup>
-            </MenuSub>
-          ) : null}
+          {addTargets.map((target) => (
+            <MenuItem
+              key={target.environmentId}
+              disabled={envLocked}
+              onClick={() => onAddToMachine(target.environmentId)}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                <EnvironmentMachineIcon
+                  kind={target.machine}
+                  className="size-4 shrink-0 text-muted-foreground"
+                />
+                <span className="min-w-0 flex-1 truncate">{target.label}</span>
+                <Badge variant="outline">Sets up</Badge>
+              </span>
+            </MenuItem>
+          ))}
         </MenuGroup>
       </MenuPopup>
     </Menu>
@@ -942,31 +928,19 @@ const RunContextSelector = memo(function RunContextSelector({
                   </MenuRadioItem>
                 ))}
               </MenuRadioGroup>
-              {addTargets.length > 0 ? (
-                <MenuSub>
-                  <MenuSubTrigger>
-                    <span className={ADD_TO_MACHINE_LABEL_CLASS}>
-                      <PlusIcon className="size-3" />
-                      <span className="min-w-0 truncate">
-                        <T>Add to another machine</T>
-                      </span>
-                    </span>
-                  </MenuSubTrigger>
-                  <MenuSubPopup {...(!isPanel ? composerFloatingLayerProps : {})}>
-                    {addTargets.map((target) => (
-                      <MenuItem
-                        key={target.environmentId}
-                        onClick={() => onAddToMachine(target.environmentId)}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <EnvironmentMachineIcon kind={target.machine} className="size-3" />
-                          <span className="min-w-0 truncate">{target.label}</span>
-                        </span>
-                      </MenuItem>
-                    ))}
-                  </MenuSubPopup>
-                </MenuSub>
-              ) : null}
+              {addTargets.map((target) => (
+                <MenuItem
+                  key={target.environmentId}
+                  disabled={envLocked}
+                  onClick={() => onAddToMachine(target.environmentId)}
+                >
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <EnvironmentMachineIcon kind={target.machine} className="size-3" />
+                    <span className="min-w-0 flex-1 truncate">{target.label}</span>
+                    <Badge variant="outline">Sets up</Badge>
+                  </span>
+                </MenuItem>
+              ))}
             </MenuGroup>
             {showWorkspaceGroup ? <MenuSeparator /> : null}
           </>
@@ -1297,7 +1271,8 @@ export const BranchToolbar = memo(function BranchToolbar({
 
   const addTargets = useAddProjectTargets(activeProject, availableEnvironments);
   const onAddToMachine = (targetEnvironmentId: EnvironmentId | null) =>
-    openAddProjectToMachine({ projectRef: activeProjectRef, targetEnvironmentId });
+    // Picking a machine without the project sets it up there; the dialog shows only on failure.
+    openAddProjectToMachine({ projectRef: activeProjectRef, targetEnvironmentId, auto: true });
   // A project on one machine still gets the picker when it can be added to another.
   const hasMultipleEnvironments = (availableEnvironments?.length ?? 0) > 1 || addTargets.length > 0;
   const showEnvironmentPicker = hasMultipleEnvironments && onEnvironmentChange !== undefined;
