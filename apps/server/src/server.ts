@@ -108,6 +108,7 @@ import * as DeviceService from "./device/DeviceService.ts";
 import * as DeviceHubProxy from "./device/DeviceHubProxy.ts";
 import * as LinkedEnvironmentRelay from "./peer/LinkedEnvironmentRelay.ts";
 import * as PeerBrowserPairingRoute from "./peer/PeerBrowserPairingRoute.ts";
+import * as PeerProjectTransferRoute from "./peer/PeerProjectTransferRoute.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as PreviewTunnel from "./preview/PreviewTunnel.ts";
@@ -911,6 +912,7 @@ const layerMakeRoutes = Layer.mergeAll(
     DeviceHubProxy.layer,
     LinkedEnvironmentRelay.layer,
     PeerBrowserPairingRoute.layer,
+    PeerProjectTransferRoute.layer,
     ServerBrowserStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
