@@ -20,6 +20,8 @@ import {
   PeerLink,
   PeerLinkBrowserPairingInput,
   PeerLinkBrowserPairingResult,
+  PeerLinkCopyProjectInput,
+  PeerLinkCopyProjectResult,
   PeerLinkCreateInput,
   PeerLinkError,
   PeerLinkRemoveInput,
@@ -528,6 +530,7 @@ export const WS_METHODS = {
   peerLinksUnlink: "peerLinks.unlink",
   peerLinksAnswerRequest: "peerLinks.answerRequest",
   peerLinksBrowserPairing: "peerLinks.browserPairing",
+  peerLinksCopyProject: "peerLinks.copyProject",
   serverUpdateSettings: "server.updateSettings",
   serverDiscoverSourceControl: "server.discoverSourceControl",
   serverCheckSecretSource: "server.checkSecretSource",
@@ -867,6 +870,12 @@ const WsPeerLinksUnlinkRpc = Rpc.make(WS_METHODS.peerLinksUnlink, {
 const WsPeerLinksBrowserPairingRpc = Rpc.make(WS_METHODS.peerLinksBrowserPairing, {
   payload: PeerLinkBrowserPairingInput,
   success: PeerLinkBrowserPairingResult,
+  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
+});
+
+const WsPeerLinksCopyProjectRpc = Rpc.make(WS_METHODS.peerLinksCopyProject, {
+  payload: PeerLinkCopyProjectInput,
+  success: PeerLinkCopyProjectResult,
   error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
 });
 
@@ -2162,6 +2171,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsPeerLinksUnlinkRpc,
   WsPeerLinksAnswerRequestRpc,
   WsPeerLinksBrowserPairingRpc,
+  WsPeerLinksCopyProjectRpc,
   WsServerDiscoverSourceControlRpc,
   WsServerCheckSecretSourceRpc,
   WsServerSearchAcpRegistryRpc,
