@@ -233,9 +233,13 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     setSubmitting(true);
     setError(null);
     if (isLocal) {
+      // Checked outside the try: React Compiler can't lower a throw inside try/catch.
+      if (primaryEnvironmentId === null) {
+        setError("This page is not signed in to T3 Code.");
+        setSubmitting(false);
+        return;
+      }
       try {
-        if (primaryEnvironmentId === null)
-          throw new Error("This page is not signed in to T3 Code.");
         const projectId = await copyLocalProjectToMachine({
           hostEnvironmentId: primaryEnvironmentId,
           source: { environmentId: project.environmentId, cwd: project.workspaceRoot },
