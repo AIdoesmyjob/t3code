@@ -1,7 +1,11 @@
 import {
+  AuthAccessTokenResult,
+  AuthAccessTokenType,
+  AuthEnvironmentBootstrapTokenType,
   AuthMcpClientAccess,
   AuthMcpRegistrationError,
   AuthMcpTokenError,
+  AuthTokenExchangeGrantType,
   EnvironmentHttpApi,
   EnvironmentId,
   type ExecutionEnvironmentCapabilities,
@@ -34,6 +38,7 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
@@ -67,6 +72,8 @@ const LIST_PROBE_TIMEOUT = Duration.seconds(3);
  */
 const RELAY_ORIGIN_TTL_MS = 30_000;
 const BROWSER_PAIRING_TIMEOUT = Duration.seconds(15);
+/** How the peer lists the session the browser relay uses there. */
+const RELAY_SESSION_CLIENT_LABEL = "Browser relay";
 
 /** Node's TLS verification code in a failed request's cause chain, if any. */
 export const certificateErrorCode = (error: unknown) => {
@@ -132,6 +139,19 @@ export class PeerLinks extends Context.Service<
      * same conditions as `browserPairing`. Briefly cached.
      */
     readonly relayOrigin: (environmentId: EnvironmentId) => Effect.Effect<string, PeerLinkError>;
+    /**
+     * Where the browser relay forwards to for `environmentId`, and the one session
+     * it uses there for every browser signed in here. Made from a one-time browser
+     * sign-in from the peer; kept in the secret store until the peer rejects it.
+     */
+    readonly relaySession: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<{ readonly origin: string; readonly token: string }, PeerLinkError>;
+    /** Drops `token` after the peer rejected it, so the next call makes a new session. */
+    readonly invalidateRelaySession: (
+      environmentId: EnvironmentId,
+      token: string,
+    ) => Effect.Effect<void>;
     /** Records the outcome of a call, so listing shows whether the peer answered last time. */
     readonly recordOutcome: (
       environmentId: EnvironmentId,
@@ -650,6 +670,8 @@ const make = Effect.gen(function* () {
       for (const row of deleted) {
         yield* secrets.remove(row.secret_name).pipe(Effect.catch(failStorage));
       }
+      relayTokens.delete(environmentId);
+      yield* secrets.remove(yield* relaySecretName(environmentId)).pipe(Effect.catch(failStorage));
       return deleted.length > 0;
     },
   );
@@ -775,18 +797,18 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const browserPairing: PeerLinks["Service"]["browserPairing"] = Effect.fn(
-    "PeerLinks.browserPairing",
-  )(function* (input) {
-    const resolved = yield* resolveForBrowser(input.environmentId);
+  /** A one-time browser sign-in from the peer, labelled after `clientLabel`. */
+  const requestBrowserCode = Effect.fn("PeerLinks.requestBrowserCode")(function* (
+    environmentId: EnvironmentId,
+    resolved: ResolvedPeerLink,
+    clientLabel: string | undefined,
+  ) {
     const label = resolved.link.label;
     const response = yield* peerHttpClient
       .execute(
         HttpClientRequest.post(`${resolved.url}${PEER_BROWSER_PAIRING_PATH}`).pipe(
           HttpClientRequest.bearerToken(resolved.token),
-          HttpClientRequest.bodyJsonUnsafe(
-            input.clientLabel === undefined ? {} : { clientLabel: input.clientLabel },
-          ),
+          HttpClientRequest.bodyJsonUnsafe(clientLabel === undefined ? {} : { clientLabel }),
         ),
       )
       .pipe(
@@ -813,7 +835,7 @@ const make = Effect.gen(function* () {
           : response.status === 404
             ? `${label} runs a T3 Code version that cannot be opened through this one. Update it first.`
             : (detail ?? `${label} refused the browser sign-in (HTTP ${response.status}).`);
-      yield* recordOutcome(input.environmentId, { error: message });
+      yield* recordOutcome(environmentId, { error: message });
       return yield* new PeerLinkError({
         reason: response.status === 404 ? "incompatible" : "pairing_rejected",
         message,
@@ -830,15 +852,126 @@ const make = Effect.gen(function* () {
           }),
       ),
     );
-    yield* recordOutcome(input.environmentId, { error: null });
+    yield* recordOutcome(environmentId, { error: null });
+    return body;
+  });
+
+  const browserPairing: PeerLinks["Service"]["browserPairing"] = Effect.fn(
+    "PeerLinks.browserPairing",
+  )(function* (input) {
+    const resolved = yield* resolveForBrowser(input.environmentId);
+    const body = yield* requestBrowserCode(input.environmentId, resolved, input.clientLabel);
     return {
       environmentId: input.environmentId,
-      label,
+      label: resolved.link.label,
       credential: body.credential,
       expiresAt: body.expiresAt,
       relayPath: linkedEnvironmentRelayPath(input.environmentId),
     };
   });
+
+  /** Where the relay keeps its session at one peer; environment ids are not file names. */
+  const relaySecretName = (environmentId: EnvironmentId) =>
+    digest.digest(Digest.sha256, new TextEncoder().encode(environmentId)).pipe(
+      Effect.map((hash) => `peer-relay-${Hex.encode(hash).slice(0, 32)}`),
+      Effect.orDie,
+    );
+
+  const relayTokens = new Map<EnvironmentId, string>();
+  // One session per peer: concurrent first requests must not each sign in.
+  const relayTokenLock = yield* Semaphore.make(1);
+
+  /** Redeems a one-time browser sign-in at the peer, the way a browser would. */
+  const redeemRelayCode = Effect.fn("PeerLinks.redeemRelayCode")(function* (
+    origin: string,
+    label: string,
+    credential: string,
+  ) {
+    const unreachable = (cause: unknown) =>
+      new PeerLinkError({
+        reason: "unreachable",
+        message: `${label} did not answer the relay sign-in.`,
+        cause,
+      });
+    const response = yield* peerHttpClient
+      .execute(
+        HttpClientRequest.post(`${origin}/oauth/token`).pipe(
+          HttpClientRequest.bodyUrlParams({
+            grant_type: AuthTokenExchangeGrantType,
+            subject_token: credential,
+            subject_token_type: AuthEnvironmentBootstrapTokenType,
+            requested_token_type: AuthAccessTokenType,
+          }),
+        ),
+      )
+      .pipe(Effect.timeout(BROWSER_PAIRING_TIMEOUT), Effect.mapError(unreachable));
+    if (response.status !== 200) {
+      return yield* new PeerLinkError({
+        reason: "pairing_rejected",
+        message: `${label} refused the relay sign-in (HTTP ${response.status}).`,
+      });
+    }
+    const body = yield* response.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(AuthAccessTokenResult)),
+      Effect.mapError(
+        (cause) =>
+          new PeerLinkError({
+            reason: "not_a_t3_environment",
+            message: `${label} answered the relay sign-in with something unexpected.`,
+            cause,
+          }),
+      ),
+    );
+    return body.access_token;
+  });
+
+  const relaySession: PeerLinks["Service"]["relaySession"] = Effect.fn("PeerLinks.relaySession")(
+    function* (environmentId) {
+      const origin = yield* relayOrigin(environmentId);
+      const cached = relayTokens.get(environmentId);
+      if (cached !== undefined) return { origin, token: cached };
+      return yield* relayTokenLock.withPermits(1)(
+        Effect.gen(function* () {
+          const current = relayTokens.get(environmentId);
+          if (current !== undefined) return { origin, token: current };
+          const secretName = yield* relaySecretName(environmentId);
+          const stored = yield* secrets.get(secretName).pipe(Effect.catch(failStorage));
+          if (Option.isSome(stored)) {
+            const token = new TextDecoder().decode(stored.value);
+            relayTokens.set(environmentId, token);
+            return { origin, token };
+          }
+          const resolved = yield* resolveForBrowser(environmentId);
+          const code = yield* requestBrowserCode(
+            environmentId,
+            resolved,
+            RELAY_SESSION_CLIENT_LABEL,
+          );
+          const token = yield* redeemRelayCode(resolved.url, resolved.link.label, code.credential);
+          yield* secrets
+            .set(secretName, new TextEncoder().encode(token))
+            .pipe(Effect.catch(failStorage));
+          relayTokens.set(environmentId, token);
+          yield* Effect.logInfo("Signed the browser relay in to a linked environment", {
+            link: resolved.link.label,
+          });
+          return { origin: resolved.url, token };
+        }),
+      );
+    },
+  );
+
+  const invalidateRelaySession: PeerLinks["Service"]["invalidateRelaySession"] = (
+    environmentId,
+    token,
+  ) =>
+    relayTokenLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (relayTokens.get(environmentId) !== token) return;
+        relayTokens.delete(environmentId);
+        yield* secrets.remove(yield* relaySecretName(environmentId));
+      }).pipe(Effect.ignoreCause({ log: true })),
+    );
 
   const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (environmentId, outcome) =>
     DateTime.now.pipe(
@@ -867,6 +1000,8 @@ const make = Effect.gen(function* () {
     resolve,
     browserPairing,
     relayOrigin,
+    relaySession,
+    invalidateRelaySession,
     recordOutcome,
   });
 });
