@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
-import type { EnvironmentId, PeerLinkSummary } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  linkedEnvironmentRelayPath,
+  type PeerLinkSummary,
+} from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
 import { connectPairing } from "../connection/onboarding";
@@ -29,35 +33,21 @@ function linkedRelayBaseUrls(relayPath: string) {
 }
 
 /**
- * Signs this browser in to a linked environment and adds it, the way the
- * desktop app adds a machine over SSH: the linking environment asks the peer
- * for a one-time code, and the browser redeems it through the relay.
+ * Adds a linked environment to this browser, the way the desktop app adds a
+ * machine over SSH. The linking environment's relay signs in at the peer with
+ * its own session, so every browser signed in there gets the same machines and
+ * none keeps a sign-in of its own that could go stale.
  */
-export function useOpenLinkedEnvironment(hostEnvironmentId: EnvironmentId) {
-  const pair = useAtomCommand(peerLinkEnvironment.browserPairing, {
-    label: "open linked environment",
-    reportFailure: false,
-  });
+export function useOpenLinkedEnvironment() {
   const connect = useAtomCommand(connectPairing, {
     label: "connect linked environment",
     reportFailure: false,
   });
-  return async (
-    linkedEnvironmentId: EnvironmentId,
-  ): Promise<AtomCommandResult<unknown, unknown>> => {
-    const issued = await pair({
-      environmentId: hostEnvironmentId,
-      input: { environmentId: linkedEnvironmentId },
-    });
-    if (issued._tag === "Failure") return issued;
-    return connect({
+  return (linkedEnvironmentId: EnvironmentId): Promise<AtomCommandResult<unknown, unknown>> =>
+    connect({
       expectedEnvironmentId: linkedEnvironmentId,
-      linkedRelay: {
-        ...linkedRelayBaseUrls(issued.value.relayPath),
-        credential: issued.value.credential,
-      },
+      linkedRelay: linkedRelayBaseUrls(linkedEnvironmentRelayPath(linkedEnvironmentId)),
     });
-  };
 }
 
 /** Whether `link` can be opened in this browser now. */
