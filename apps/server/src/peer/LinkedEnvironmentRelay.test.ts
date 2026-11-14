@@ -29,7 +29,7 @@ interface FixtureOptions {
     readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   } | null;
   readonly linkError?: PeerLinkError;
-  readonly upstream?: (request: Request) => Response;
+  readonly upstream?: (request: Request, authorization: string | undefined) => Response;
 }
 
 const fixture = (options: FixtureOptions = {}) => {
@@ -38,10 +38,14 @@ const fixture = (options: FixtureOptions = {}) => {
       ? { method: "browser-session-cookie" as const, scopes: [AuthAccessWriteScope] }
       : options.session;
   const forwarded: Array<{ url: string; headers: Readonly<Record<string, string>> }> = [];
+  const invalidated: Array<string> = [];
+  let sessionToken = "relay-session-1";
   const client = HttpClient.make((request) =>
     Effect.sync(() => {
       forwarded.push({ url: request.url, headers: request.headers });
-      const response = options.upstream?.(new Request(request.url)) ?? new Response("peer");
+      const response =
+        options.upstream?.(new Request(request.url), request.headers.authorization) ??
+        new Response("peer");
       return HttpClientResponse.fromWeb(request, response);
     }),
   );
@@ -62,12 +66,17 @@ const fixture = (options: FixtureOptions = {}) => {
       ),
       Layer.provideMerge(
         Layer.mock(PeerLinks.PeerLinks)({
-          relayOrigin: (environmentId) =>
+          relaySession: (environmentId) =>
             options.linkError !== undefined
               ? Effect.fail(options.linkError)
               : environmentId === PEER
-                ? Effect.succeed("http://127.0.0.1:4241")
+                ? Effect.sync(() => ({ origin: "http://127.0.0.1:4241", token: sessionToken }))
                 : Effect.fail(new PeerLinkError({ reason: "unknown_link", message: "not linked" })),
+          invalidateRelaySession: (_environmentId, token) =>
+            Effect.sync(() => {
+              invalidated.push(token);
+              sessionToken = "relay-session-2";
+            }),
         }),
       ),
       Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, client)),
@@ -75,14 +84,14 @@ const fixture = (options: FixtureOptions = {}) => {
     { disableLogger: true },
   );
   disposers.push(dispose);
-  return { handler, forwarded };
+  return { handler, forwarded, invalidated };
 };
 
 const relayed = (path: string, init?: RequestInit) =>
   new Request(`https://t3.test/linked/${PEER}${path}`, init);
 
 describe("linked environment relay", () => {
-  it("forwards the peer path with the browser's peer sign-in but none of this server's", async () => {
+  it("forwards the peer path with the relay's own session, not the browser's or this server's sign-in", async () => {
     const { handler, forwarded } = fixture({
       upstream: () =>
         new Response("ok", { headers: { "set-cookie": "t3_session=peer", "x-peer": "1" } }),
@@ -103,11 +112,34 @@ describe("linked environment relay", () => {
     expect(response.headers.get("x-peer")).toBe("1");
     expect(forwarded).toHaveLength(1);
     expect(forwarded[0]!.url).toBe("http://127.0.0.1:4241/api/auth/session?x=1");
-    expect(forwarded[0]!.headers.authorization).toBe("Bearer peer-token");
+    expect(forwarded[0]!.headers.authorization).toBe("Bearer relay-session-1");
     expect(forwarded[0]!.headers.cookie).toBeUndefined();
     expect(forwarded[0]!.headers["x-forwarded-host"]).toBeUndefined();
     expect(forwarded[0]!.headers["remote-user"]).toBeUndefined();
     expect(forwarded[0]!.headers["accept-encoding"]).toBe("identity");
+  });
+
+  it("signs in again once when the peer rejects the relay's session", async () => {
+    const { handler, forwarded, invalidated } = fixture({
+      upstream: (_request, authorization) =>
+        authorization === "Bearer relay-session-1"
+          ? new Response("gone", { status: 401 })
+          : new Response("ok"),
+    });
+    const response = await handler(
+      relayed("/api/auth/websocket-ticket/rpc", {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "2" },
+        body: "{}",
+      }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("ok");
+    expect(invalidated).toEqual(["relay-session-1"]);
+    expect(forwarded.map((request) => request.headers.authorization)).toEqual([
+      "Bearer relay-session-1",
+      "Bearer relay-session-2",
+    ]);
   });
 
   it("refuses a browser without a session cookie here", async () => {
