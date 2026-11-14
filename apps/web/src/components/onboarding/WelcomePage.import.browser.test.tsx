@@ -173,8 +173,11 @@ vi.mock(import("../../state/terminalSessions"), async (original) => {
       useAtomValue(state.runningTerminalIds as Atom.Atom<ReadonlyArray<string>>)) as never,
   };
 });
-vi.mock(import("../ThreadTerminalDrawer"), async (original) => ({
-  ...(await original()),
+// No importOriginal: the drawer imports the layout tabs, which import the terminal surfaces,
+// which import this mocked drawer back, so awaiting the original here never resolves.
+vi.mock(import("../ThreadTerminalDrawer"), () => ({
+  default: (() => null) as never,
+  terminalThemeFromApp: (() => ({})) as never,
   TerminalViewport: () => <div />,
 }));
 vi.mock(import("../../state/use-atom-command"), async (original) => ({

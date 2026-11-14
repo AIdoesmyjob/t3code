@@ -402,10 +402,8 @@ function ProjectDetail({
         projectRef,
         memberThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
       );
-      closeLayoutProject(
-        projectRef,
-        memberThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
-      );
+      // Move the open draft to a remaining checkout before the layout closes the
+      // project, which clears every draft still on it.
       const projectDraftThread = draftStore.getDraftThreadByProjectRef(projectRef);
       if (projectDraftThread && remainingMember) {
         draftStore.setDraftThreadContext(projectDraftThread.draftId, {
@@ -413,7 +411,12 @@ function ProjectDetail({
           environmentSelection: "manual",
           loadBalancedEnvironmentId: null,
         });
-      } else if (projectDraftThread) {
+      }
+      closeLayoutProject(
+        projectRef,
+        memberThreads.map((thread) => scopeThreadRef(thread.environmentId, thread.id)),
+      );
+      if (projectDraftThread && !remainingMember) {
         draftStore.clearDraftThread(projectDraftThread.draftId);
       }
       draftStore.clearProjectDraftThreadId(projectRef);

@@ -298,8 +298,9 @@ describe("ScheduledTasksSettings", () => {
       '[role="dialog"] [data-chat-provider-model-picker]:not(:disabled)',
     );
     expect(enabledPicker).toBeNull();
+    // The redesigned picker names an unlisted model by its formatted slug.
     await expect
-      .element(page.getByRole("dialog").getByRole("button", { name: "gpt-5.5", exact: true }))
+      .element(page.getByRole("dialog").getByRole("button", { name: "GPT-5.5", exact: true }))
       .toBeDisabled();
   });
 

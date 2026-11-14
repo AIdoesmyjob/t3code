@@ -4,7 +4,11 @@ import { MotionAnimation, playMotion, toDevicePixel, type MotionRun } from "./an
 
 let current: { scroller: HTMLElement; run: MotionRun } | null = null;
 
-const nativeScrollLeft = Object.getOwnPropertyDescriptor(Element.prototype, "scrollLeft");
+// No DOM when DOM-free code (the node unit tests) imports this through the pane chain.
+const nativeScrollLeft =
+  typeof Element === "undefined"
+    ? undefined
+    : Object.getOwnPropertyDescriptor(Element.prototype, "scrollLeft");
 const claimed = new WeakSet<HTMLElement>();
 
 /** Drop external scroll writes while camera motion owns the strip; editor focus otherwise follows

@@ -379,6 +379,9 @@ describe("sidebar settled pagination", () => {
     const viewport = moreButton.closest<HTMLElement>('[data-slot="scroll-area-viewport"]')!;
     viewport.style.height = "300px";
     viewport.style.maxHeight = "300px";
+    // A user scrolls down to the button with the wheel, which ends the sidebar's
+    // keep-the-open-row-in-view reveal; a programmatic scroll alone would not.
+    viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 100 }));
     moreButton.scrollIntoView({ block: "nearest" });
     const before = viewport.scrollTop;
     expect(before).toBeGreaterThan(0);

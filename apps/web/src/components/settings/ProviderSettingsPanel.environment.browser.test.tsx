@@ -375,13 +375,14 @@ describe("EnvironmentProviderSettings provider list", () => {
     await setup();
     await setProviders([provider()]);
     await using _screen = await render(panel());
-    const select = page.getByRole("button", { name: "Select Claude" });
-    await expect.element(select).toHaveAttribute("aria-pressed", "false");
-    const row = page.elementLocator(select.element().closest('[data-slot="settings-row"]')!);
+    // The redesigned list row is a provider card whose configure button marks the selection.
+    const select = page.getByRole("button", { name: "Configure Claude" });
+    await expect.element(select).not.toHaveAttribute("aria-current");
+    const row = page.elementLocator(select.element().closest('[data-slot="provider-card"]')!);
 
     await userEvent.click(row, { position: { x: 3, y: 3 } });
 
-    await expect.element(select).toHaveAttribute("aria-pressed", "true");
+    await expect.element(select).toHaveAttribute("aria-current", "true");
   });
 });
 

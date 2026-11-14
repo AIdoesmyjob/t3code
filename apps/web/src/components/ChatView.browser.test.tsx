@@ -64,6 +64,17 @@ vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({
   trackRpcRequestSent: () => {},
 }));
 
+// This file mounts the app without its stylesheet, so the inline thread details card sits in
+// the canvas flow, and each canvas measure grows it. Elements below the canvas, like the
+// stash menu, then never stop moving and can't be clicked. Tests that click them close it.
+function closeInlineThreadDetails(...threadIds: ReadonlyArray<ThreadId>) {
+  for (const threadId of threadIds) {
+    useRightPanelStore
+      .getState()
+      .setThreadPanelOpen(scopeThreadRef(ENVIRONMENT_ID, threadId), "inline", false);
+  }
+}
+
 it("imports Pi conversations through the environment RPC and can retry a changed project", async () => {
   using _environment = installFakeEnvironment([], { acceptCommands: true });
   const scan = vi.fn(() =>
@@ -156,6 +167,7 @@ it("a machine chip stashed in one thread restores with its machine in another", 
   const other = threadWithHistory("thread-stash-restore", 1);
   const asking = threadWithQuestion("thread-stash-question", "Which file should change?");
   using _environment = installFakeEnvironment([other, asking]);
+  closeInlineThreadDetails(other.id, asking.id);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
@@ -216,6 +228,7 @@ it("a question that opens while a stashed file is checked keeps a machine stash"
   const question = asking.items.at(-1);
   if (!request || !question) throw new Error("threadWithQuestion has no question");
   using _environment = installFakeEnvironment([thread]);
+  closeInlineThreadDetails(thread.id);
   __setClientSettingsForTests({
     ...DEFAULT_CLIENT_SETTINGS,
     onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
