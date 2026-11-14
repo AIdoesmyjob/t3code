@@ -34,12 +34,13 @@ import {
   COPYABLE_FILE_MAX_BYTES,
   addProjectToMachine,
   isDefaultCopiedFile,
+  copyLocalProjectToMachine,
 } from "../lib/addProjectToMachine";
 import { formatBytes } from "../lib/formatBytes";
 import { seedDraftModelSelection } from "../lib/seedDraftModelSelection";
 import { newProjectId } from "../lib/utils";
 import { readProject, subscribeProject, useProject } from "../state/entities";
-import { useEnvironments } from "../state/environments";
+import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { holdProjectCloneToasts, silenceProjectCloneToasts } from "../state/projectClones";
 import { projectEnvironment } from "../state/projects";
 import { useDebouncedValue } from "../state/queries";
@@ -107,6 +108,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
   const handleNewThread = useNewThreadHandler();
   const { draftId: routeDraftId } = useParams({ strict: false });
   const { environments } = useEnvironments();
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
   const targets = useAddProjectTargets(project, useLogicalProjectEnvironments(project, false));
   const [targetId, setTargetId] = useState(request.targetEnvironmentId);
   const target = targets.find((t) => t.environmentId === targetId) ?? targets[0] ?? null;
@@ -123,19 +125,23 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
   const remoteUrl =
     (protocol === "ssh" ? sshUrl : protocol === "https" ? httpsUrl : null) ?? sourceUrl;
 
+  // A project without a git remote travels as a copy of its folder.
+  const isLocal = sourceUrl.length === 0;
   const targetEnvironment = environments.find((env) => env.environmentId === target?.environmentId);
   const defaultPath = getCloneDestinationPath(
     getAddProjectInitialQuery(targetEnvironment?.serverConfig?.settings.addProjectBaseDirectory),
-    getCloneDirectoryPath(
-      sourceUrl,
-      targetEnvironment?.serverConfig?.settings.ghqCloneLayout === true,
-    ),
+    isLocal
+      ? (project?.workspaceRoot.split(/[/\\]/).findLast((part) => part.length > 0) ?? "project")
+      : getCloneDirectoryPath(
+          sourceUrl,
+          targetEnvironment?.serverConfig?.settings.ghqCloneLayout === true,
+        ),
   );
   const [pathOverride, setPathOverride] = useState<string | null>(null);
   const destinationPath = pathOverride ?? defaultPath;
 
   const capabilities = source?.serverConfig?.environment.capabilities;
-  const canListFiles = capabilities?.ignoredFileListing === true;
+  const canListFiles = !isLocal && capabilities?.ignoredFileListing === true;
   const canSearchFiles = canListFiles && capabilities?.ignoredFileSearch === true;
   const allIgnoredFiles = useEnvironmentQuery(
     project && canListFiles
@@ -226,6 +232,26 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     }
     setSubmitting(true);
     setError(null);
+    if (isLocal) {
+      try {
+        if (primaryEnvironmentId === null)
+          throw new Error("This page is not signed in to T3 Code.");
+        const projectId = await copyLocalProjectToMachine({
+          hostEnvironmentId: primaryEnvironmentId,
+          source: { environmentId: project.environmentId, cwd: project.workspaceRoot },
+          target: { environmentId: target.environmentId, label: target.label },
+          projectId: newProjectId(),
+          title: project.title,
+          destinationPath: destinationPath.trim(),
+        });
+        close();
+        openClonedProject(scopeProjectRef(target.environmentId, projectId));
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Could not copy the project.");
+        setSubmitting(false);
+      }
+      return;
+    }
     const requestedId = newProjectId();
     // The clone list can arrive before the start reply.
     const releaseToastHold = holdProjectCloneToasts(
@@ -288,10 +314,16 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
               <T>Add to another machine</T>
             </DialogTitle>
             <DialogDescription>
-              <T>
-                Clone <Var>{project?.repositoryIdentity?.displayName ?? project?.title}</Var> and
-                bring the local files git does not track.
-              </T>
+              {isLocal ? (
+                gt("Copy the {project} folder, which has no git remote, to the other machine.", {
+                  project: project?.title ?? "project",
+                })
+              ) : (
+                <T>
+                  Clone <Var>{project?.repositoryIdentity?.displayName ?? project?.title}</Var> and
+                  bring the local files git does not track.
+                </T>
+              )}
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
@@ -309,8 +341,8 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
                 </span>
               </div>
               <div className="flex w-28 flex-col items-center gap-0.5 text-muted-foreground text-meta">
-                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- git command name */}
-                <span>git clone</span>
+                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- command names */}
+                <span>{isLocal ? "copy folder" : "git clone"}</span>
                 <span className="flex w-full items-center">
                   <span className="h-px flex-1 bg-border" />
                   <ArrowRightIcon className="-ms-1 size-3.5" aria-hidden />
@@ -363,27 +395,29 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <Label>
-                <T>Clone over</T>
-              </Label>
-              {sshUrl && httpsUrl ? (
-                <ToggleGroup
-                  aria-label={gt("Clone protocol")}
-                  value={protocol ? [protocol] : []}
-                  onValueChange={(next) => {
-                    const value = next[0];
-                    if (value === "ssh" || value === "https") setProtocol(value);
-                  }}
-                >
-                  <Toggle value="ssh">SSH</Toggle>
-                  <Toggle value="https">HTTPS</Toggle>
-                </ToggleGroup>
-              ) : null}
-              <span className="truncate font-mono text-muted-foreground text-meta">
-                {remoteUrl}
-              </span>
-            </div>
+            {isLocal ? null : (
+              <div className="flex flex-col gap-1.5">
+                <Label>
+                  <T>Clone over</T>
+                </Label>
+                {sshUrl && httpsUrl ? (
+                  <ToggleGroup
+                    aria-label={gt("Clone protocol")}
+                    value={protocol ? [protocol] : []}
+                    onValueChange={(next) => {
+                      const value = next[0];
+                      if (value === "ssh" || value === "https") setProtocol(value);
+                    }}
+                  >
+                    <Toggle value="ssh">SSH</Toggle>
+                    <Toggle value="https">HTTPS</Toggle>
+                  </ToggleGroup>
+                ) : null}
+                <span className="truncate font-mono text-muted-foreground text-meta">
+                  {remoteUrl}
+                </span>
+              </div>
+            )}
 
             <div className="flex flex-col gap-1.5">
               <Label htmlFor={`${id}-path`}>
@@ -509,9 +543,13 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
             <Button type="submit" disabled={unavailable || submitting}>
               {submitting
                 ? gt("Starting…")
-                : target
-                  ? gt("Clone to {machine}", { machine: target.label })
-                  : gt("Clone to machine")}
+                : isLocal
+                  ? target
+                    ? gt("Copy to {machine}", { machine: target.label })
+                    : gt("Copy to machine")
+                  : target
+                    ? gt("Clone to {machine}", { machine: target.label })
+                    : gt("Clone to machine")}
             </Button>
           </DialogFooter>
         </form>
