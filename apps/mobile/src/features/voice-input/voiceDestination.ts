@@ -26,7 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Atom, AsyncResult, AtomRegistry } from "effect/reactivity";
 import { requireOptionalNativeModule } from "expo";
-import { fetch as expoFetch } from "expo/fetch";
+import { fetch as expoFetch } from "../../lib/gatewayFetch";
 
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentPresentations } from "../../state/presentation";
