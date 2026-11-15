@@ -62,8 +62,9 @@ const HubDevices = Schema.Struct({
     Schema.Struct({
       id: Schema.String,
       online: Schema.Boolean,
-      companionVersion: Schema.optional(Schema.String),
-      supportedCommands: Schema.optional(Schema.Array(Schema.String)),
+      // Older companions report no version; the hub sends null for them.
+      companionVersion: Schema.optional(Schema.NullOr(Schema.String)),
+      supportedCommands: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
     }),
   ),
 });
@@ -229,6 +230,16 @@ export const make = Effect.fn("PhoneHubDeviceHost.make")(function* (config: Phon
         hub: { origin: hub },
         devices,
         upstream,
+        // The panel polls Android fold state; a phone has none to report.
+        localResponse: (hubPath: string) =>
+          Effect.succeed(
+            hubPath === "/vendor/serve-emu/api/fold"
+              ? {
+                  status: 200,
+                  json: { ok: true, fold: { supported: false, posture: null, hingeAngle: null } },
+                }
+              : null,
+          ),
         run: () => Effect.succeed({ stdout: "", stderr: VIEW_ONLY_REASON, code: 127 }),
         helpers: { serveSimAxSettings: null, serveSimCli: null },
       };
