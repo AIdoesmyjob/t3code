@@ -517,6 +517,8 @@ export const makeWithHosts = Effect.fn("DeviceService.makeWithHosts")(function* 
       const summary = yield* host.summary;
       if (summary.kind === "local" && !summary.platforms.some((platform) => platform.available))
         return null;
+      // skofo: agents never drive a view-only host; callers fall back to viewer readiness.
+      if (summary.viewOnly) return null;
       const ready = yield* host
         .ensureAgentReady((phase, detail) =>
           setHostStatus(host.id, { status: phase, detail }).pipe(Effect.asVoid),
@@ -1487,9 +1489,15 @@ export const make = Effect.gen(function* () {
   const reconcile = Effect.fn("DeviceService.reconcile")(function* (
     configuredHosts: ReadonlyArray<DeviceHostConfig>,
   ) {
-    const next = yield* remoteSshDeviceHosts(configuredHosts).pipe(
-      Effect.provide(localTargetContext),
-    );
+    // skofo: the phone host's id is reserved while it runs; a configured host may not replace it.
+    const reserved = phoneHub ? configuredHosts.filter((host) => host.id === phoneHub.id) : [];
+    if (reserved.length > 0)
+      yield* Effect.logWarning("device host id is reserved for the phone; configuration ignored", {
+        hostId: phoneHub?.id,
+      });
+    const next = yield* remoteSshDeviceHosts(
+      configuredHosts.filter((host) => !reserved.includes(host)),
+    ).pipe(Effect.provide(localTargetContext));
     const removed = yield* service.withLifecycleLock(
       Effect.gen(function* () {
         const removed: Array<{ id: string; scope: Scope.Closeable }> = [];

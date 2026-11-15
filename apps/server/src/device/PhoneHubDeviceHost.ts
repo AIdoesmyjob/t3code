@@ -43,14 +43,18 @@ export const configFromEnvironment = (
 ): PhoneHubConfig | null => {
   const tokenFile = env.T3CODE_PHONE_HUB_TOKEN_FILE?.trim();
   if (!tokenFile) return null;
-  const hubUrl = (env.T3CODE_PHONE_HUB_URL?.trim() || DEFAULT_HUB_URL).replace(/\/$/, "");
+  let url: URL;
   try {
-    const url = new URL(hubUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url = new URL(env.T3CODE_PHONE_HUB_URL?.trim() || DEFAULT_HUB_URL);
   } catch {
     return null;
   }
-  return { hubUrl, tokenFile };
+  // The hub's controller API is loopback only; the token must never leave this machine.
+  const loopback = ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname);
+  const bare =
+    !url.username && !url.password && (url.pathname === "/" || url.pathname === "") && !url.search;
+  if (url.protocol !== "http:" || !loopback || !bare || url.hash) return null;
+  return { hubUrl: url.origin, tokenFile };
 };
 
 const HubDevices = Schema.Struct({
@@ -125,7 +129,7 @@ export const make = Effect.fn("PhoneHubDeviceHost.make")(function* (config: Phon
     const token = yield* currentToken;
     return yield* http
       .execute(HttpClientRequest.get(`${hub}${route}`).pipe(HttpClientRequest.bearerToken(token)))
-      .pipe(Effect.flatMap(HttpClientResponse.filterStatusOk), Effect.timeout(REQUEST_TIMEOUT));
+      .pipe(Effect.flatMap(HttpClientResponse.filterStatusOk));
   });
 
   const list = Effect.gen(function* () {
@@ -133,6 +137,8 @@ export const make = Effect.fn("PhoneHubDeviceHost.make")(function* (config: Phon
       Effect.flatMap((response) => response.json),
       Effect.flatMap(decodeHubDevices),
       Effect.scoped,
+      // Covers the body too: a hub that stalls after its headers must not hold up discovery.
+      Effect.timeout(REQUEST_TIMEOUT),
     );
     const devices = body.devices
       .filter((device) => DEVICE_ID.test(device.id))
@@ -169,6 +175,7 @@ export const make = Effect.fn("PhoneHubDeviceHost.make")(function* (config: Phon
       return new Uint8Array(yield* response.arrayBuffer);
     },
     Effect.scoped,
+    Effect.timeout(REQUEST_TIMEOUT),
     Effect.mapError(operationError("screenshot")),
   );
 
