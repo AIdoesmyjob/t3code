@@ -419,6 +419,7 @@ export function DevicePanel(props: {
               device={activeDevice}
               hostLabel={activeHost?.label ?? gt("Device host")}
               hostKind={activeHost?.kind}
+              viewOnly={activeHost?.viewOnly === true}
               hostDiagnostics={
                 diagnostics.find(({ hostId }) => hostId === activeDevice.hostId)?.detail
               }
@@ -821,6 +822,20 @@ function describeHostAvailability(
   const ios = host.platforms.find((platform) => platform.platform === "ios");
   const android = host.platforms.find((platform) => platform.platform === "android");
   const available = host.platforms.filter((platform) => platform.available);
+  if (host.viewOnly) {
+    return {
+      available: available.length > 0,
+      title: `${host.label}: your own phone, shown through phone-control.`,
+      details: [
+        "View only. Agents control it with the phone_command tools, which keep its blocked apps off limits.",
+        ...new Set(
+          host.platforms.flatMap((platform) =>
+            !platform.available && platform.reason ? [platform.reason] : [],
+          ),
+        ),
+      ],
+    };
+  }
   if (host.kind === "simlock") {
     return {
       available: available.length > 0,
