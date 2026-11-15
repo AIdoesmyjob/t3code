@@ -37,6 +37,7 @@ import type { DeviceControls } from "./useDeviceControls";
 export function DeviceControlsRail(props: {
   platform: DevicePlatform;
   hostKind: DeviceHostSummary["kind"] | undefined;
+  viewOnly?: boolean | undefined;
   handle: DeviceStreamHandle | null;
   view: DeviceViewControls;
   controls: DeviceControls;
@@ -229,11 +230,15 @@ export function DeviceControlsRail(props: {
               <X />
               Close device panel
             </MenuItem>
-            <MenuSeparator />
-            <MenuItem variant="destructive" onClick={props.onPowerOff}>
-              <Power />
-              {props.hostKind === "simlock" ? "Return device to the pool" : "Power off device"}
-            </MenuItem>
+            {props.viewOnly ? null : (
+              <>
+                <MenuSeparator />
+                <MenuItem variant="destructive" onClick={props.onPowerOff}>
+                  <Power />
+                  {props.hostKind === "simlock" ? "Return device to the pool" : "Power off device"}
+                </MenuItem>
+              </>
+            )}
           </MenuPopup>
         </Menu>
         <RailDivider />

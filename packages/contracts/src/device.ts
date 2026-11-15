@@ -211,6 +211,8 @@ const deviceHostSummaryFields = {
   toolInspectionError: Schema.optional(Schema.String),
   hubInstalled: Schema.Boolean,
   agentDeviceInstalled: Schema.Boolean,
+  /** skofo: a device shown but never controlled from T3 (the owner's phone via phone-control). */
+  viewOnly: Schema.optional(Schema.Boolean),
 };
 const MachineDeviceHostSummary = Schema.Struct({
   ...deviceHostSummaryFields,
