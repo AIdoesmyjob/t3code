@@ -34,6 +34,9 @@ import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
 import { filterSettingsSections } from "./settings-search";
 import { usePaneRole } from "../../components/ui/Pane";
 import { I18nProvider, useGT } from "../../i18n/I18nProvider";
+import { phoneControlNative } from "../../native/phoneControl";
+import { summarizeThisPhone, thisPhoneRowValue } from "../phone/thisPhonePresentation";
+import { usePhoneControlReading } from "../phone/usePhoneControlReading";
 
 export function SettingsRouteScreen() {
   const list = useSettingsListPlacement();
@@ -191,10 +194,11 @@ function SettingsList(props: { readonly connections: readonly SettingsListRow[] 
   const query = workspace?.state.tabs.settings.query ?? "";
   const overflowRows = useOverflowRows();
   const indexSections = useSettingsIndexSections();
+  const thisPhoneRows = useThisPhoneRows();
   const sections = filterSettingsSections(
     [
       { rows: overflowRows },
-      { title: gt("Connections"), rows: props.connections },
+      { title: gt("Connections"), rows: [...props.connections, ...thisPhoneRows] },
       ...indexSections,
     ],
     query,
@@ -327,4 +331,19 @@ function useOverflowRows(): SettingsListRow[] {
     label: WORKSPACE_TAB_LABELS[tab],
     onPress: () => selectTab(tab),
   }));
+}
+
+/** skofo Android builds: the phone-control companion on this phone. */
+function useThisPhoneRows(): SettingsListRow[] {
+  const { reading, nowMillis } = usePhoneControlReading();
+  if (!phoneControlNative) return [];
+  return [
+    {
+      id: "SettingsThisPhone",
+      icon: "iphone",
+      label: "This phone",
+      value: thisPhoneRowValue(summarizeThisPhone(reading, nowMillis)),
+      target: "SettingsThisPhone",
+    },
+  ];
 }
