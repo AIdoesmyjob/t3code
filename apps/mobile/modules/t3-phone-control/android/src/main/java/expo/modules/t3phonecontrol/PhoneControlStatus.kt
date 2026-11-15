@@ -6,6 +6,12 @@ object PhoneControlStatus {
   const val AUTHORITY = "ca.skofo.phonecontrol.status"
   const val STATE_PATH = "state"
 
+  /** SHA-256 of the owner's phone-control release signing certificate. */
+  const val COMPANION_CERT_SHA256 = "f85ee546a3f335aa3c86965260ce7ad0e0ef74f821a6e1dfc15146d086ec0489"
+
+  fun hexToBytes(hex: String): ByteArray =
+    ByteArray(hex.length / 2) { index -> hex.substring(index * 2, index * 2 + 2).toInt(16).toByte() }
+
   private val booleanKeys =
     listOf("hubConnected", "paused", "agentActive", "viewing", "accessibilityEnabled")
   private val longKeys =

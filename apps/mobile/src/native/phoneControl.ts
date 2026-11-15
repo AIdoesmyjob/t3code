@@ -1,4 +1,5 @@
 import { requireOptionalNativeModule } from "expo";
+import Constants from "expo-constants";
 
 export type PhoneControlMode = "unattended" | "manual" | "off";
 
@@ -19,7 +20,7 @@ export interface PhoneControlStatus {
 export interface PhoneControlReading {
   /** The genuine companion owns the status provider. */
   readonly installed: boolean;
-  /** It answered this app (it refuses apps without the Skofo T3 signature). */
+  /** It answered: it is the owner-signed companion and it accepts this app's signature. */
   readonly reachable: boolean;
   readonly status?: PhoneControlStatus;
 }
@@ -30,15 +31,17 @@ interface Subscription {
 
 interface T3PhoneControlModule {
   takeAssistRequest(): { readonly text: string; readonly atMillis: number } | null;
-  isDefaultAssistant(): boolean;
+  isDefaultAssistant(): Promise<boolean>;
   openAssistantSettings(): boolean;
   moveToBackground(): boolean;
-  status(): PhoneControlReading;
-  pause(): PhoneControlReading;
+  status(): Promise<PhoneControlReading>;
+  pause(): Promise<PhoneControlReading>;
   openCompanion(): boolean;
   addListener(event: "onAssist" | "onStatusChange", listener: () => void): Subscription;
 }
 
-/** Android skofo builds only; null elsewhere. */
+/** Android skofo builds only; null elsewhere, including the store variants. */
 export const phoneControlNative =
-  requireOptionalNativeModule<T3PhoneControlModule>("T3PhoneControl");
+  Constants.expoConfig?.extra?.appVariant === "skofo"
+    ? requireOptionalNativeModule<T3PhoneControlModule>("T3PhoneControl")
+    : null;
