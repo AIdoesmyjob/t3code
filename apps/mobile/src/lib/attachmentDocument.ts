@@ -9,7 +9,7 @@ import { filePreviewDelimiter, parseDelimitedPreview } from "@t3tools/shared/del
 import type { AssetResource, EnvironmentId } from "@t3tools/contracts";
 import { readFilePreviewResponse } from "@t3tools/client-runtime/file-preview";
 import { filePreviewKind, FILE_TEXT_PREVIEW_MAX_BYTES } from "@t3tools/shared/filePreview";
-import { fetch } from "expo/fetch";
+import { fetch } from "./gatewayFetch";
 import { File } from "expo-file-system";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
