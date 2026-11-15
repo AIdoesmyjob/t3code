@@ -318,6 +318,7 @@ interface TerminalSessionState {
   lastCommandExitCode: number | null;
   runtimeEnv: Record<string, string> | null;
   stopOnSettle: boolean;
+  startupError: string | null;
 }
 
 interface TerminalGrid {
@@ -419,6 +420,7 @@ function snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     sequence: session.eventSequence,
     cols: session.cols,
     rows: session.rows,
+    ...(session.startupError === null ? {} : { error: session.startupError }),
   };
 }
 
@@ -2738,6 +2740,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const startingAt = yield* nowIso;
     yield* modifyManagerState((state) => {
       session.status = "starting";
+      session.startupError = null;
       session.shell = null;
       session.cwd = input.cwd;
       session.worktreePath = input.worktreePath ?? null;
@@ -2855,6 +2858,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
     {
       const error = startResult.failure;
+      const message = error.message;
       if (ptyProcess) {
         yield* startKillEscalation(ptyProcess, session.threadId, session.terminalId);
       }
@@ -2862,6 +2866,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       yield* modifyManagerState((state) => {
         cleanupProcessHandles(session);
         session.status = "error";
+        session.startupError = message;
         session.pid = null;
         session.process = null;
         session.hasRunningSubprocess = false;
@@ -2880,7 +2885,6 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 
       yield* evictInactiveSessionsIfNeeded();
 
-      const message = error.message;
       yield* publishEvent({
         type: "error",
         threadId: session.threadId,
@@ -3203,6 +3207,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         lastCommandExitCode: null,
         runtimeEnv: normalizedRuntimeEnv(input.env),
         stopOnSettle: input.stopOnSettle ?? false,
+        startupError: null,
       };
 
       const createdSession = session;
