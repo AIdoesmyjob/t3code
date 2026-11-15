@@ -74,6 +74,26 @@ describe("PhoneHubDeviceHost", () => {
         T3CODE_PHONE_HUB_URL: "file:///etc/passwd",
       }),
     ).toBeNull();
+    // Only a bare loopback http origin: the controller token must never leave this machine.
+    for (const hubUrl of [
+      "http://hub.example:8091",
+      "https://127.0.0.1:8091",
+      "http://127.0.0.1:8091/arbitrary-route?ignored=",
+      "http://user:pw@127.0.0.1:8091",
+      "http://127.0.0.1:8091#x",
+    ])
+      expect(
+        PhoneHubDeviceHost.configFromEnvironment({
+          T3CODE_PHONE_HUB_TOKEN_FILE: "/t",
+          T3CODE_PHONE_HUB_URL: hubUrl,
+        }),
+      ).toBeNull();
+    expect(
+      PhoneHubDeviceHost.configFromEnvironment({
+        T3CODE_PHONE_HUB_TOKEN_FILE: "/t",
+        T3CODE_PHONE_HUB_URL: "http://localhost:18765/",
+      })?.hubUrl,
+    ).toBe("http://localhost:18765");
   });
 
   it("maps only the serve-sim stream and input paths, for well-formed ids", () => {
