@@ -21,7 +21,7 @@ async function loadConfig(variant: string | undefined) {
 
 it.each(["prod", ""])("rejects APP_VARIANT=%j before selecting production IDs", async (value) => {
   await expect(loadConfig(value)).rejects.toThrow(
-    "APP_VARIANT must be development, preview, or production.",
+    "APP_VARIANT must be development, preview, production, or skofo.",
   );
 });
 
@@ -44,4 +44,14 @@ it.each([
     { scheme: "https", host, pathPrefix: "/threads/" },
   ]);
   expect(assetLinks.map((link) => link.target.package_name)).toContain(identifier);
+});
+
+it("builds the self-hosted skofo variant beside the store app, without upstream links or OTA", async () => {
+  const config = await loadConfig("skofo");
+  expect(config.name).toBe("Skofo T3");
+  expect(config.scheme).toBe("skofo-t3");
+  expect(config.android?.package).toBe("ca.skofo.t3");
+  expect(config.android?.intentFilters).toEqual([]);
+  expect(config.updates?.enabled).toBe(false);
+  expect(config.extra?.appVariant).toBe("skofo");
 });
