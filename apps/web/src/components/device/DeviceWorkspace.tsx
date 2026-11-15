@@ -23,6 +23,8 @@ export function DeviceWorkspace(props: {
   device: DeviceSummary;
   hostLabel: string;
   hostKind: DeviceHostSummary["kind"] | undefined;
+  /** skofo: shown, never controlled from here (the owner's phone). */
+  viewOnly?: boolean;
   hostDiagnostics: string | undefined;
   visible: boolean;
   onFloat?: (() => void) | undefined;
@@ -100,12 +102,14 @@ export function DeviceWorkspace(props: {
             hostId={props.device.hostId}
             visible={props.visible}
             serveSimOnly={props.hostKind === "simlock"}
+            viewOnly={props.viewOnly}
             axOverlay={axOverlay}
             allowPhoneView
             renderControls={(view) => (
               <DeviceControlsRail
                 platform={props.device.platform}
                 hostKind={props.hostKind}
+                viewOnly={props.viewOnly}
                 handle={view.handle}
                 view={view}
                 controls={controls}
