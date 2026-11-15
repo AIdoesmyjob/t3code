@@ -80,6 +80,7 @@ import * as DeviceHost from "./DeviceHost.ts";
 import * as SshDeviceHost from "./SshDeviceHost.ts";
 import * as EasDeviceHost from "./EasDeviceHost.ts";
 import * as SimlockDeviceHost from "./SimlockDeviceHost.ts";
+import * as PhoneHubDeviceHost from "./PhoneHubDeviceHost.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { makeExpoApi } from "./ExpoApi.ts";
 import * as Exit from "effect/Exit";
@@ -1450,6 +1451,16 @@ export const make = Effect.gen(function* () {
     yield* Effect.context<Effect.Services<ReturnType<typeof EasDeviceHost.make>>>();
   const simlockContext =
     yield* Effect.context<Effect.Services<ReturnType<typeof SimlockDeviceHost.make>>>();
+  // skofo: the owner's phone, view only, when the server is given the phone-control hub token.
+  const phoneHub = yield* Effect.gen(function* () {
+    const environment = yield* HostProcess.Environment;
+    const phoneHubConfig = PhoneHubDeviceHost.configFromEnvironment(environment);
+    return phoneHubConfig ? yield* PhoneHubDeviceHost.make(phoneHubConfig) : null;
+  }).pipe(Effect.provide(simlockContext));
+  if (phoneHub) {
+    hosts.set(phoneHub.id, phoneHub);
+    yield* service.withLifecycleLock(service.refreshHosts);
+  }
   const simlockAgentCli = Effect.fn("DeviceService.simlockAgentCli")(
     function* (hostId: string) {
       const nodePath = yield* resolveNodeExecutable("Device automation");
