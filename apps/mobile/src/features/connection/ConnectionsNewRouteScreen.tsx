@@ -25,6 +25,7 @@ import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { AppText as Text, AppTextInput, type AppTextInputProps } from "../../components/ui/AppText";
 import { FrostedCutout } from "../../components/ui/FrostedCutout";
 import { buildPairingUrl, extractPairingUrlFromQrPayload, parsePairingUrl } from "./pairing";
+import { ensureGatewaySession, gatewayOriginOf } from "../gateway/gatewaySession";
 import { useRemoteConnections } from "../../state/use-remote-environment-registry";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
@@ -179,6 +180,19 @@ function PairingForm({
     setSubmitError(null);
     setIsSubmitting(true);
     onChangeConnectionPairingUrl(pairingUrl);
+    // skofo: a sign-in gateway in front of the server must let us through before pairing.
+    if (
+      !(await ensureGatewaySession(pairingUrl, (origin) =>
+        navigation.navigate("GatewaySignIn", { origin }),
+      ))
+    ) {
+      const origin = gatewayOriginOf(pairingUrl);
+      setIsSubmitting(false);
+      setSubmitError(
+        `Sign in to ${origin === null ? "the server" : new URL(origin).host} to pair.`,
+      );
+      return;
+    }
     const outcome = await onConnectPress(pairingUrl, routeFor);
     setIsSubmitting(false);
     setSubmitError(outcome.error);
