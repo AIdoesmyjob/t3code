@@ -72,7 +72,7 @@ export function GatewaySessionWatcher() {
       if (state === "active") {
         asked.current.clear();
         void check();
-        interval ??= setInterval(() => void check(), RECHECK_INTERVAL_MS);
+        if (interval === null) interval = setInterval(() => void check(), RECHECK_INTERVAL_MS);
       } else if (interval !== null) {
         clearInterval(interval);
         interval = null;
