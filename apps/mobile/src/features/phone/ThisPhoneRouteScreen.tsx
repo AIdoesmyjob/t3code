@@ -19,8 +19,10 @@ import { usePhoneControlReading } from "./usePhoneControlReading";
  */
 export function ThisPhoneRouteScreen() {
   const insets = useSafeAreaInsets();
-  const { reading, nowMillis, isAssistant, refresh } = usePhoneControlReading();
-  const summary = summarizeThisPhone(reading, nowMillis);
+  const { reading, nowMillis, isAssistant, loaded, refresh } = usePhoneControlReading();
+  const summary = loaded
+    ? summarizeThisPhone(reading, nowMillis)
+    : ({ kind: "missing", message: "Checking phone control…" } as const);
 
   const confirmStop = () => {
     Dialog.confirm({
@@ -30,14 +32,17 @@ export function ThisPhoneRouteScreen() {
       confirmText: "Stop",
       destructive: true,
       onConfirm: () => {
-        const result = phoneControlNative?.pause();
-        refresh();
-        if (!result?.reachable) {
+        const native = phoneControlNative;
+        if (!native) return;
+        const notAnswered = () =>
           Dialog.alert(
             "Phone control didn't answer",
             "Open phone-control and press Pause there, or use Stop on its pill.",
           );
-        }
+        void native.pause().then((result) => {
+          refresh();
+          if (!result.reachable) notAnswered();
+        }, notAnswered);
       },
     });
   };

@@ -7,7 +7,9 @@ const { applySkofoPhoneManifest } = withAndroidSkofoPhone as unknown as {
 };
 
 type Node = { $: Record<string, string>; [child: string]: unknown };
-type Manifest = { manifest: { application: Node[]; queries?: { package?: Node[] }[] } };
+type Manifest = {
+  manifest: { application: Node[]; queries?: { package?: Node[]; intent?: unknown[] }[] };
+};
 
 function manifest(): Manifest {
   return {
@@ -48,6 +50,10 @@ describe("withAndroidSkofoPhone", () => {
     const result = applySkofoPhoneManifest(applySkofoPhoneManifest(manifest()));
     expect(assistActivities(result)).toHaveLength(1);
     expect(result.manifest.queries?.[0]?.package).toHaveLength(1);
+    expect(JSON.stringify(result.manifest.queries)).toContain(
+      "android.speech.action.RECOGNIZE_SPEECH",
+    );
+    expect(result.manifest.queries?.[0]?.intent).toHaveLength(1);
     expect(result.manifest.application[0]!.activity).toHaveLength(2);
   });
 });

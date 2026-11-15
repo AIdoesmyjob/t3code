@@ -325,14 +325,14 @@ function useOverflowRows(): SettingsListRow[] {
 
 /** skofo Android builds: the phone-control companion on this phone. */
 function useThisPhoneRows(): SettingsListRow[] {
-  const { reading, nowMillis } = usePhoneControlReading();
+  const { reading, nowMillis, loaded } = usePhoneControlReading();
   if (!phoneControlNative) return [];
   return [
     {
       id: "SettingsThisPhone",
       icon: "iphone",
       label: "This phone",
-      value: thisPhoneRowValue(summarizeThisPhone(reading, nowMillis)),
+      value: loaded ? thisPhoneRowValue(summarizeThisPhone(reading, nowMillis)) : "Checking",
       target: "SettingsThisPhone",
     },
   ];

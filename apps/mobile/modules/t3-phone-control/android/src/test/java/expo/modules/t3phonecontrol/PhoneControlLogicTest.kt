@@ -47,4 +47,12 @@ class PhoneControlLogicTest {
     assertEquals("none", status["lastRemoteCommandKind"])
     assertEquals("unknown", status["companionVersion"])
   }
+
+  @Test
+  fun companionPinDecodesToTheReleaseDigest() {
+    val bytes = PhoneControlStatus.hexToBytes(PhoneControlStatus.COMPANION_CERT_SHA256)
+    assertEquals(32, bytes.size)
+    assertEquals(0xf8.toByte(), bytes[0])
+    assertEquals(0x89.toByte(), bytes[31])
+  }
 }

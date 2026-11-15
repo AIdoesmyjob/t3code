@@ -50,7 +50,7 @@ export function summarizeThisPhone(
     return {
       kind: "refused",
       message:
-        "Phone control didn't answer this app. It needs phone-control 0.3 or later, and this app must be the Skofo T3 release build.",
+        "Phone control didn't answer this app. It must be the owner-signed phone-control 0.3 or later, and this app the Skofo T3 release build.",
     };
   }
   const status = reading.status;
