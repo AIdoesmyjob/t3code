@@ -4,6 +4,7 @@ import android.app.role.RoleManager
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.database.ContentObserver
 import android.net.Uri
 import android.os.Build
@@ -30,7 +31,7 @@ class T3PhoneControlModule : Module() {
       AssistHandoff.take()?.let { mapOf("text" to it.text, "atMillis" to it.atMillis) }
     }
 
-    Function("isDefaultAssistant") {
+    AsyncFunction("isDefaultAssistant") {
       Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
         context.getSystemService(RoleManager::class.java)?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true
     }
@@ -45,12 +46,18 @@ class T3PhoneControlModule : Module() {
 
     Function("moveToBackground") { appContext.currentActivity?.moveTaskToBack(true) ?: false }
 
-    Function("status") { readStatus() }
+    // Provider calls are IPC into another app; keep them off the JavaScript thread.
+    AsyncFunction("status") { readStatus() }
 
-    Function("pause") { callProvider("pause") }
+    AsyncFunction("pause") { callProvider("pause") }
 
     Function("openCompanion") {
-      val launch = context.packageManager.getLaunchIntentForPackage(PhoneControlStatus.COMPANION_PACKAGE)
+      val launch =
+        if (companionIsGenuine()) {
+          context.packageManager.getLaunchIntentForPackage(PhoneControlStatus.COMPANION_PACKAGE)
+        } else {
+          null
+        }
       launch != null && openFirst(launch)
     }
 
@@ -65,13 +72,12 @@ class T3PhoneControlModule : Module() {
   }
 
   /** `installed:false` without the genuine companion; `reachable:false` when it refused us. */
-  private fun readStatus(): Map<String, Any?> {
-    if (!companionOwnsProvider()) return mapOf("installed" to false, "reachable" to false)
-    return callProvider("status")
-  }
+  private fun readStatus(): Map<String, Any?> = callProvider("status")
 
   private fun callProvider(method: String): Map<String, Any?> {
-    if (!companionOwnsProvider()) return mapOf("installed" to false, "reachable" to false)
+    if (!providerIsCompanions()) return mapOf("installed" to false, "reachable" to false)
+    // A companion not signed with the owner's key gets no calls and no Stop.
+    if (!companionIsGenuine()) return mapOf("installed" to true, "reachable" to false)
     val bundle =
       try {
         context.contentResolver.call(Uri.parse("content://${PhoneControlStatus.AUTHORITY}"), method, null, null)
@@ -88,10 +94,23 @@ class T3PhoneControlModule : Module() {
     return mapOf("installed" to true, "reachable" to true, "status" to status)
   }
 
-  private fun companionOwnsProvider(): Boolean =
+  private fun providerIsCompanions(): Boolean =
     try {
       context.packageManager.resolveContentProvider(PhoneControlStatus.AUTHORITY, 0)?.packageName ==
         PhoneControlStatus.COMPANION_PACKAGE
+    } catch (_: RuntimeException) {
+      false
+    }
+
+  /** The companion is signed with the owner's release key (checkable from Android 9). */
+  private fun companionIsGenuine(): Boolean =
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+    try {
+      context.packageManager.hasSigningCertificate(
+        PhoneControlStatus.COMPANION_PACKAGE,
+        PhoneControlStatus.hexToBytes(PhoneControlStatus.COMPANION_CERT_SHA256),
+        PackageManager.CERT_INPUT_SHA256,
+      )
     } catch (_: RuntimeException) {
       false
     }

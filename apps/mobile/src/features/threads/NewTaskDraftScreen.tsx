@@ -716,7 +716,7 @@ export function NewTaskDraftScreen(props: {
       deferAttachmentCleanup: true,
     });
     scheduleUnusedComposerAttachmentCleanup(draftSnapshot.attachments);
-    if (isAssistShareId(props.incomingShareId)) leaveAfterAssistSend();
+    if (isAssistShareId(props.incomingShareId)) leaveAfterAssistSend(message);
     return message.messageId;
   }
 
