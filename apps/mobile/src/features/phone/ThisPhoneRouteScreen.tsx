@@ -4,9 +4,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Dialog from "../../components/ui/Dialog";
 import { AppText as Text } from "../../components/ui/AppText";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { phoneControlNative } from "../../native/phoneControl";
-import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { summarizeThisPhone } from "./thisPhonePresentation";
@@ -19,9 +19,8 @@ import { usePhoneControlReading } from "./usePhoneControlReading";
  */
 export function ThisPhoneRouteScreen() {
   const insets = useSafeAreaInsets();
-  const { reading, nowMillis, refresh } = usePhoneControlReading();
+  const { reading, nowMillis, isAssistant, refresh } = usePhoneControlReading();
   const summary = summarizeThisPhone(reading, nowMillis);
-  const isAssistant = phoneControlNative?.isDefaultAssistant() ?? false;
 
   const confirmStop = () => {
     Dialog.confirm({
@@ -62,7 +61,12 @@ export function ThisPhoneRouteScreen() {
         >
           {summary.kind === "ready" ? (
             summary.rows.map((row) => (
-              <SettingsRow key={row.id} icon={row.icon} label={row.label} value={row.value} />
+              <ListRowLayout
+                key={row.id}
+                icon={row.icon}
+                label={row.label}
+                description={row.value}
+              />
             ))
           ) : (
             <View className="px-4 py-4">
