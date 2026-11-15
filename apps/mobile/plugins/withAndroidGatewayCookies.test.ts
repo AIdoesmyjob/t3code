@@ -52,6 +52,7 @@ describe("withAndroidGatewayCookies", () => {
     const source = plugin.factorySource("ca.skofo.t3");
     expect(source).toContain(".addInterceptor(GatewayAssetRedirectInterceptor)");
     expect(source).toContain('contains("/api/assets/")');
+    expect(source).toContain('contains("text/html", ignoreCase = true)');
     expect(source).toContain(".code(401)");
   });
 
