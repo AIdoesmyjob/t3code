@@ -125,6 +125,14 @@ export class IncomingShareInbox {
     });
   }
 
+  /** Adds a draft the app made itself (the long-press-power assistant), never native payloads. */
+  add(draft: IncomingShareDraft): Promise<ReadonlyArray<IncomingShareDraft>> {
+    return this.runExclusive(async () => {
+      await this.dependencies.writeDraft(draft);
+      return sortAndDedupeIncomingShares(await this.dependencies.loadDrafts());
+    });
+  }
+
   consume(shareId: string): Promise<ReadonlyArray<IncomingShareDraft>> {
     return this.runExclusive(async () => {
       // Identical content can be shared intentionally; only stable payload-derived ids identify retries.
