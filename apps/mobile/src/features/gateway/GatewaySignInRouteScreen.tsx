@@ -6,11 +6,16 @@ import { WebView, type WebViewNavigation } from "react-native-webview";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
 import { AppText as Text } from "../../components/ui/AppText";
-import { GATEWAY_PROBE_PATH, probeGateway, settleGatewaySignIn } from "./gatewaySession";
+import {
+  GATEWAY_PROBE_PATH,
+  isGatewaySignInNavigationAllowed,
+  probeGateway,
+  settleGatewaySignIn,
+} from "./gatewaySession";
 
-function originOf(url: string): string | null {
+function urlOf(url: string): URL | null {
   try {
-    return new URL(url).origin;
+    return new URL(url);
   } catch {
     return null;
   }
@@ -18,18 +23,23 @@ function originOf(url: string): string | null {
 
 /**
  * Shows the gateway's own sign-in page. Its session cookie lands in the WebView cookie store,
- * which the app's fetch and WebSocket share on Android. Done once the WebView is back on the
+ * which the app's HTTP clients share on Android. Done once the WebView is back on the
  * environment's origin and a probe gets through.
  */
 export function GatewaySignInRouteScreen({
   route,
 }: StaticScreenProps<{ readonly origin: string }>) {
+  // A new origin reuses this route; remounting settles the previous origin's waiter.
+  return <GatewaySignIn key={route.params.origin} origin={route.params.origin} />;
+}
+
+function GatewaySignIn({ origin }: { readonly origin: string }) {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
-  const origin = route.params.origin;
-  const host = originOf(origin) === null ? origin : new URL(origin).host;
+  const host = urlOf(origin)?.host ?? origin;
   const settled = useRef(false);
   const [checking, setChecking] = useState(false);
+  const [pageHost, setPageHost] = useState(host);
 
   const finish = (signedIn: boolean) => {
     if (settled.current) return;
@@ -51,9 +61,11 @@ export function GatewaySignInRouteScreen({
   );
 
   const handleNavigationStateChange = async (state: WebViewNavigation) => {
+    const page = urlOf(state.url);
+    if (page !== null) setPageHost(page.host);
     if (state.loading || settled.current) return;
     // Still on the portal (or between its pages).
-    if (originOf(state.url) !== origin) return;
+    if (page?.origin !== origin) return;
     setChecking(true);
     const probe = await probeGateway(origin);
     setChecking(false);
@@ -76,13 +88,19 @@ export function GatewaySignInRouteScreen({
           </Pressable>
         </View>
         <Text className="text-sm text-foreground-muted">
-          This server sits behind a sign-in page. Sign in once and the app keeps the session until
-          it expires.
+          {pageHost === host
+            ? "This server sits behind a sign-in page. Sign in once and the app keeps the session until it expires."
+            : `Signing in at ${pageHost}. Sign in once and the app keeps the session until it expires.`}
         </Text>
       </View>
       <View className="flex-1">
         <WebView
           source={{ uri: `${origin}${GATEWAY_PROBE_PATH}` }}
+          // Credentials are typed here: stay on HTTPS pages of this server's own site.
+          onShouldStartLoadWithRequest={(request) =>
+            isGatewaySignInNavigationAllowed(origin, request.url)
+          }
+          originWhitelist={["https://*"]}
           onNavigationStateChange={(state) => {
             void handleNavigationStateChange(state);
           }}

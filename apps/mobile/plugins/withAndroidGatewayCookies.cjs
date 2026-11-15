@@ -61,16 +61,18 @@ class ${FACTORY_CLASS} : OkHttpClientFactory {
 }
 
 /**
- * When the gateway session has expired, an asset request is redirected to the sign-in page and
- * would come back as HTML with status 200, which Glide then caches under the image's key. Turn
+ * When the gateway session has expired, an asset request ends on the sign-in page (another host,
+ * or HTML on this one) with status 200, which Glide would then cache under the image's key. Turn
  * that into a 401 so nothing is cached and the image loads once the user signs in again.
  */
 private object GatewayAssetRedirectInterceptor : Interceptor {
   override fun intercept(chain: Interceptor.Chain): Response {
     val request = chain.request()
     val response = chain.proceed(request)
+    if (!request.url.encodedPath.contains("/api/assets/")) return response
     val redirectedAway = response.request.url.host != request.url.host
-    if (!redirectedAway || !request.url.encodedPath.contains("/api/assets/")) return response
+    val html = response.header("Content-Type")?.contains("text/html", ignoreCase = true) == true
+    if (!redirectedAway && !html) return response
     response.close()
     return Response.Builder()
       .request(request)
@@ -100,13 +102,19 @@ function registerFactory(contents) {
   return contents.slice(0, end) + REGISTRATION + contents.slice(end);
 }
 
+// expo-app-metrics comes in through expo itself, so look beside expo as well as in the app.
 function hasPackage(name, projectRoot) {
+  const roots = [projectRoot];
   try {
-    require.resolve(`${name}/package.json`, { paths: [projectRoot] });
-    return true;
-  } catch {
-    return false;
+    roots.push(path.dirname(require.resolve("expo/package.json", { paths: [projectRoot] })));
+  } catch {}
+  for (const root of roots) {
+    try {
+      require.resolve(`${name}/package.json`, { paths: [root] });
+      return true;
+    } catch {}
   }
+  return false;
 }
 
 module.exports = function withAndroidGatewayCookies(config) {
