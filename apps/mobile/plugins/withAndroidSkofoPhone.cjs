@@ -5,6 +5,7 @@ const { AndroidConfig, withAndroidManifest } = require("expo/config-plugins");
 
 const ASSIST_ACTIVITY = "expo.modules.t3phonecontrol.AssistActivity";
 const COMPANION_PACKAGE = "ca.skofo.phonecontrol";
+const RECOGNIZE_SPEECH = "android.speech.action.RECOGNIZE_SPEECH";
 
 function applySkofoPhoneManifest(manifest) {
   const application = AndroidConfig.Manifest.getMainApplicationOrThrow(manifest);
@@ -32,6 +33,11 @@ function applySkofoPhoneManifest(manifest) {
   const packages = (query.package ??= []);
   if (!packages.some((entry) => entry.$["android:name"] === COMPANION_PACKAGE)) {
     packages.push({ $: { "android:name": COMPANION_PACKAGE } });
+  }
+  // The assistant looks for a speech recognizer that came with the phone.
+  const intents = (query.intent ??= []);
+  if (!intents.some((entry) => entry.action?.[0]?.$["android:name"] === RECOGNIZE_SPEECH)) {
+    intents.push({ action: [{ $: { "android:name": RECOGNIZE_SPEECH } }] });
   }
   return manifest;
 }
