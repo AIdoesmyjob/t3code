@@ -80,6 +80,7 @@ import {
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
+import { GatewaySignInRouteScreen } from "./features/gateway/GatewaySignInRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
 import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
@@ -866,6 +867,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: ConnectionsNewRouteScreen,
       linking: "connections/new",
       options: sheetRoute({ detent: 0.55, maxDetent: 0.7 }),
+    }),
+    // skofo: the sign-in page of a gateway (Authelia) in front of an environment.
+    GatewaySignIn: createNativeStackScreen({
+      screen: GatewaySignInRouteScreen,
+      options: pageRoute({ header: "none", title: "Sign in" }),
     }),
     NotFound: createNativeStackScreen({
       screen: NotFoundScreen,
