@@ -174,6 +174,44 @@ describe("device hub proxy", () => {
     },
   );
 
+  it("lets a read-only viewer open a view-only host's isolated input socket", async () => {
+    const { handler } = fixture([AuthOrchestrationReadScope], false, undefined, (hubPath) =>
+      Effect.succeed(
+        hubPath === "/vendor/serve-sim/helper/ws"
+          ? {
+              url: "http://phone-hub.test/api/devices/phone/serve-sim/ws",
+              headers: { authorization: "Bearer hub-token" },
+              protocols: [],
+              isolated: true,
+            }
+          : null,
+      ),
+    );
+    const response = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-sim/helper/ws?device=phone", {
+        headers: { upgrade: "websocket" },
+      }),
+    );
+    // Past the scope check: the test server cannot complete a real upgrade.
+    expect(response.status).not.toBe(403);
+  });
+
+  it("still requires operate scope for a routed input socket that is not isolated", async () => {
+    const { handler } = fixture([AuthOrchestrationReadScope], false, undefined, () =>
+      Effect.succeed({
+        url: "http://lease.test/v1/leases/1/input",
+        headers: { authorization: "Bearer lease-token" },
+        protocols: [],
+      }),
+    );
+    const response = await handler(
+      new Request("http://t3.test/api/device-hub/vendor/serve-sim/helper/ws?device=1", {
+        headers: { upgrade: "websocket" },
+      }),
+    );
+    expect(response.status).toBe(403);
+  });
+
   it("requires operate scope for stream tuning", async () => {
     const readOnly = fixture([AuthOrchestrationReadScope]);
     const path = "http://t3.test/api/device-hub/vendor/serve-emu/api/stream-settings";
