@@ -180,6 +180,10 @@ export interface DeviceHostReady {
     readonly serveSimAxSettings: string | null;
     readonly serveSimCli: string | null;
   };
+  /** skofo: answers some hub GETs itself (view-only hosts have no fold or tuning to report). */
+  readonly localResponse?: (
+    hubPath: string,
+  ) => Effect.Effect<{ readonly status: number; readonly json: unknown } | null>;
   /** Routes proxied hub requests itself; otherwise they go to `hub.origin`. */
   readonly upstream?: (
     hubPath: string,

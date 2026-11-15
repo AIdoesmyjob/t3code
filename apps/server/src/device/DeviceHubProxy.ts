@@ -270,6 +270,14 @@ const handler = Effect.gen(function* () {
       headers: { "cache-control": "no-store, no-transform" },
     });
   }
+  const local =
+    readOnly && !upgrade && ready.localResponse ? yield* ready.localResponse(hubPath) : null;
+  if (local) {
+    return HttpServerResponse.jsonUnsafe(local.json, {
+      status: local.status,
+      headers: { "cache-control": "no-store, no-transform" },
+    });
+  }
   // Hosts with several upstreams (one per cloud session) route and authenticate requests themselves.
   const routed = ready.upstream ? yield* ready.upstream(hubPath, upstreamSearch) : undefined;
   if (routed === null) {
