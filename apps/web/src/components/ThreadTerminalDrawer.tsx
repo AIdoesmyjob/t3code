@@ -540,11 +540,14 @@ function TerminalSessionViewport({
   const canReadFilesystem = useEnvironmentScope(environmentId, AuthFilesystemReadScope);
   const [linkPath, setLinkPath] = useState<string | null>(null);
   const metadataThreadRef = useContext(FileMetadataThreadContext);
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  const hostname = serverConfig?.hostname;
+  const readHostname = useEffectEvent(() => hostname);
   const linkMetadataQuery =
     linkPath !== null && canOpenHostEditor && canReadFilesystem
       ? getFileMetadataQueryAtom(
           environmentId,
-          resolveTerminalLinkTarget(linkPath, cwd),
+          resolveTerminalLinkTarget(linkPath, cwd, hostname),
           cwd,
           metadataThreadRef,
         )
@@ -565,7 +568,7 @@ function TerminalSessionViewport({
       return false;
     const query = getFileMetadataQueryAtom(
       environmentId,
-      resolveTerminalLinkTarget(text, cwd),
+      resolveTerminalLinkTarget(text, cwd, hostname),
       cwd,
       metadataThreadRef,
     );
@@ -576,7 +579,6 @@ function TerminalSessionViewport({
       (result.value?.kind === "file" || result.value?.kind === "directory")
     );
   });
-  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
     environmentId,
     serverConfig?.availableEditors ?? [],
@@ -1092,7 +1094,7 @@ function TerminalSessionViewport({
           );
           return;
         }
-        const target = resolveTerminalLinkTarget(text, cwd);
+        const target = resolveTerminalLinkTarget(text, cwd, readHostname());
         void (async () => {
           const result = await openTerminalPath(target);
           if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
