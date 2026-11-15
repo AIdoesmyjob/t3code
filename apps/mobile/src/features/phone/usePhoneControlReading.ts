@@ -5,24 +5,33 @@ import { phoneControlNative, type PhoneControlReading } from "../../native/phone
 
 const REFRESH_MS = 30_000;
 
-function read(): PhoneControlReading | null {
-  return phoneControlNative?.status() ?? null;
+function read(): {
+  readonly reading: PhoneControlReading | null;
+  readonly isAssistant: boolean;
+  readonly nowMillis: number;
+} {
+  return {
+    reading: phoneControlNative?.status() ?? null,
+    isAssistant: phoneControlNative?.isDefaultAssistant() ?? false,
+    nowMillis: Date.now(),
+  };
 }
 
-/** The companion's status, refreshed when it reports a change, on resume and every 30 s. */
-export function usePhoneControlReading(): {
-  readonly reading: PhoneControlReading | null;
-  readonly nowMillis: number;
+/**
+ * The companion's status and whether this app is the assistant (chosen in system Settings),
+ * refreshed when the companion reports a change, on resume and every 30 s.
+ */
+export function usePhoneControlReading(): ReturnType<typeof read> & {
   readonly refresh: () => void;
 } {
-  const [state, setState] = useState(() => ({ reading: read(), nowMillis: Date.now() }));
-  const refresh = () => setState({ reading: read(), nowMillis: Date.now() });
+  const [state, setState] = useState(read);
+  const refresh = () => setState(read());
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- mirrors the companion's provider, which notifies on change
   useEffect(() => {
     const native = phoneControlNative;
     if (!native) return;
-    const update = () => setState({ reading: read(), nowMillis: Date.now() });
+    const update = () => setState(read());
     const subscription = native.addListener("onStatusChange", update);
     const unsubscribeActive = subscribeAppActive(update);
     const interval = setInterval(update, REFRESH_MS);
