@@ -13,7 +13,7 @@ import {
 } from "@t3tools/shared/filePreview";
 import { LegendList } from "@legendapp/list/react-native";
 import * as Schema from "effect/Schema";
-import { fetch } from "expo/fetch";
+import { fetch } from "../../lib/gatewayFetch";
 import { File } from "expo-file-system";
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
