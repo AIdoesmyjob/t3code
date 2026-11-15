@@ -226,8 +226,22 @@ const handler = Effect.gen(function* () {
   const controlsDevice =
     (upgrade && hubPath !== "/api/devices/ws") ||
     (!readOnly && /\/api\/(stream-(mode|settings)|fold)$/.test(hubPath));
+  const devices = yield* DeviceService.DeviceService;
+  const hostId = url.value.searchParams.get("hostId") ?? undefined;
+  // skofo: a view-only host's input socket only reports the screen and drops input, so reading
+  // it needs read scope. Routing it first is a lookup with no side effects; the ticket is
+  // authenticated once, below.
+  const isolatedInput =
+    upgrade && hubPath === "/vendor/serve-sim/helper/ws"
+      ? yield* Effect.gen(function* () {
+          const host = yield* devices.currentReadiness(hostId);
+          const search = new URLSearchParams(url.value.search);
+          const routed = host?.upstream ? yield* host.upstream(hubPath, search) : undefined;
+          return routed?.isolated === true;
+        })
+      : false;
   const session = yield* authenticateMediaRequest(
-    controlsDevice ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope,
+    controlsDevice && !isolatedInput ? AuthOrchestrationOperateScope : AuthOrchestrationReadScope,
   );
   const sessions = yield* SessionStore.SessionStore;
   const invalidated = sessions.awaitInvalidation(session.sessionId).pipe(
@@ -236,8 +250,7 @@ const handler = Effect.gen(function* () {
         failEnvironmentInternal("internal_error", error).pipe(Effect.ignore),
     }),
   );
-  const devices = yield* DeviceService.DeviceService;
-  const ready = yield* devices.currentReadiness(url.value.searchParams.get("hostId") ?? undefined);
+  const ready = yield* devices.currentReadiness(hostId);
   if (!ready) {
     return HttpServerResponse.text("Device hub is not running", { status: 503 });
   }
@@ -260,6 +273,10 @@ const handler = Effect.gen(function* () {
   // Hosts with several upstreams (one per cloud session) route and authenticate requests themselves.
   const routed = ready.upstream ? yield* ready.upstream(hubPath, upstreamSearch) : undefined;
   if (routed === null) {
+    return HttpServerResponse.text("Not Found", { status: 404 });
+  }
+  // The scope was chosen for an isolated route; a route that changed since must not widen it.
+  if (isolatedInput && !routed?.isolated) {
     return HttpServerResponse.text("Not Found", { status: 404 });
   }
   const upstreamUrl = routed?.url ?? `${ready.hub.origin}${hubPath}${search}`;
