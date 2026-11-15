@@ -6,7 +6,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import { T, useGT } from "gt-react-native";
 import { createContext, useContext, useId, useState } from "react";
-import { fetch } from "expo/fetch";
+import { fetch } from "../../lib/gatewayFetch";
 import { parse, SvgAst, type JsxAST } from "react-native-svg";
 import { Pressable, StyleSheet, View, type ViewStyle } from "react-native";
 
