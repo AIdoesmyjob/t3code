@@ -498,6 +498,8 @@ const config: ExpoConfig = {
     "./plugins/withAndroidGradleHeap.cjs",
     // skofo: image and media clients carry the sign-in gateway's cookie too.
     ...(APP_VARIANT === "skofo" ? ["./plugins/withAndroidGatewayCookies.cjs"] : []),
+    // skofo: long-press power assistant and the phone-control status card.
+    ...(APP_VARIANT === "skofo" ? ["./plugins/withAndroidSkofoPhone.cjs"] : []),
     "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",

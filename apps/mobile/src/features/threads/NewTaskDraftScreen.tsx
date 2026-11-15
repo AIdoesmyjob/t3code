@@ -6,6 +6,7 @@ import { DraftThreadHeader } from "./DraftThreadHeader";
 import { useComposerAttachmentActions } from "../../state/use-composer-attachment-actions";
 import { useWorkspaceBackNavigation } from "../layout/workspace/useAndroidWorkspaceNavigation";
 import { submittedThreadParams } from "./thread-route-state";
+import { isAssistShareId, leaveAfterAssistSend } from "../phone/assistHandoff";
 import { ThreadScreenBinding, ThreadScreenFallback } from "./ThreadScreenHost";
 import { draftThreadShell } from "./draft-thread-shell";
 import { useRememberThreadProject } from "./useRememberThreadProject";
@@ -742,6 +743,7 @@ export function NewTaskDraftScreen(props: {
       deferAttachmentCleanup: true,
     });
     scheduleUnusedComposerAttachmentCleanup(draftSnapshot.attachments);
+    if (isAssistShareId(props.incomingShareId)) leaveAfterAssistSend();
     return message.messageId;
   }
 

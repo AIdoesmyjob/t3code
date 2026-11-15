@@ -335,6 +335,23 @@ export function startIncomingShareInbox(): () => void {
     : () => {};
 }
 
+/** Queues app-made text (the assistant's spoken request) as a new-task draft and opens it. */
+export async function addIncomingTextDraft(input: {
+  readonly id: string;
+  readonly text: string;
+}): Promise<void> {
+  publish(
+    await incomingShareInbox.add({
+      schemaVersion: 1,
+      id: input.id,
+      createdAt: new Date().toISOString(),
+      text: input.text,
+      attachments: [],
+      warnings: [],
+    }),
+  );
+}
+
 async function consumeShare(shareId: string) {
   publish(await incomingShareInbox.consume(shareId));
 }
