@@ -304,6 +304,54 @@ describe("device hub proxy", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("sends an isolated upstream only its own headers, and only GET", async () => {
+    const { handler, requests, headers } = fixture(
+      [AuthOrchestrationReadScope],
+      false,
+      undefined,
+      (hubPath) =>
+        Effect.succeed(
+          hubPath === "/vendor/serve-sim/helper/phone/stream.avcc"
+            ? {
+                url: "http://phone-hub.test/api/devices/phone/serve-sim/stream.avcc",
+                headers: { authorization: "Bearer hub-token" },
+                protocols: [],
+                isolated: true,
+              }
+            : null,
+        ),
+    );
+    const routed = await handler(
+      new Request(
+        "http://t3.test/api/device-hub/vendor/serve-sim/helper/phone/stream.avcc?hostId=phone-control",
+        {
+          headers: {
+            authorization: "Bearer environment-token",
+            origin: "https://t3.test",
+            "user-agent": "browser",
+            "x-custom": "1",
+          },
+        },
+      ),
+    );
+    expect(routed.status).toBe(200);
+    await routed.text();
+    expect(requests).toEqual(["http://phone-hub.test/api/devices/phone/serve-sim/stream.avcc"]);
+    expect(headers[0]?.authorization).toBe("Bearer hub-token");
+    // Only the host's credential and the client library's own tracing headers go upstream.
+    expect(
+      Object.keys(headers[0] ?? {}).filter((name) => !["b3", "traceparent"].includes(name)),
+    ).toEqual(["authorization"]);
+    const posted = await handler(
+      new Request(
+        "http://t3.test/api/device-hub/vendor/serve-sim/helper/phone/stream.avcc?hostId=phone-control",
+        { method: "POST", body: "{}" },
+      ),
+    );
+    expect(posted.status).toBe(405);
+    expect(requests).toHaveLength(1);
+  });
+
   it("never forwards the vendor shell endpoint", async () => {
     const { handler, requests } = fixture([AuthOrchestrationOperateScope]);
     expect(

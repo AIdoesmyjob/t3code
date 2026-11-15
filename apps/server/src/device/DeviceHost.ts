@@ -102,6 +102,11 @@ export interface HubUpstream {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly protocols: ReadonlyArray<string>;
+  /**
+   * skofo: send only `headers` upstream, none of the client's, and pass no client socket
+   * frames upstream (view-only hosts).
+   */
+  readonly isolated?: boolean;
 }
 
 /** Discovery and lifecycle for the devices a ready host can run. */

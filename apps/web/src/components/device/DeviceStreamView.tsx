@@ -96,6 +96,8 @@ export function DeviceStreamView(props: {
   readonly viewId?: string;
   /** The host serves only serve-sim's stream and input socket (Simlock). */
   readonly serveSimOnly?: boolean;
+  /** skofo: input is never offered; say so instead of "reconnecting". */
+  readonly viewOnly?: boolean | undefined;
 }) {
   const model = deviceModel(props.platform, props.deviceName ?? "");
   const isDuo = model?.id === "iphone-duo";
@@ -465,7 +467,13 @@ export function DeviceStreamView(props: {
             </Button>
           </div>
         ) : null}
-        {status === "streaming" && !inputState.connected ? (
+        {status === "streaming" && props.viewOnly ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2">
+            <span className="rounded-md bg-background/85 px-2 py-1 text-caption text-muted-foreground">
+              View only. Agents control this phone with phone_command.
+            </span>
+          </div>
+        ) : status === "streaming" && !inputState.connected ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2">
             <span className="rounded-md bg-background/85 px-2 py-1 text-xs text-muted-foreground">
               {inputState.detail

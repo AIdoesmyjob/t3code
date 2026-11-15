@@ -10,6 +10,7 @@ import {
   LOCAL_DEVICE_HOST_ID,
 } from "@t3tools/contracts";
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
+import { VIEW_ONLY_REASON } from "../../../device/PhoneHubDeviceHost.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as DeviceService from "../../../device/DeviceService.ts";
@@ -264,6 +265,10 @@ const handlers = {
       }
       const hostId = yield* resolveHostId(state.hosts, input.hostId);
       const target = yield* pickDevice(state, { ...input, hostId });
+      // skofo: the owner's phone is shown to people only; agents control it through phone_command.
+      if (state.hosts.find((host) => host.id === target.hostId)?.viewOnly) {
+        return yield* new DeviceToolUnavailableError({ reason: VIEW_ONLY_REASON });
+      }
       // Resolve consent and agent connectivity before booting or registering a session.
       if (!(yield* devices.agentReadinessIfSupported(target.hostId))) {
         return yield* new DeviceToolUnavailableError({
