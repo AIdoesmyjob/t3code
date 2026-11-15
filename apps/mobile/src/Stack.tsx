@@ -71,6 +71,7 @@ import {
 import { McpAppFullscreenScreen } from "./features/threads/McpAppFullscreenScreen";
 import { ConnectionsRouteScreen } from "./features/connection/ConnectionsRouteScreen";
 import { ConnectionsNewRouteScreen } from "./features/connection/ConnectionsNewRouteScreen";
+import { GatewaySignInRouteScreen } from "./features/gateway/GatewaySignInRouteScreen";
 import { AddProjectDestinationRoute } from "./features/projects/AddProjectDestinationRoute";
 import { AddProjectLocalRoute } from "./features/projects/AddProjectLocalRoute";
 import { AddProjectNewRoute } from "./features/projects/AddProjectNewRoute";
@@ -126,6 +127,7 @@ import { SettingsProjectOverviewRouteScreen } from "./features/settings/Settings
 import { UsageLimitAccountScreen } from "./features/usage/UsageLimitsPooled";
 import { UsageRouteScreen } from "./features/usage/UsageRouteScreen";
 import { SettingsAboutRouteScreen } from "./features/settings/SettingsAboutRouteScreen";
+import { ThisPhoneRouteScreen } from "./features/phone/ThisPhoneRouteScreen";
 import { SettingsNotificationsRouteScreen } from "./features/settings/SettingsNotificationsRouteScreen";
 import { SettingsRouteScreen } from "./features/settings/SettingsRouteScreen";
 import { SettingsLabsRouteScreen } from "./features/settings/ThreadSettingsSections";
@@ -222,6 +224,11 @@ const SETTINGS_SCREENS = {
     screen: SettingsThreadsRouteScreen,
     linking: "settings/thread-preferences",
     options: settingsPage("Threads"),
+  }),
+  SettingsThisPhone: createNativeStackScreen({
+    screen: ThisPhoneRouteScreen,
+    linking: "settings/this-phone",
+    options: settingsPage("This phone"),
   }),
   SettingsAbout: createNativeStackScreen({
     screen: SettingsAboutRouteScreen,
@@ -733,6 +740,11 @@ const RootStackConfig = createWorkspaceStackNavigator({
       screen: ConnectionsNewRouteScreen,
       linking: "connections/new",
       options: sheetRoute({ title: "Add Environment", detent: 0.55, maxDetent: 0.7 }),
+    }),
+    // skofo: the sign-in page of a gateway (Authelia) in front of an environment.
+    GatewaySignIn: createNativeStackScreen({
+      screen: GatewaySignInRouteScreen,
+      options: pageRoute({ header: "none", title: "Sign in" }),
     }),
     NotFound: createNativeStackScreen({
       screen: NotFoundScreen,
