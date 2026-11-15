@@ -26,6 +26,8 @@ const fakeHub = (online = true) => {
           Response.json({
             devices: [
               { id: "lukas-oppo", online, companionVersion: "0.3.0" },
+              // Companions before 0.2 report no version; the hub sends null.
+              { id: "old-phone", online: false, companionVersion: null, supportedCommands: null },
               { id: "../etc", online: true },
             ],
           }),
@@ -130,7 +132,20 @@ describe("PhoneHubDeviceHost", () => {
             booted: true,
             physical: true,
           },
+          {
+            id: "old-phone",
+            platform: "android",
+            name: "old-phone",
+            version: "Offline",
+            booted: false,
+            physical: true,
+          },
         ]);
+        expect(yield* ready.localResponse!("/vendor/serve-emu/api/fold")).toEqual({
+          status: 200,
+          json: { ok: true, fold: { supported: false, posture: null, hingeAngle: null } },
+        });
+        expect(yield* ready.localResponse!("/vendor/serve-sim/api")).toBeNull();
       }),
     ),
   );
