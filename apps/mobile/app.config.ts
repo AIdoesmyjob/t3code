@@ -3,7 +3,7 @@ import type { ExpoConfig } from "expo/config";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
-type AppVariant = "development" | "preview" | "production";
+type AppVariant = "development" | "preview" | "production" | "skofo";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -102,6 +102,16 @@ const VARIANT_CONFIG = {
     relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
   },
+  // skofo: self-hosted build for t3.skofo.ca. Own package so it installs beside the store app;
+  // no app.t3.codes links or T3 Connect.
+  skofo: {
+    appName: "Skofo T3",
+    scheme: "skofo-t3",
+    iosBundleIdentifier: "ca.skofo.t3",
+    androidPackage: "ca.skofo.t3",
+    relyingParty: "clerk.t3.codes",
+    assets: RELEASE_ASSETS,
+  },
 } as const;
 
 function resolveAppVariant(value: string | undefined): AppVariant {
@@ -109,11 +119,12 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     case "development":
     case "preview":
     case "production":
+    case "skofo":
       return value;
     case undefined:
       return "production";
     default:
-      throw new Error("APP_VARIANT must be development, preview, or production.");
+      throw new Error("APP_VARIANT must be development, preview, production, or skofo.");
   }
 }
 
@@ -253,7 +264,8 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+    // skofo builds never take upstream's over-the-air bundles.
+    enabled: APP_VARIANT !== "skofo" && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
@@ -321,14 +333,17 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: true,
     // expo-sensors declares this for its pedometer, which the app does not use.
     blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
-    intentFilters: [
-      {
-        action: "VIEW",
-        autoVerify: true,
-        data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
-        category: ["BROWSABLE", "DEFAULT"],
-      },
-    ],
+    intentFilters:
+      APP_VARIANT === "skofo"
+        ? []
+        : [
+            {
+              action: "VIEW",
+              autoVerify: true,
+              data: [{ scheme: "https", host: HOSTED_APP_HOST, pathPrefix: "/threads/" }],
+              category: ["BROWSABLE", "DEFAULT"],
+            },
+          ],
   },
   web: {
     favicon: variant.assets.appIcon,
@@ -481,6 +496,8 @@ const config: ExpoConfig = {
     ...(!isIosPersonalTeamBuild ? ["./plugins/withWidgetLogoAsset.cjs", widgetsPlugin] : []),
     "./plugins/withAndroidNetworkSecurityConfig.cjs",
     "./plugins/withAndroidGradleHeap.cjs",
+    // skofo: image and media clients carry the sign-in gateway's cookie too.
+    ...(APP_VARIANT === "skofo" ? ["./plugins/withAndroidGatewayCookies.cjs"] : []),
     "./plugins/withAndroidInputBackground.cjs",
     "./plugins/withAndroidModernPopupMenu.cjs",
     "./plugins/withAndroidModernAlertDialog.cjs",
