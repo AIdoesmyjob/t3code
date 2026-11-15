@@ -30,6 +30,29 @@ export function gatewayOriginOf(url: string): string | null {
   }
 }
 
+/**
+ * The sign-in WebView takes credentials, so it may only show HTTPS pages of the environment's own
+ * site: its host, or a sibling under the same parent domain (t3.skofo.ca → auth.skofo.ca).
+ */
+export function isGatewaySignInNavigationAllowed(environmentOrigin: string, url: string): boolean {
+  if (url === "about:blank") return true;
+  let target: URL;
+  let environment: URL;
+  try {
+    target = new URL(url);
+    environment = new URL(environmentOrigin);
+  } catch {
+    return false;
+  }
+  if (target.protocol !== "https:") return false;
+  if (target.host === environment.host) return true;
+  const labels = environment.hostname.split(".");
+  // A two-label host (skofo.ca) is its own site; never widen to a public suffix.
+  if (labels.length < 3) return target.hostname.endsWith(`.${environment.hostname}`);
+  const site = labels.slice(1).join(".");
+  return target.hostname === site || target.hostname.endsWith(`.${site}`);
+}
+
 export interface GatewayProbeResponse {
   readonly url: string;
   readonly headers: { get(name: string): string | null };
@@ -104,8 +127,10 @@ export async function ensureGatewaySession(
   const origin = gatewayOriginOf(url);
   if (origin === null) return true;
   if ((await probe(origin)) !== "sign-in-required") return true;
+  // One sign-in screen per origin: later callers wait on the one already open.
+  const alreadyOpen = isGatewaySignInPending(origin);
   const signedIn = awaitGatewaySignIn(origin);
-  openSignIn(origin);
+  if (!alreadyOpen) openSignIn(origin);
   return signedIn;
 }
 

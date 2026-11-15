@@ -6,6 +6,7 @@ import {
   environmentsByGatewayOrigin,
   ensureGatewaySession,
   gatewayOriginOf,
+  isGatewaySignInNavigationAllowed,
   isGatewaySignInPending,
   probeGateway,
   settleGatewaySignIn,
@@ -117,6 +118,17 @@ describe("ensureGatewaySession", () => {
     expect(isGatewaySignInPending(ORIGIN)).toBe(false);
   });
 
+  it("opens one sign-in screen for concurrent callers of the same origin", async () => {
+    const openSignIn = vi.fn();
+    const first = ensureGatewaySession(ORIGIN, openSignIn, async () => "sign-in-required");
+    const second = ensureGatewaySession(ORIGIN, openSignIn, async () => "sign-in-required");
+    await vi.waitFor(() => expect(openSignIn).toHaveBeenCalledTimes(1));
+    await Promise.resolve();
+    expect(openSignIn).toHaveBeenCalledTimes(1);
+    settleGatewaySignIn(ORIGIN, true);
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+  });
+
   it("resolves false when sign-in is abandoned", async () => {
     const pending = ensureGatewaySession(
       ORIGIN,
@@ -150,5 +162,29 @@ describe("environmentsByGatewayOrigin", () => {
       { environmentId: "d" as never, httpBaseUrl: "https://relay.example", relayManaged: true },
     ]);
     expect([...grouped.entries()]).toEqual([[ORIGIN, ["a", "b"]]]);
+  });
+});
+
+describe("isGatewaySignInNavigationAllowed", () => {
+  it("allows HTTPS pages on the server and its sibling sign-in portal", () => {
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, `${ORIGIN}/api/auth/session`)).toBe(true);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "https://auth.skofo.ca/?rd=x")).toBe(true);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "https://skofo.ca/")).toBe(true);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "about:blank")).toBe(true);
+  });
+
+  it("blocks other sites, look-alikes and plain HTTP", () => {
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "https://evil.example/login")).toBe(false);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "https://skofo.ca.evil.example/")).toBe(false);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "https://notskofo.ca/")).toBe(false);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "http://auth.skofo.ca/")).toBe(false);
+    expect(isGatewaySignInNavigationAllowed(ORIGIN, "javascript:alert(1)")).toBe(false);
+  });
+
+  it("never widens a two-label host to its public suffix", () => {
+    expect(isGatewaySignInNavigationAllowed("https://skofo.ca", "https://auth.skofo.ca/")).toBe(
+      true,
+    );
+    expect(isGatewaySignInNavigationAllowed("https://skofo.ca", "https://other.ca/")).toBe(false);
   });
 });
