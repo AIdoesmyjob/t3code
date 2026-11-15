@@ -100,6 +100,7 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
   upstreamUrl: string,
   protocols: ReadonlyArray<string> = [],
   headers: Readonly<Record<string, string>> = {},
+  isolated = false,
 ) {
   const client = yield* request.upgrade;
   const upstream = yield* Socket.makeWebSocket(upstreamUrl, {
@@ -113,7 +114,7 @@ const proxyWebSocket = Effect.fn("DeviceHubProxy.proxyWebSocket")(function* (
       const writeToUpstream = yield* upstream.writer;
       return yield* Effect.raceFirst(
         pumpFrames(upstream, writeToClient),
-        pumpFrames(client, writeToUpstream),
+        isolated ? drainFrames(client) : pumpFrames(client, writeToUpstream),
       );
     }),
   ).pipe(Effect.ignoreCause);
@@ -129,19 +130,31 @@ const pumpFrames =
     }
   });
 
+/** Reads and drops a view-only client's frames, so the socket stays open and nothing is sent. */
+const drainFrames = Effect.fnUntraced(function* (source: Socket.Socket) {
+  const { pull } = yield* source.reader;
+  while (true) {
+    yield* pull;
+  }
+});
+
 const proxyHttp = Effect.fn("DeviceHubProxy.proxyHttp")(function* (
   request: HttpServerRequest.HttpServerRequest,
   upstreamUrl: string,
   extraHeaders: Readonly<Record<string, string>> = {},
+  isolated = false,
 ) {
   const httpClient = HttpClient.withScope(yield* HttpClient.HttpClient);
   const method = request.method;
   if (!HttpMethod.isHttpMethod(method)) {
     return HttpServerResponse.text("Method Not Allowed", { status: 405 });
   }
+  if (isolated && method !== "GET") {
+    return HttpServerResponse.text("Method Not Allowed", { status: 405 });
+  }
   const upstreamRequest = HttpClientRequest.make(method)(upstreamUrl).pipe(
     HttpClientRequest.setHeaders({
-      ...forwardHeaders(request, new URL(upstreamUrl).origin),
+      ...(isolated ? {} : forwardHeaders(request, new URL(upstreamUrl).origin)),
       ...extraHeaders,
     }),
     method === "GET" || method === "HEAD"
@@ -236,9 +249,10 @@ const handler = Effect.gen(function* () {
       upstreamUrl.replace(/^http/, "ws"),
       routed?.protocols,
       routed?.headers,
+      routed?.isolated,
     );
   }
-  return yield* proxyHttp(request, upstreamUrl, routed?.headers);
+  return yield* proxyHttp(request, upstreamUrl, routed?.headers, routed?.isolated);
 });
 
 export const layer = HttpRouter.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, handler);
