@@ -7,6 +7,7 @@ import {
   ensureGatewaySession,
   gatewayOriginOf,
   isGatewaySignInNavigationAllowed,
+  isGatewayInterception,
   isGatewaySignInPending,
   probeGateway,
   settleGatewaySignIn,
@@ -186,5 +187,16 @@ describe("isGatewaySignInNavigationAllowed", () => {
       true,
     );
     expect(isGatewaySignInNavigationAllowed("https://skofo.ca", "https://other.ca/")).toBe(false);
+  });
+});
+
+describe("isGatewayInterception", () => {
+  it("flags a successful HTML answer and nothing else", () => {
+    expect(isGatewayInterception({ status: 200, contentType: "text/html; charset=utf-8" })).toBe(
+      true,
+    );
+    expect(isGatewayInterception({ status: 204, contentType: null })).toBe(false);
+    expect(isGatewayInterception({ status: 200, contentType: "application/json" })).toBe(false);
+    expect(isGatewayInterception({ status: 302, contentType: "text/html" })).toBe(false);
   });
 });

@@ -31,6 +31,9 @@ import {
 } from "./composerImages";
 import { imageMimeType } from "@t3tools/shared/image";
 import { uuidv4 } from "./uuid";
+import { isGatewayInterception } from "../features/gateway/gatewaySession";
+import { usesSharedCookieUpload } from "../features/gateway/gatewayUploadRoute";
+import { uploadWithSharedCookies } from "../features/gateway/sharedCookieUpload";
 
 export type UploadedMobileAttachment =
   | UploadChatImageAttachment
@@ -197,6 +200,37 @@ async function composerImageAttachmentDataUrl(
   }
 }
 
+type ExpoUploadFile = InstanceType<(typeof import("expo-file-system"))["File"]>;
+
+async function uploadWithExpo(
+  file: ExpoUploadFile,
+  url: string,
+  contentType: string,
+  signal: AbortSignal,
+  onProgress?: (progress: number) => void,
+): Promise<{ readonly status: number; readonly contentType: string | null }> {
+  const { UploadType } = await import("expo-file-system");
+  const result = await file.upload(url, {
+    httpMethod: "POST",
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: { "Content-Type": contentType },
+    signal,
+    ...(onProgress
+      ? {
+          // Native events carry Int64 counts, which expo-modules-jsi delivers as BigInt despite the `number` type.
+          onProgress: ({ bytesSent, totalBytes }) => {
+            const total = Number(totalBytes);
+            if (total > 0) onProgress(Number(bytesSent) / total);
+          },
+        }
+      : {}),
+  });
+  const header = Object.entries(result.headers ?? {}).find(
+    ([name]) => name.toLowerCase() === "content-type",
+  );
+  return { status: result.status, contentType: header?.[1] ?? null };
+}
+
 async function uploadFileBytes(
   environmentId: EnvironmentId,
   attachment: DraftComposerAttachment,
@@ -204,7 +238,7 @@ async function uploadFileBytes(
   signal: AbortSignal,
   onProgress?: (progress: number) => void,
 ): Promise<void> {
-  const { File, Paths, UploadType } = await import("expo-file-system");
+  const { File, Paths } = await import("expo-file-system");
   if (signal.aborted) throw new Error("Upload cancelled.");
   if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) {
     throw new Error("This connection cannot upload attachments.");
@@ -225,23 +259,23 @@ async function uploadFileBytes(
         encoding: "base64",
       });
     }
-    const result = await file.upload(url, {
-      httpMethod: "POST",
-      uploadType: UploadType.BINARY_CONTENT,
-      headers: { "Content-Type": composerAttachmentWireMimeType(attachment) },
-      signal,
-      ...(onProgress
-        ? {
-            // Native events carry Int64 counts, which expo-modules-jsi delivers as BigInt despite the `number` type.
-            onProgress: ({ bytesSent, totalBytes }) => {
-              const total = Number(totalBytes);
-              if (total > 0) onProgress(Number(bytesSent) / total);
-            },
-          }
-        : {}),
-    });
+    const contentType = composerAttachmentWireMimeType(attachment);
+    const result = usesSharedCookieUpload(url)
+      ? await uploadWithSharedCookies({
+          fileUri: file.uri,
+          url,
+          contentType,
+          signal,
+          ...(onProgress ? { onProgress } : {}),
+        })
+      : await uploadWithExpo(file, url, contentType, signal, onProgress);
     if (result.status < 200 || result.status >= 300) {
       throw new Error(`Upload failed for '${attachment.name}' (${result.status}).`);
+    }
+    if (isGatewayInterception(result)) {
+      throw new Error(
+        `Upload failed for '${attachment.name}': the server's sign-in page answered. Sign in to the environment again.`,
+      );
     }
   } finally {
     if (fileUri === undefined && file.exists) file.delete();
