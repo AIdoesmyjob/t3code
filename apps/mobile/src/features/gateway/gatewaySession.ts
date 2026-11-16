@@ -151,3 +151,18 @@ export function environmentsByGatewayOrigin(
   }
   return byOrigin;
 }
+
+/**
+ * A gateway that intercepts a request answers with its sign-in page (after a redirect the
+ * client followed), so a "successful" HTML answer means the request never reached the server.
+ */
+export function isGatewayInterception(response: {
+  readonly status: number;
+  readonly contentType: string | null;
+}): boolean {
+  return (
+    response.status >= 200 &&
+    response.status < 300 &&
+    (response.contentType ?? "").toLowerCase().includes("text/html")
+  );
+}

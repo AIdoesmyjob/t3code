@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   writeFile: vi.fn(),
   deleteFile: vi.fn(),
   readBase64: vi.fn(),
+  sharedCookieUpload: false,
+  uploadWithSharedCookies: vi.fn(),
 }));
 
 vi.mock("@t3tools/client-runtime/state/runtime", () => ({
@@ -55,6 +57,14 @@ vi.mock("../state/session", () => ({
 vi.mock("./uuid", () => ({
   uuidv4: () => "uuid",
   randomHex: () => "0000",
+}));
+
+// The shared-cookie route and uploader have their own tests.
+vi.mock("../features/gateway/gatewayUploadRoute", () => ({
+  usesSharedCookieUpload: () => mocks.sharedCookieUpload,
+}));
+vi.mock("../features/gateway/sharedCookieUpload", () => ({
+  uploadWithSharedCookies: mocks.uploadWithSharedCookies,
 }));
 
 vi.mock("expo-file-system", () => ({
@@ -174,6 +184,64 @@ describe("prepareTurnAttachments", () => {
         : { _tag: "Success", value: undefined },
     );
     mocks.upload.mockResolvedValue({ status: 204, body: "", headers: {} });
+    mocks.sharedCookieUpload = false;
+    mocks.uploadWithSharedCookies.mockReset();
+    mocks.uploadWithSharedCookies.mockResolvedValue({ status: 204, contentType: null });
+  });
+
+  it("fails an upload that a sign-in gateway answered instead of the server", async () => {
+    mocks.upload.mockResolvedValue({
+      status: 200,
+      body: "<html>",
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
+    await expect(
+      prepareTurnAttachments({
+        environmentId,
+        attachments: [fileBackedImage],
+        supportsImageUploads: true,
+      }),
+    ).rejects.toThrow("the server's sign-in page answered");
+  });
+
+  it("uploads through the shared cookie store where a gateway can stand in front", async () => {
+    mocks.sharedCookieUpload = true;
+    mocks.uploadWithSharedCookies.mockImplementation(
+      async (input: { readonly onProgress?: (progress: number) => void }) => {
+        input.onProgress?.(0.5);
+        return { status: 204, contentType: null };
+      },
+    );
+    const progress: Array<number> = [];
+    const prepared = await prepareTurnAttachments({
+      environmentId,
+      attachments: [fileBackedImage],
+      supportsImageUploads: true,
+      onUploadProgress: (_, value) => progress.push(value),
+    });
+
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(mocks.uploadWithSharedCookies).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileUri: fileBackedImage.fileUri,
+        url: "https://environment.example/api/attachments/upload/signed",
+        contentType: "image/png",
+      }),
+    );
+    expect(progress).toEqual([0.5]);
+    expect(prepared.status).toBe("ready");
+  });
+
+  it("fails a shared-cookie upload that the gateway's sign-in page answered", async () => {
+    mocks.sharedCookieUpload = true;
+    mocks.uploadWithSharedCookies.mockResolvedValue({ status: 200, contentType: "text/html" });
+    await expect(
+      prepareTurnAttachments({
+        environmentId,
+        attachments: [fileBackedImage],
+        supportsImageUploads: true,
+      }),
+    ).rejects.toThrow("the server's sign-in page answered");
   });
 
   it("does not mint or transfer attachments without task operation access", async () => {
