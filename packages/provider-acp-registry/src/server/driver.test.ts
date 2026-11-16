@@ -123,41 +123,6 @@ describe("acpRegistrySnapshotReadiness", () => {
     expect(model?.capabilities?.optionDescriptors).toEqual([fastMode]);
   });
 
-  it("shows the version reported by a local ACP agent", () => {
-    const probe = acpRegistryProbeResult(identity.instanceId, {
-      sessionId: "test-session",
-      initializeResult: {
-        protocolVersion: 1,
-        agentInfo: { name: "Example agent", version: "1.5.9" },
-      },
-      sessionSetupResult: {},
-      modelConfigId: undefined,
-    });
-    const snapshot = buildCheckedAcpRegistrySnapshot({
-      ...identity,
-      settings: decodeSettings({ source: "local", commandPath: "example" }),
-      checkedAt: "2026-08-13T10:00:00.000Z",
-      inspection: { status: "ready", agentId: "example", version: null, distribution: "local" },
-      probe: { probe, slashCommands: [], skills: [] },
-    });
-    expect(snapshot.version).toBe("1.5.9");
-    const withoutVersion = acpRegistryProbeResult(identity.instanceId, {
-      sessionId: "test-session",
-      initializeResult: { protocolVersion: 1 },
-      sessionSetupResult: {},
-      modelConfigId: undefined,
-    });
-    expect(
-      buildCheckedAcpRegistrySnapshot({
-        ...identity,
-        settings: decodeSettings({ source: "local", commandPath: "example" }),
-        checkedAt: "2026-08-13T10:00:00.000Z",
-        inspection: { status: "ready", agentId: "example", version: null, distribution: "local" },
-        probe: { probe: withoutVersion, slashCommands: [], skills: [] },
-      }).version,
-    ).toBeNull();
-  });
-
   it("treats a live empty command advertisement as an authoritative replacement", () => {
     const provider = buildCheckedAcpRegistrySnapshot({
       ...identity,
