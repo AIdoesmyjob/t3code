@@ -2297,14 +2297,17 @@ export function ChatComposer(props: ChatComposerProps) {
   });
   const handleSubmitMessage = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
+    const running = phase === "running" || phase === "connecting";
+    const alternateModifier = event.metaKey || event.ctrlKey;
     submitComposer(
       event,
       resolveComposerDispatchMode({
-        running: phase === "running" || phase === "connecting",
-        alternateModifier: event.metaKey || event.ctrlKey,
+        running,
+        alternateModifier,
         activeTurnDefault: followUpBehavior,
         canSteer,
       }),
+      running && alternateModifier ? "alternate" : undefined,
     );
   };
   const handleSubmitMessageStable = useStableCallback(handleSubmitMessage);
