@@ -44,3 +44,20 @@ export const updateBearerConnection = createRuntimeCommand(connectionAtomRuntime
       Effect.flatMap((onboarding) => onboarding.updateBearer(input)),
     ),
 });
+
+/** A machine another environment links, opened through that environment's `/linked/<id>/` relay. */
+export const connectLinkedEnvironment = createRuntimeCommand(connectionAtomRuntime, {
+  label: "mobile:connection:connect-linked-environment",
+  scheduler: onboardingScheduler,
+  concurrency: {
+    mode: "singleFlight",
+    key: (input: { readonly expectedEnvironmentId: EnvironmentId }) => input.expectedEnvironmentId,
+  },
+  execute: (input: {
+    readonly expectedEnvironmentId: EnvironmentId;
+    readonly linkedRelay: { readonly httpBaseUrl: string; readonly wsBaseUrl: string };
+  }) =>
+    ConnectionOnboarding.ConnectionOnboarding.pipe(
+      Effect.flatMap((onboarding) => onboarding.registerPairing(input)),
+    ),
+});

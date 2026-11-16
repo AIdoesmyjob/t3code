@@ -77,6 +77,7 @@ import { installUiRuntimeMemoryWarningGc } from "./lib/useUiRuntimeMemoryWarning
 import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
 import { ConnectDeviceApprovalCoordinator } from "./features/connection/ConnectDeviceApprovalCoordinator";
 import { GatewaySessionWatcher } from "./features/gateway/GatewaySessionWatcher";
+import { LinkedMachinesCoordinator } from "./features/linked/LinkedMachinesCoordinator";
 import { installAssistHandoff } from "./features/phone/assistHandoff";
 import { installSubscriptionUsageRefresh } from "./widgets/useSubscriptionUsage";
 import { GlobalVoiceInputControl } from "./features/voice-input/GlobalVoiceInputControl";
@@ -287,6 +288,7 @@ function AppContent() {
       <SubscriptionUsageCoordinator />
       <ConnectDeviceApprovalCoordinator />
       <GatewaySessionWatcher />
+      <LinkedMachinesCoordinator />
       <GestureHandlerRootView className="flex-1">
         <KeyboardProvider statusBarTranslucent>
           <SafeAreaProvider>
