@@ -625,6 +625,7 @@ const make = Effect.gen(function* () {
     profilesDir: NodePath.join(config.stateDir, "server-browser", "profiles"),
     idleBrowserMs: 5 * 60_000,
     executable: () => runPromise(previewBrowser.executable),
+    chrome: { version: PreviewBrowser.VERSION, platform: host.platform },
     // An agent scope keeps Chrome out of the server's memory protection and OOM score.
     launcher: async (executable) => {
       const launch = await runPromise(
@@ -1157,7 +1158,7 @@ const make = Effect.gen(function* () {
     // A desktop page runs beside its own server, not this host.
     await installPdfDocumentNavigation(cdp, desktop ? undefined : localAssets);
     // The desktop's page is already a normal browser. A popup's first request
-    // went out before it became a tab; everything after presents as Chrome.
+    // precedes this override, so its Sec-CH-UA brands still name HeadlessChrome.
     if (!desktop) await presentAsChrome(cdp, host);
     if (!desktop) await recordCopies(cdp);
     page.setDefaultTimeout(NAVIGATION_TIMEOUT_MS);
