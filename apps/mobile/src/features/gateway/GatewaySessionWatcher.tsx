@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-copy -- Skofo fork screen, English only */
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import { useEffect, useEffectEvent, useRef } from "react";
