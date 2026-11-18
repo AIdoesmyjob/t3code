@@ -219,6 +219,7 @@ function LinkedEnvironmentRow({
                 disabled={opening}
                 onClick={() => void openHere()}
               >
+                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only */}
                 {opening ? "Opening…" : "Open in this browser"}
               </Button>
             ) : null}

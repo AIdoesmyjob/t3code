@@ -580,6 +580,7 @@ const MachineMenu = memo(function MachineMenu({
                   className="size-4 shrink-0 text-muted-foreground"
                 />
                 <span className="min-w-0 flex-1 truncate">{target.label}</span>
+                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only */}
                 <Badge variant="outline">Sets up</Badge>
               </span>
             </MenuItem>
@@ -937,6 +938,7 @@ const RunContextSelector = memo(function RunContextSelector({
                   <span className="flex min-w-0 items-center gap-1.5">
                     <EnvironmentMachineIcon kind={target.machine} className="size-3" />
                     <span className="min-w-0 flex-1 truncate">{target.label}</span>
+                    {/* oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only */}
                     <Badge variant="outline">Sets up</Badge>
                   </span>
                 </MenuItem>

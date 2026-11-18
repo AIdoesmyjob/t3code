@@ -232,6 +232,7 @@ export interface CopyLocalProjectInput {
 export async function copyLocalProjectToMachine(input: CopyLocalProjectInput): Promise<ProjectId> {
   const toastId = toastManager.add({
     type: "loading",
+    // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
     title: `Copying ${input.title} to ${input.target.label}…`,
     timeout: 0,
   });
@@ -270,6 +271,7 @@ export async function copyLocalProjectToMachine(input: CopyLocalProjectInput): P
     if (copied.value.skipped.length > 0) {
       toastManager.add({
         type: "warning",
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
         title: `Copied ${input.title} to ${input.target.label} without ${copied.value.skipped.length} linked ${copied.value.skipped.length === 1 ? "entry" : "entries"}`,
         description: copied.value.skipped.slice(0, 5).join(", "),
       });
