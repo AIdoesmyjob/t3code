@@ -189,6 +189,7 @@ function PairingForm({
       const origin = gatewayOriginOf(pairingUrl);
       setIsSubmitting(false);
       setSubmitError(
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
         `Sign in to ${origin === null ? "the server" : new URL(origin).host} to pair.`,
       );
       return;

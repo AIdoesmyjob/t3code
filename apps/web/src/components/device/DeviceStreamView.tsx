@@ -470,7 +470,7 @@ export function DeviceStreamView(props: {
         {status === "streaming" && props.viewOnly ? (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2">
             <span className="rounded-md bg-background/85 px-2 py-1 text-caption text-muted-foreground">
-              View only. Agents control this phone with phone_command.
+              <T>View only. Agents control this phone with phone_command.</T>
             </span>
           </div>
         ) : status === "streaming" && !inputState.connected ? (

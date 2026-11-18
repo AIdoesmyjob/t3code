@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-copy -- Skofo fork screen, English only */
 import type { PhoneControlReading } from "../../native/phoneControl";
 
 export interface ThisPhoneRow {

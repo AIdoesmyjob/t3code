@@ -825,6 +825,7 @@ function describeHostAvailability(
   if (host.viewOnly) {
     return {
       available: available.length > 0,
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
       title: `${host.label}: your own phone, shown through phone-control.`,
       details: [
         "View only. Agents control it with the phone_command tools, which keep its blocked apps off limits.",

@@ -331,6 +331,7 @@ function useThisPhoneRows(): SettingsListRow[] {
     {
       id: "SettingsThisPhone",
       icon: "iphone",
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
       label: "This phone",
       value: loaded ? thisPhoneRowValue(summarizeThisPhone(reading, nowMillis)) : "Checking",
       target: "SettingsThisPhone",

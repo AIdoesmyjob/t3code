@@ -235,6 +235,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
     if (isLocal) {
       // Checked outside the try: React Compiler can't lower a throw inside try/catch.
       if (primaryEnvironmentId === null) {
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
         setError("This page is not signed in to T3 Code.");
         setSubmitting(false);
         return;
@@ -251,6 +252,7 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
         close();
         openClonedProject(scopeProjectRef(target.environmentId, projectId));
       } catch (cause) {
+        // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
         setError(cause instanceof Error ? cause.message : "Could not copy the project.");
         setSubmitting(false);
       }

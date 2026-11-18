@@ -878,6 +878,7 @@ const RootStackConfig = createWorkspaceStackNavigator({
     // skofo: the sign-in page of a gateway (Authelia) in front of an environment.
     GatewaySignIn: createNativeStackScreen({
       screen: GatewaySignInRouteScreen,
+      // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
       options: pageRoute({ header: "none", title: "Sign in" }),
     }),
     NotFound: createNativeStackScreen({
