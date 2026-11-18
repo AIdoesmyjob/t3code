@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-copy -- Skofo fork screen, English only */
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, View } from "react-native";

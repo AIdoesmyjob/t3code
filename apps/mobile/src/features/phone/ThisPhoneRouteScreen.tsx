@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-copy -- Skofo fork screen, English only */
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
