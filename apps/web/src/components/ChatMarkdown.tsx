@@ -907,8 +907,7 @@ function useChatMarkdownState({
   };
   const openFileInPanel = (fileLinkMeta: MarkdownFileLinkMeta, panelPath: string) => {
     if (!threadRef) return;
-    // Anything the user opens in this panel meanwhile, such as a file from the picker, wins
-    // (upstream #39130; it replaces the old latest-lookup claim).
+    // Anything the user opens in this panel meanwhile, such as a file from the picker, wins.
     const panelRef = rightPanelHostRef(threadRef);
     const panelKey = scopedThreadKey(panelRef);
     const userActionRevision = useRightPanelStore.getState().markUserAction(panelRef);

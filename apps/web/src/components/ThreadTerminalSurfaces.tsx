@@ -111,8 +111,8 @@ export const PersistentThreadTerminalDrawer = memo(function PersistentThreadTerm
     selectThreadTerminalUiState(state.terminalUiStateByThreadKey, threadRef),
   );
   const visible = active && terminalUiState.terminalOpen;
-  // The drawer follows the server's terminal list snapshot by snapshot (upstream #38998), so a
-  // terminal another client closed leaves the drawer instead of lingering.
+  // The drawer follows the server's terminal list snapshot by snapshot, so a terminal another
+  // client closed leaves the drawer instead of lingering.
   const drawerSessions = useTerminalDrawerSessions(threadRef.environmentId, threadId);
   const knownTerminalSessions = drawerSessions?.sessions ?? null;
   const snapshotId = drawerSessions?.snapshotId;
