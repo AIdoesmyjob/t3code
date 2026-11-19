@@ -524,7 +524,9 @@ describe("EnvironmentProviderSettings account email", () => {
     const email = "developer@example.com";
     await setProviders([{ ...provider(), auth: { status: "authenticated", email } }]);
     await using _screen = await render(panel({ targetInstanceId: codexId }));
-    const toggle = page.getByRole("button", { name: "Toggle account email visibility" });
+    // The redesigned panel shows the email in the instance card and in the Codex setup; both use
+    // RedactedSensitiveText, so checking the first one covers the fix.
+    const toggle = page.getByRole("button", { name: "Toggle account email visibility" }).first();
     const button = toggle.element() as HTMLButtonElement;
 
     await act(() => button.click());
