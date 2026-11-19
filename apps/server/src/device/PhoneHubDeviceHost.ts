@@ -20,8 +20,8 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import * as DeviceHost from "./DeviceHost.ts";
 
-export const PHONE_HUB_HOST_ID = "phone-control" as DeviceHostId;
-export const PHONE_HUB_LABEL = "My phone (view only)";
+const PHONE_HUB_HOST_ID = "phone-control" as DeviceHostId;
+const PHONE_HUB_LABEL = "My phone (view only)";
 const DEFAULT_HUB_URL = "http://127.0.0.1:8091";
 const REQUEST_TIMEOUT = Duration.seconds(10);
 const STREAM_PATH = /^\/vendor\/serve-sim\/helper\/([^/]+)\/stream\.avcc$/;
