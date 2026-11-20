@@ -469,6 +469,15 @@ describe("source file scroll", () => {
         expect(target).toBeDefined();
         target!.scrollIntoView({ block: direction === "up" ? "end" : "start" });
         await vi.waitFor(() => expect(scroller.scrollTop).toBeGreaterThan(0));
+      } else {
+        // The redesigned preview remembers each file's scroll position, so an earlier case can
+        // leave this file scrolled; a case without a starting scroll begins at the top.
+        scroller.scrollTop = 0;
+        await vi.waitFor(() =>
+          expect(
+            [...rows()].some((row) => row.getAttribute("data-line") === String(startLine)),
+          ).toBe(true),
+        );
       }
 
       const startRow = [...rows()].find(
