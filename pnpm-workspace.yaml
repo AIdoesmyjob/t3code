@@ -252,7 +252,8 @@ patchedDependencies:
   # and lets the timeline apply shrinks at once while its working history collapses.
   "@legendapp/list@3.7.3": patches/@legendapp__list@3.7.3.patch
   # Exports the dependency-light subpaths mobile and the web diff parser import, re-measures
-  # editor carets when the code font changes, and stops the find bar reclaiming focus from the file.
+  # editor carets when the code font changes, stops the find bar reclaiming focus from the file,
+  # and keeps drag selections intact across virtualized scroll renders.
   "@pierre/diffs@1.7.0-beta.4": patches/@pierre__diffs@1.7.0-beta.4.patch
   # Exclude overlaid chrome from the tree viewport; recheck the overlay offset if stickyFolders is enabled.
   "@pierre/trees@1.0.0-beta.6": patches/@pierre%2Ftrees@1.0.0-beta.6.patch
