@@ -266,6 +266,7 @@ export function useComposerMenuItems({
           ? matchComposerEnvironmentItems(
               {
                 environments: mentionableEnvironments,
+                linkedEnvironments,
                 environmentId,
                 query: composerTrigger.query,
               },

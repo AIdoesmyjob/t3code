@@ -394,7 +394,7 @@ export function IssuesPage() {
         : clearedSelection,
     );
 
-  const selectEntry = (entry: IssueRowTarget) => {
+  const selectEntry = useStableCallback((entry: IssueRowTarget) => {
     if (rightPanelRef === null) return;
     useRightPanelStore.getState().openIssue(rightPanelRef, entry);
     updateSearch({
@@ -405,7 +405,7 @@ export function IssuesPage() {
       scope: entry.scope,
       key: entry.key,
     });
-  };
+  });
 
   // A link into the page names an issue before any row was pressed.
   const openLinkedIssue = useEffectEvent(() => {
@@ -579,7 +579,7 @@ export function IssuesPage() {
       );
       items.push({
         key: `${groupKey}:header`,
-        type: "header",
+        type: groupIndex > 0 ? "header:gap" : "header",
         node: (
           <div className={groupIndex > 0 ? "pt-3" : undefined}>
             <WorkItemGroupHeader
@@ -661,7 +661,9 @@ export function IssuesPage() {
           }) === key;
         items.push({
           key: `${groupKey}:${row.environmentId}:${key}`,
-          type: "row",
+          // One height per type (a row after another carries the separator), so the list's
+          // estimate for a row it has not measured is exact.
+          type: index > 0 ? "row:separated" : "row",
           node: (
             <div>
               {index > 0 ? <Separator /> : null}

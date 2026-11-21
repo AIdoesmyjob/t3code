@@ -177,13 +177,15 @@ export function useReviewDiffData(input: {
                   input: {
                     cacheKey: scope,
                     // Newer preview revisions refresh patches read under an older one.
-                    preview: { cwd },
+                    preview: { cwd, sourceKind: lazySource.kind },
                     request: {
                       cwd,
                       ...(lazySource.baseRef ? { baseRef: lazySource.baseRef } : {}),
+                      ...(lazySource.mergeBase ? { mergeBase: lazySource.mergeBase } : {}),
                       file: {
                         path: file.path,
                         previousPath: file.previousPath,
+                        ...(file.changeType ? { changeType: file.changeType } : {}),
                         sourceKind: lazySource.kind,
                       },
                     },
