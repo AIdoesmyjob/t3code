@@ -171,6 +171,10 @@ export function pullRequestCommentPreview(body: string, provider: string): strin
   return commentPreviewText(tree).replace(/\s+/gu, " ").trim();
 }
 
+// Markdown shows an image only from `![` or a raw `<img>` (or `<image>`, which HTML reads as one),
+// so text without either skips the parse, which costs a whole chat markdown pass.
+const MAY_HOLD_IMAGE = /!\[|<im/iu;
+
 export function pullRequestAttachments(body: string) {
   const attachments: Array<{ url: string; media: "image" | "video"; caption: string }> = [];
   const seen = new Set<string>();
@@ -189,7 +193,7 @@ export function pullRequestAttachments(body: string) {
         if (segment.media !== "unknown") add(segment.url, segment.media, "");
       } else if (segment.kind === "table") {
         for (const cell of segment.rows.flat()) collect(cell.segments);
-      } else {
+      } else if (MAY_HOLD_IMAGE.test(segment.text)) {
         for (const url of chatMarkdownImageSources(segment.text)) add(url, "image", "");
       }
     }
