@@ -1,5 +1,16 @@
+import {
+  MessageId,
+  RunId,
+  ThreadId,
+  TurnItemId,
+  type OrchestrationV2ProjectedTurnItem,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 import {
+  CommanderVoiceReply,
+  commanderReplyForMessage,
+  extractLeadingSpokenBrief,
   extractSpokenBrief,
   splitIntoSpokenSentences,
   stripMarkdownForSpeech,
@@ -72,6 +83,27 @@ describe("skofoSpeech", () => {
     ).toBe("Status ready.");
   });
 
+  it("extracts a completed leading brief before its Markdown finishes streaming", () => {
+    expect(extractLeadingSpokenBrief("  <!-- spoken: Fleet ready. -->\n\n| Service")).toBe(
+      "Fleet ready.",
+    );
+    expect(extractLeadingSpokenBrief("<!-- spoken: Fleet ready.")).toBeNull();
+    expect(extractLeadingSpokenBrief("<!-- spoken:    -->")).toBeNull();
+    expect(extractLeadingSpokenBrief("Status.\n<!-- spoken: Fleet ready. -->")).toBeNull();
+  });
+
+  it("hides split spoken openers while retaining comparisons and other comments", () => {
+    for (const prefix of ["<", "<!", "<!-", "<!--", "<!-- s", "<!-- SPOKEN ", "<!-- spoken: abc"]) {
+      expect(stripSpokenTagsForDisplay(prefix, { isStreaming: true })).toBe("");
+      expect(stripSpokenTagsForDisplay(`Status.\n${prefix}`, { isStreaming: true })).toBe(
+        "Status.",
+      );
+    }
+    expect(stripSpokenTagsForDisplay("Limit: 3 < 4", { isStreaming: true })).toBe("Limit: 3 < 4");
+    expect(stripSpokenTagsForDisplay("3 <", { isStreaming: true })).toBe("3 <");
+    expect(stripSpokenTagsForDisplay("<!-- other", { isStreaming: true })).toBe("<!-- other");
+  });
+
   it("returns a concise cue when the message contains only a code block", () => {
     expect(splitIntoSpokenSentences("```ts\nconst x = 1;\n```")).toEqual([
       "Code output is ready in the thread.",
@@ -97,5 +129,95 @@ describe("skofoSpeech", () => {
     const autoSentences = splitIntoSpokenSentences(longText, { mode: "auto" });
     expect(autoSentences).toHaveLength(4);
     expect(autoSentences.at(-1)).toBe("Full details are in the thread.");
+  });
+});
+
+describe("Commander voice reply correlation", () => {
+  it("ignores watcher and other-client runs even when they are newer", () => {
+    const voice = {
+      id: RunId.make("voice"),
+      userMessageId: MessageId.make("my-voice"),
+      status: "running",
+    } as const;
+    const runs = [
+      voice,
+      { id: RunId.make("watch"), userMessageId: MessageId.make("wake"), status: "completed" },
+      {
+        id: RunId.make("other"),
+        userMessageId: MessageId.make("other-client"),
+        status: "completed",
+      },
+    ] as const;
+    const threadId = ThreadId.make("computer");
+    const now = DateTime.makeUnsafe("2026-11-22T12:00:00Z");
+    const rows = runs.map((run, ordinal): OrchestrationV2ProjectedTurnItem => {
+      const id = TurnItemId.make(`assistant-${run.id}`);
+      return {
+        position: ordinal,
+        visibility: "local",
+        sourceThreadId: threadId,
+        sourceItemId: id,
+        item: {
+          id,
+          threadId,
+          runId: run.id,
+          ordinal,
+          type: "assistant_message",
+          phase: "final_answer",
+          messageId: MessageId.make(`reply-${run.id}`),
+          text: `Reply from ${run.id}`,
+          streaming: run.status === "running",
+          status: run.status,
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          title: null,
+          startedAt: now,
+          updatedAt: now,
+          completedAt: null,
+        },
+      };
+    });
+    expect(commanderReplyForMessage(runs, rows, "my-voice")).toEqual({
+      run: voice,
+      item: rows[0]?.item,
+    });
+    expect(commanderReplyForMessage(runs, rows, "absent")).toBeNull();
+  });
+
+  it("claims the leading brief once and holds the mic until its run settles", () => {
+    const reply = new CommanderVoiceReply("my-voice");
+    const running = { status: "running" };
+    const completed = { status: "completed" };
+    expect(reply.observe(running, "<!-- spoken: Four threads")).toBeNull();
+    expect(reply.observe(running, "<!-- spoken: Four threads. -->")).toEqual({
+      type: "speak",
+      text: "Four threads.",
+    });
+    expect(reply.observe(running, "<!-- spoken: Four threads. -->\nDetails")).toBeNull();
+    expect(reply.finishAudio("completed")).toBe(false);
+    expect(reply.observe(completed, "<!-- spoken: Four threads. -->\nDetails")).toEqual({
+      type: "listen",
+    });
+  });
+
+  it("falls back on completion and settles empty, failed and cancelled runs", () => {
+    const reply = new CommanderVoiceReply("my-voice");
+    expect(reply.observe({ status: "running" }, "More to come.")).toBeNull();
+    expect(reply.observe({ status: "completed" }, "Ready.")).toEqual({
+      type: "speak",
+      text: "Ready.",
+    });
+    expect(reply.observe({ status: "completed" }, "Ready.")).toBeNull();
+    expect(reply.finishAudio("completed")).toBe(true);
+    for (const [status, type] of [
+      ["completed", "empty"],
+      ["failed", "failed"],
+      ["cancelled", "failed"],
+    ]) {
+      expect(new CommanderVoiceReply("next").observe({ status: status! }, " ")).toEqual({ type });
+    }
   });
 });

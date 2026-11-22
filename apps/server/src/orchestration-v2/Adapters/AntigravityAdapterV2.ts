@@ -25,6 +25,7 @@ import {
   antigravityPermissionMode,
   antigravityRuntimeModeForSessionMode,
   antigravitySteersWithPrompt,
+  antigravityThinkingConfig,
   applyAntigravityAcpModelSelection,
   buildAntigravityPrompt,
   type AntigravityAcpRuntimeInput,
@@ -285,6 +286,23 @@ export function makeAntigravityAcpAdapterFlavor(
         mapError: (cause) => cause,
       });
     }),
+    prepareCommanderVoicePrompt: Effect.fn("AntigravityAdapterV2.prepareCommanderVoicePrompt")(
+      function* (runtime) {
+        const thinking = antigravityThinkingConfig(yield* runtime.getConfigOptions);
+        if (thinking === undefined || thinking.currentValue === "low") return Effect.void;
+        const choices = thinking.options.flatMap((entry) =>
+          "value" in entry ? [entry.value] : entry.options.map((choice) => choice.value),
+        );
+        if (!choices.includes("low")) return Effect.void;
+        yield* runtime.setConfigOption(thinking.id, "low");
+        return runtime.setConfigOption(thinking.id, thinking.currentValue).pipe(
+          Effect.asVoid,
+          Effect.catch((error) =>
+            Effect.logWarning("Could not restore Antigravity thinking level", error),
+          ),
+        );
+      },
+    ),
     sessionModeForPolicy: (policy) => antigravityPermissionMode(policy.runtimeMode),
     runtimeModeForSessionMode: antigravityRuntimeModeForSessionMode,
     clientFileSystem: {

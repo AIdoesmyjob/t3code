@@ -1,9 +1,10 @@
 import { useSyncExternalStore } from "react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import { transcribeEnvironmentAudio } from "@t3tools/client-runtime/voice-input";
+import { CommanderVoiceReply, type CommanderSpeakOutcome } from "@t3tools/shared/skofoSpeech";
 
 import { runEnvironmentSpeech } from "~/speech/runEnvironmentSpeech";
-import { commanderSpeechController, type CommanderSpeakOutcome } from "./commanderSpeech";
+import { commanderSpeechController } from "./commanderSpeech";
 
 export type VoiceChatPhase =
   | "off"
@@ -25,7 +26,10 @@ export type VoiceChatHintCode =
   | "paused"
   | "paused-silence"
   | "missed"
-  | "send-failed";
+  | "send-failed"
+  | "still-working"
+  | "no-reply"
+  | "run-failed";
 
 export type VoiceChatErrorCode =
   | "unsupported"
@@ -39,6 +43,7 @@ export interface CommanderVoiceChatState {
   readonly level: number;
   readonly heardSpeech: boolean;
   readonly lastTranscript: string | null;
+  readonly pendingMessageId: string | null;
   readonly hintCode: VoiceChatHintCode | null;
   readonly errorCode: VoiceChatErrorCode | null;
   readonly errorDetail: string | null;
@@ -46,7 +51,7 @@ export interface CommanderVoiceChatState {
 
 export interface CommanderVoiceChatHost {
   readonly prepared: PreparedConnection;
-  readonly sendMessage: (text: string) => boolean;
+  readonly sendMessage: (text: string) => Promise<string | null>;
 }
 
 const VAD_POLL_MS = 50;
@@ -88,6 +93,7 @@ class CommanderVoiceChatController {
     level: 0,
     heardSpeech: false,
     lastTranscript: null,
+    pendingMessageId: null,
     hintCode: null,
     errorCode: null,
     errorDetail: null,
@@ -95,6 +101,8 @@ class CommanderVoiceChatController {
   private listeners = new Set<() => void>();
   private hosts = new Map<string, CommanderVoiceChatHost>();
   private generation = 0;
+  private reply: CommanderVoiceReply | null = null;
+  private thinkingTimer: ReturnType<typeof setTimeout> | null = null;
   private stream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
@@ -123,12 +131,10 @@ class CommanderVoiceChatController {
   registerHost(threadKey: string, host: CommanderVoiceChatHost): () => void {
     this.hosts.set(threadKey, host);
     return () => {
-      if (this.hosts.get(threadKey) === host) {
-        this.hosts.delete(threadKey);
-      }
-      if (this.state.activeThreadKey === threadKey) {
-        this.stop();
-      }
+      if (this.hosts.get(threadKey) !== host) return;
+      this.hosts.delete(threadKey);
+      if (this.isActiveFor(threadKey)) this.pause();
+      else commanderSpeechController.stop();
     };
   }
 
@@ -139,6 +145,10 @@ class CommanderVoiceChatController {
   }
 
   private clearTimers() {
+    if (this.thinkingTimer !== null) {
+      clearTimeout(this.thinkingTimer);
+      this.thinkingTimer = null;
+    }
     if (this.vadTimer !== null) {
       clearInterval(this.vadTimer);
       this.vadTimer = null;
@@ -197,12 +207,14 @@ class CommanderVoiceChatController {
 
   stop() {
     this.generation += 1;
+    this.reply = null;
     this.teardownAudioHardware();
     commanderSpeechController.stop();
     if (this.state.phase !== "off" || this.state.activeThreadKey !== null) {
       this.emit({
         activeThreadKey: null,
         phase: "off",
+        pendingMessageId: null,
         level: 0,
         heardSpeech: false,
         hintCode: null,
@@ -217,6 +229,8 @@ class CommanderVoiceChatController {
       this.stop();
       return;
     }
+    commanderSpeechController.stop();
+    commanderSpeechController.primePlayback();
     await this.startForThread(threadKey);
   }
 
@@ -242,6 +256,7 @@ class CommanderVoiceChatController {
     }
 
     this.generation += 1;
+    this.reply = null;
     const myGen = this.generation;
     this.teardownAudioHardware();
     commanderSpeechController.stop();
@@ -249,6 +264,7 @@ class CommanderVoiceChatController {
     this.emit({
       activeThreadKey: threadKey,
       phase: "starting",
+      pendingMessageId: null,
       level: 0,
       heardSpeech: false,
       hintCode: "opening-mic",
@@ -323,7 +339,7 @@ class CommanderVoiceChatController {
     this.chunks = [];
 
     recorder.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
+      if (this.generation === sessionGen && event.data.size > 0) {
         this.chunks.push(event.data);
       }
     };
@@ -484,18 +500,22 @@ class CommanderVoiceChatController {
         return;
       }
 
-      const sent = host.sendMessage(transcript);
-      if (!sent) {
-        this.emit({
-          phase: "paused",
-          lastTranscript: transcript,
-          hintCode: "send-failed",
-        });
+      let messageId: string | null;
+      try {
+        messageId = await host.sendMessage(transcript);
+      } catch {
+        messageId = null;
+      }
+      if (this.generation !== sessionGen) return;
+      if (!messageId) {
+        this.emit({ phase: "paused", lastTranscript: transcript, hintCode: "send-failed" });
         return;
       }
 
+      this.reply = new CommanderVoiceReply(messageId);
       this.emit({
         phase: "thinking",
+        pendingMessageId: messageId,
         level: 0,
         heardSpeech: false,
         lastTranscript: transcript,
@@ -503,6 +523,12 @@ class CommanderVoiceChatController {
         errorCode: null,
         errorDetail: null,
       });
+      this.thinkingTimer = setTimeout(() => {
+        this.thinkingTimer = null;
+        if (this.generation === sessionGen && this.state.phase === "thinking") {
+          this.emit({ hintCode: "still-working" });
+        }
+      }, 5_000);
     } catch (err) {
       if (this.generation !== sessionGen || abort.signal.aborted) return;
       this.abortController = null;
@@ -517,85 +543,129 @@ class CommanderVoiceChatController {
     }
   }
 
-  togglePause() {
-    const threadKey = this.state.activeThreadKey;
-    if (!threadKey) return;
-    if (this.state.phase === "listening") {
-      this.teardownRecorder(true);
-      this.emit({
-        phase: "paused",
-        level: 0,
-        heardSpeech: false,
-        hintCode: "paused",
-      });
+  pause() {
+    if (this.state.phase === "off") {
+      commanderSpeechController.stop();
       return;
     }
-    if (this.state.phase === "paused" || this.state.phase === "error") {
-      if (!this.stream) {
-        void this.startForThread(threadKey);
-        return;
-      }
-      const myGen = this.generation;
-      const host = this.hosts.get(threadKey);
-      if (!host) return;
-      void commanderSpeechController.playBeep(host.prepared, "listen").then(() => {
-        if (this.generation === myGen) {
-          this.beginListeningTurn(threadKey, myGen);
-        }
-      });
-    }
-  }
-
-  interruptAndListen() {
-    const threadKey = this.state.activeThreadKey;
-    if (!threadKey || this.state.phase === "off") return;
-    commanderSpeechController.stop();
-    if (!this.stream) {
-      void this.startForThread(threadKey);
-      return;
-    }
+    this.generation += 1;
+    this.reply = null;
     this.clearTimers();
-    const myGen = this.generation;
-    const host = this.hosts.get(threadKey);
-    if (!host) return;
-    void commanderSpeechController.playBeep(host.prepared, "listen").then(() => {
-      if (this.generation === myGen) {
-        this.beginListeningTurn(threadKey, myGen);
-      }
-    });
-  }
 
-  notifySpeakingStart(threadKey: string) {
-    if (!this.isActiveFor(threadKey)) return;
-    this.teardownRecorder(true);
+    this.teardownAudioHardware();
+    commanderSpeechController.stop();
     this.emit({
-      phase: "speaking",
+      phase: "paused",
+      pendingMessageId: null,
       level: 0,
       heardSpeech: false,
-      hintCode: "speaking",
+      hintCode: "paused",
       errorCode: null,
       errorDetail: null,
     });
   }
 
-  notifySpeakingFinished(threadKey: string, outcome: CommanderSpeakOutcome) {
-    if (!this.isActiveFor(threadKey)) return;
-    if (this.state.phase !== "speaking" && this.state.phase !== "thinking") return;
-    if (outcome !== "completed") return;
-    const myGen = this.generation;
+  togglePause() {
+    const threadKey = this.state.activeThreadKey;
+    if (!threadKey) return;
+    if (this.state.phase === "listening") {
+      this.pause();
+    } else if (this.state.phase === "paused" || this.state.phase === "error") {
+      if (this.reply) {
+        this.interruptAndListen();
+      } else {
+        commanderSpeechController.primePlayback();
+        void this.startForThread(threadKey);
+      }
+    }
+  }
+
+  interruptAndListen() {
+    const threadKey = this.state.activeThreadKey;
+    if (!threadKey || !this.reply) return;
+    commanderSpeechController.stop();
+    this.finishReply(threadKey, this.reply, "completed");
+  }
+
+  observeReply(
+    threadKey: string,
+    run: { readonly id: string; readonly userMessageId: string; readonly status: string },
+    text: string,
+  ) {
+    const reply = this.reply;
+    if (!this.isActiveFor(threadKey) || reply?.messageId !== run.userMessageId) return;
+
+    const action = reply.observe(run, text);
+    if (!action) return;
+    if (action.type === "listen") {
+      this.resumeListening(threadKey);
+      return;
+    }
+    if (action.type === "failed" || action.type === "empty") {
+      this.clearTimers();
+      this.reply = null;
+      commanderSpeechController.stop();
+      this.emit({
+        phase: "paused",
+        pendingMessageId: null,
+        hintCode: action.type === "failed" ? "run-failed" : "no-reply",
+      });
+      return;
+    }
     const host = this.hosts.get(threadKey);
     if (!host) return;
+    void commanderSpeechController
+      .speak({
+        prepared: host.prepared,
+        text: action.text,
+        messageId: run.id,
+        mode: "auto",
+        onPlaying: () => {
+          if (this.reply !== reply) return;
+          this.clearTimers();
+          this.emit({ phase: "speaking", hintCode: "speaking" });
+        },
+      })
+      .then((outcome) => this.finishReply(threadKey, reply, outcome));
+  }
+
+  retryAudio() {
+    const threadKey = this.state.activeThreadKey;
+    const reply = this.reply;
+    if (!threadKey || !reply) return;
+    void commanderSpeechController
+      .retry()
+      .then((outcome) => this.finishReply(threadKey, reply, outcome));
+  }
+
+  private finishReply(
+    threadKey: string,
+    reply: CommanderVoiceReply,
+    outcome: CommanderSpeakOutcome,
+  ) {
+    if (this.reply !== reply || outcome === "stopped") return;
+    if (reply.finishAudio(outcome)) {
+      this.resumeListening(threadKey);
+    } else if (outcome === "error") {
+      this.clearTimers();
+      this.emit({ phase: "paused", hintCode: "paused" });
+    } else {
+      this.emit({ phase: "thinking", hintCode: "still-working" });
+    }
+  }
+
+  private resumeListening(threadKey: string) {
+    const host = this.hosts.get(threadKey);
+    if (!host) return;
+    const generation = this.generation;
+    this.reply = null;
+    this.emit({ phase: "thinking", pendingMessageId: null });
     this.clearTimers();
     this.resumeTimer = setTimeout(() => {
       this.resumeTimer = null;
-      if (this.generation !== myGen || !this.isActiveFor(threadKey)) return;
-      if (!this.stream) {
-        void this.startForThread(threadKey);
-        return;
-      }
       void commanderSpeechController.playBeep(host.prepared, "listen").then(() => {
-        if (this.generation === myGen && this.isActiveFor(threadKey)) {
-          this.beginListeningTurn(threadKey, myGen);
+        if (this.generation === generation) {
+          this.beginListeningTurn(threadKey, generation);
         }
       });
     }, POST_SPEECH_RESUME_MS);

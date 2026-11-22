@@ -555,6 +555,9 @@ export interface AcpAdapterV2Flavor {
    * `reasoningEffort` is its `effortLevel`).
    */
   readonly ownedModelOptionIds?: ReadonlyArray<string>;
+  readonly prepareCommanderVoicePrompt?: (
+    runtime: AcpSessionRuntime.AcpSessionRuntime["Service"],
+  ) => Effect.Effect<Effect.Effect<void>, EffectAcpErrors.AcpError>;
   readonly lockSessionModeToPolicy?: true;
   readonly sessionModeForPolicy?: (
     policy: ProviderAdapter.ProviderAdapterV2RuntimePolicy,
@@ -11114,13 +11117,30 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     sequence: ++context.appContextSequence,
                   }
                 : undefined;
+            const sendPrompt = runtime.prompt({ prompt: promptParts!.prompt }, promptOptions);
+            const prepareVoice = flavor.prepareCommanderVoicePrompt;
             yield* followPrompt(
               context,
               (superseded) =>
                 compactSession === undefined
                   ? sendPromptWhenIdle(
                       context,
-                      () => runtime.prompt({ prompt: promptParts!.prompt }, promptOptions),
+                      () =>
+                        turnInput.commanderVoice && prepareVoice !== undefined
+                          ? Effect.acquireUseRelease(
+                              prepareVoice(runtime),
+                              () => sendPrompt,
+                              (restore) =>
+                                Effect.gen(function* () {
+                                  if (
+                                    (yield* Ref.get(activeSessionId)) === requestedSessionId &&
+                                    (yield* Ref.get(runtimeCallbackGeneration)) === promptGeneration
+                                  ) {
+                                    yield* restore;
+                                  }
+                                }),
+                            )
+                          : sendPrompt,
                       superseded,
                     )
                   : Deferred.succeed(context.promptDispatched, undefined).pipe(

@@ -120,6 +120,21 @@ it("resolves automatic message delivery from authoritative provider capabilities
   );
 });
 
+it.each(["auto", "steer", "restart"] as const)(
+  "queues %s delivery behind a Commander voice run",
+  (intent) => {
+    const projection = dispatchProjection(baseCapabilities);
+    assert.deepEqual(
+      CommandPolicy.resolveMessageDispatchIntent(
+        { ...projection, runs: projection.runs.map((run) => ({ ...run, commanderVoice: true })) },
+        { type: "start_immediately" },
+        intent,
+      ),
+      { type: "queue_after_active" },
+    );
+  },
+);
+
 it.each(["preparing", "starting"] as const)(
   "queues an automatic message while the handoff run is %s",
   (status) => {

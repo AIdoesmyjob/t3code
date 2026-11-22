@@ -14,6 +14,8 @@ import {
   type MobileVoiceChatHintCode,
 } from "./mobileCommanderVoiceChat";
 
+import { useMobileCommanderSpeechState } from "./mobileCommanderSpeech";
+
 const WAVE_BARS = [
   { id: "b1", weight: 0.45 },
   { id: "b2", weight: 0.85 },
@@ -30,6 +32,7 @@ export function MobileCommanderVoiceChatBar(props: {
 }) {
   const gt = useGT();
   const voiceChat = useMobileCommanderVoiceChatState();
+  const speech = useMobileCommanderSpeechState();
   const threadKey = scopedThreadKey(props.environmentId, props.threadId);
   if (!props.isCommander || voiceChat.activeThreadKey !== threadKey || voiceChat.phase === "off") {
     return null;
@@ -74,6 +77,12 @@ export function MobileCommanderVoiceChatBar(props: {
         return gt("Transcribing your voice…");
       case "thinking":
         return gt("Computer is working…");
+      case "still-working":
+        return gt("Still working…");
+      case "no-reply":
+        return gt("Computer finished without a reply. Tap Talk to continue.");
+      case "run-failed":
+        return gt("Computer’s turn ended early. Tap Talk to continue.");
       case "speaking":
         return gt("Tap Interrupt to cut in.");
       case "paused":
@@ -110,6 +119,7 @@ export function MobileCommanderVoiceChatBar(props: {
   };
 
   const detail =
+    (speech.error ? gt("Audio failed: {detail}", { detail: speech.error }) : null) ??
     formatError(voiceChat.errorCode, voiceChat.errorDetail) ??
     formatHint(voiceChat.hintCode) ??
     voiceChat.lastTranscript;
@@ -158,6 +168,15 @@ export function MobileCommanderVoiceChatBar(props: {
         </View>
 
         <View className="shrink-0 flex-row items-center gap-1.5">
+          {speech.canRetry ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => mobileCommanderVoiceChat.retryAudio()}
+              className="h-9 justify-center rounded-xl bg-subtle-strong px-3 active:opacity-80"
+            >
+              <Text className="text-xs font-t3-semibold text-foreground">{gt("Retry audio")}</Text>
+            </Pressable>
+          ) : null}
           {voiceChat.phase === "listening" ? (
             <>
               <Pressable

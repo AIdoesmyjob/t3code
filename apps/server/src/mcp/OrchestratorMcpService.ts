@@ -3672,10 +3672,21 @@ const make = Effect.gen(function* () {
         page = filtered.slice(cursor, cursor + limit);
       }
       const nextCursor = cursor + limit < total ? cursor + limit : null;
+      const activity = input.includeLatestActivity
+        ? yield* threadManagement
+            .getLatestThreadActivity(page.map(({ id }) => id))
+            .pipe(Effect.orElseSucceed(() => undefined))
+        : undefined;
       return {
         projectId,
         currentThreadId: parent?.thread.id ?? null,
-        threads: page.map((shell) => listItemFromShell(scope, shell, nowMs)),
+        threads: page.map((shell) => ({
+          ...listItemFromShell(scope, shell, nowMs),
+          ...(activity === undefined ? {} : { latestActivity: activity.get(shell.id) ?? null }),
+          ...(input.includeLatestActivity
+            ? { pendingRequestKind: shell.pendingRuntimeRequest?.kind ?? null }
+            : {}),
+        })),
         nextCursor,
         total,
       } satisfies OrchestratorMcpThreadListResult;

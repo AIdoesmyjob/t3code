@@ -3868,6 +3868,110 @@ describe("AntigravityAdapterV2 runtime mode ceiling", () => {
   );
 });
 
+describe("AntigravityAdapterV2 Commander voice", () => {
+  it.live.each([false, true])("uses low in ACP and restores high (resumed: %s)", (resumed) =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const crypto = yield* SecureRandom.SecureRandom;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-ag-voice-" });
+      const requestLog = path.join(workspace, "requests.ndjson");
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      const instanceId = ProviderInstanceId.make("antigravity-commander-voice-test");
+      const adapter = yield* makeAntigravityAdapterV2({
+        instanceId,
+        selfInvocation: yield* resolveSelfInvocation(),
+        makeRuntime: (input) =>
+          makeAntigravityAcpRuntime({
+            ...input,
+            childProcessSpawner,
+            spawn: {
+              command: process.execPath,
+              args: [mockAgentPath],
+              cwd: workspace,
+              env: {
+                T3_ACP_ANTIGRAVITY: "1",
+                T3_ACP_ANTIGRAVITY_THINKING: "1",
+                T3_ACP_AGENT_VERSION: "1.5.0",
+                T3_ACP_REQUEST_LOG_PATH: requestLog,
+              },
+            },
+          }).pipe(Effect.provideService(SecureRandom.SecureRandom, crypto)),
+        withProcess: (_stop, task) => task,
+        defaultModel: Effect.undefined,
+      });
+      const threadId = ThreadId.make("thread-antigravity-commander-voice");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
+      });
+      const modelSelection = { instanceId, model: "gemini-test-low" };
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-commander-voice"),
+        modelSelection,
+        runtimePolicy,
+        ...(resumed ? { initialNativeThreadId: "mock-session-1" } : {}),
+      });
+      const providerThread = yield* session.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
+      yield* session.events.pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      for (const ordinal of [1, 2, 3]) {
+        yield* session.startTurn({
+          ...makeTurnInput({
+            threadId,
+            providerThread,
+            instanceId,
+            modelSelection,
+            runtimePolicy,
+            ordinal,
+            now: yield* DateTime.now,
+          }),
+          ...(ordinal < 3 ? { commanderVoice: true as const } : {}),
+        });
+        yield* Stream.fromQueue(events).pipe(
+          Stream.filter((event) => event.type === "turn.terminal"),
+          Stream.runHead,
+        );
+      }
+      const requests = (yield* fileSystem.readFileString(requestLog))
+        .trim()
+        .split("\n")
+        .map(
+          (line) =>
+            JSON.parse(line) as { method: string; params: { configId?: string; value?: string } },
+        );
+      assert.isTrue(
+        requests.some(({ method }) =>
+          resumed
+            ? method === "session/resume" || method === "session/load"
+            : method === "session/new",
+        ),
+      );
+      assert.deepEqual(
+        requests.flatMap(({ method, params }) => {
+          if (method === "session/prompt") return ["prompt"];
+          return method === "session/set_config_option" && params.configId === "thinking"
+            ? [params.value]
+            : [];
+        }),
+        ["low", "prompt", "high", "low", "prompt", "high", "prompt"],
+      );
+    }).pipe(Effect.provide(layerSession), Effect.scoped),
+  );
+});
+
 describe("AntigravityAdapterV2 session system prompt", () => {
   it.effect.each(["1.5.1"])(
     "carries PR linking once per turn on %s, which does not advertise a system prompt append",

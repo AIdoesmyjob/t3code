@@ -20,6 +20,7 @@ const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
 const antigravityThoughtLevel = process.env.T3_ACP_ANTIGRAVITY_THOUGHT_LEVEL === "1";
 const antigravityResumeThoughtLevel = process.env.T3_ACP_RESUME_THOUGHT_LEVEL;
+const antigravityThinking = process.env.T3_ACP_ANTIGRAVITY_THINKING === "1";
 // GitHub Copilot CLI advertises URL-shaped session mode ids.
 const copilotModesProfile = process.env.T3_ACP_COPILOT_MODES === "1";
 const copilotModeId = (name: string) =>
@@ -136,7 +137,7 @@ let currentModeId = antigravityProfile
 let currentModelId = antigravityProfile ? "gemini-test-low" : "default";
 let currentAntigravityThoughtLevel = "high";
 let parameterizedModelPicker = false;
-let currentReasoning = "medium";
+let currentReasoning = antigravityThinking ? "high" : "medium";
 let currentContext = "272k";
 let currentFast = false;
 let currentAgent = "";
@@ -212,6 +213,21 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
                       { value: "high", name: "High" },
                       { value: "xhigh", name: "Extra" },
                     ],
+            },
+          ]
+        : []),
+      ...(antigravityThinking
+        ? [
+            {
+              configId: "thinking",
+              name: "Thinking",
+              category: "thought_level",
+              type: "select" as const,
+              currentValue: currentReasoning,
+              options: [
+                { value: "low", name: "Low" },
+                { value: "high", name: "High" },
+              ],
             },
           ]
         : []),
@@ -941,7 +957,11 @@ const program = Effect.gen(function* () {
       if (request.configId === "agent" && typeof request.value === "string") {
         currentAgent = request.value;
       }
-      if (request.configId === "reasoning" && typeof request.value === "string") {
+      if (
+        (request.configId === "reasoning" ||
+          (antigravityThinking && request.configId === "thinking")) &&
+        typeof request.value === "string"
+      ) {
         currentReasoning = request.value;
       }
       if (request.configId === "context" && typeof request.value === "string") {

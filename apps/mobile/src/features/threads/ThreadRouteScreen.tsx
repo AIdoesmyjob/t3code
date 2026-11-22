@@ -10,6 +10,7 @@ import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setu
 import { AppBar } from "../../components/ui/AppBar";
 import {
   StackActions,
+  useIsFocused,
   useNavigation,
   useRoute,
   type StaticScreenProps,
@@ -24,11 +25,13 @@ import {
   type ReactNode,
 } from "react";
 import { useGT, useMessages } from "gt-react-native";
+import { AppState } from "react-native";
 import * as Option from "effect/Option";
 import {
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
   AuthTerminalReadScope,
+  DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
   isProviderNativeSubagentThread,
@@ -132,7 +135,11 @@ import {
   mobileCommanderVoiceChat,
   useMobileCommanderVoiceChatState,
 } from "../commander/mobileCommanderVoiceChat";
-import { setComposerDraftText } from "../../state/use-composer-drafts";
+import {
+  commanderReplyForMessage,
+  extractLeadingSpokenBrief,
+  isCommanderReplyItem,
+} from "@t3tools/shared/skofoSpeech";
 import {
   mobileCommanderSpeech,
   useMobileCommanderSpeechState,
@@ -1013,128 +1020,129 @@ function ThreadRouteContent(
   const commanderThreadKey = selectedThread
     ? scopedThreadKey(selectedThread.environmentId, selectedThread.id)
     : null;
+  const routeFocused = useIsFocused();
+  const voiceRows = isSelectedCommander ? (selectedThreadDetail?.visibleTurnItems ?? []) : [];
   const onMobileVoiceSend = useEffectEvent(async (text: string) => {
-    const clean = text.trim();
-    if (!clean || !composer.composerDraftKey || !canOperateThread) return false;
-    setComposerDraftText(composer.composerDraftKey, clean);
-    const result = await composer.onSendMessage();
-    return result !== null;
+    if (!selectedThread || !canOperateThread) return null;
+    const messageId = MessageId.make(uuidv4());
+    const result = await continueThreadRun({
+      environmentId: selectedThread.environmentId,
+      input: {
+        threadId: selectedThread.id,
+        message: { messageId, role: "user", text, attachments: [] },
+        runtimeMode: selectedThread.runtimeMode,
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        creationSource: "mobile",
+        dispatchMode: "queue",
+        commanderVoice: true,
+      },
+    });
+    return result._tag === "Success" ? messageId : null;
   });
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers Computer thread as a mobile Voice Chat host and handles top-card mic launches
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns microphone and playback while the Computer route is focused
   useEffect(() => {
-    if (!isSelectedCommander || commanderThreadKey === null || !commanderVoicePrepared) return;
+    if (
+      !isSelectedCommander ||
+      !routeFocused ||
+      commanderThreadKey === null ||
+      !commanderVoicePrepared
+    )
+      return;
     const unregister = mobileCommanderVoiceChat.registerHost(commanderThreadKey, {
       prepared: commanderVoicePrepared,
       sendMessage: (text) => onMobileVoiceSend(text),
     });
-    if (consumeMobileCommanderDictation(commanderThreadKey)) {
-      void mobileCommanderVoiceChat.startForThread(commanderThreadKey);
-    }
-    const unsub = subscribeMobileCommanderDictation((requestedKey) => {
+    const start = (requestedKey: string) => {
       if (
         requestedKey === commanderThreadKey &&
-        consumeMobileCommanderDictation(commanderThreadKey)
+        consumeMobileCommanderDictation(commanderThreadKey) &&
+        AppState.currentState === "active"
       ) {
         void mobileCommanderVoiceChat.startForThread(commanderThreadKey);
       }
+    };
+    start(commanderThreadKey);
+    const unsub = subscribeMobileCommanderDictation(start);
+    const appState = AppState.addEventListener("change", (state) => {
+      if (state !== "active") mobileCommanderVoiceChat.pause();
     });
     return () => {
+      appState.remove();
       unsub();
       unregister();
     };
-  }, [isSelectedCommander, commanderThreadKey, commanderVoicePrepared]);
-  const commanderSeededKeyRef = useRef<string | null>(null);
-  const commanderLastSpokenIdRef = useRef<string | null>(null);
-  const latestCompletedAssistantMessage = (() => {
-    for (let i = composer.selectedThreadFeed.length - 1; i >= 0; i -= 1) {
-      const entry = composer.selectedThreadFeed[i];
-      if (
-        entry?.type === "message" &&
-        entry.message.role === "assistant" &&
-        !entry.message.streaming &&
-        entry.message.text.trim().length > 0
-      ) {
-        return entry.message;
-      }
-    }
-    return null;
-  })();
-  const latestCompletedAssistantId = latestCompletedAssistantMessage?.id ?? null;
-  const latestCompletedAssistantText = latestCompletedAssistantMessage?.text ?? "";
+  }, [isSelectedCommander, routeFocused, commanderThreadKey, commanderVoicePrepared]);
+  const voiceActive =
+    commanderThreadKey !== null &&
+    commanderVoiceChat.activeThreadKey === commanderThreadKey &&
+    commanderVoiceChat.phase !== "off";
+  const voiceReply = commanderReplyForMessage(
+    selectedThreadDetail?.runs ?? [],
+    voiceRows,
+    voiceActive ? commanderVoiceChat.pendingMessageId : null,
+  );
+  const latestItem = voiceRows.findLast(
+    ({ item, visibility }) => visibility === "local" && isCommanderReplyItem(item),
+  )?.item;
+  const passiveReply = latestItem && isCommanderReplyItem(latestItem) ? latestItem : null;
+  const lastSpoken = useRef<{ threadKey: string; ordinal: number } | null>(null);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- speaks newly completed Computer replies when talk-back is enabled without replaying history
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- claims live Computer replies for audio without replaying the initial snapshot
   useEffect(() => {
-    if (!isSelectedCommander || commanderThreadKey === null) {
-      commanderSeededKeyRef.current = null;
-      commanderLastSpokenIdRef.current = null;
+    if (!isSelectedCommander || !commanderHistoryReady || commanderThreadKey === null) return;
+    const ordinal = passiveReply?.ordinal ?? -1;
+    const cursor =
+      lastSpoken.current?.threadKey === commanderThreadKey
+        ? lastSpoken.current
+        : { threadKey: commanderThreadKey, ordinal };
+    const canPlay = routeFocused && AppState.currentState === "active" && commanderVoicePrepared;
+    lastSpoken.current =
+      voiceActive || !canPlay ? { ...cursor, ordinal: Math.max(cursor.ordinal, ordinal) } : cursor;
+    if (!canPlay) return;
+    if (voiceActive) {
+      if (voiceReply) {
+        mobileCommanderVoiceChat.observeReply(
+          commanderThreadKey,
+          voiceReply.run,
+          voiceReply.item?.text ?? "",
+        );
+      }
       return;
     }
-    if (!commanderHistoryReady) {
-      return;
-    }
-    if (commanderSeededKeyRef.current !== commanderThreadKey) {
-      commanderSeededKeyRef.current = commanderThreadKey;
-      commanderLastSpokenIdRef.current = latestCompletedAssistantId;
-      return;
-    }
-    if (
-      !latestCompletedAssistantId ||
-      latestCompletedAssistantId === commanderLastSpokenIdRef.current
-    ) {
-      return;
-    }
-    commanderLastSpokenIdRef.current = latestCompletedAssistantId;
-    const voiceChatActive = mobileCommanderVoiceChat.isActiveFor(commanderThreadKey);
-    if ((!commanderSpeech.talkBackEnabled && !voiceChatActive) || !commanderVoicePrepared) {
-      return;
-    }
-    if (voiceChatActive) {
-      mobileCommanderVoiceChat.notifySpeakingStart(commanderThreadKey);
-    }
-    void mobileCommanderSpeech
-      .speak({
+    if (!passiveReply || ordinal <= cursor.ordinal) return;
+    const brief = extractLeadingSpokenBrief(passiveReply.text);
+    if (!brief && (passiveReply.streaming || !passiveReply.text.trim())) return;
+    lastSpoken.current = { threadKey: commanderThreadKey, ordinal };
+    if (commanderSpeech.talkBackEnabled) {
+      void mobileCommanderSpeech.speak({
         prepared: commanderVoicePrepared,
-        text: latestCompletedAssistantText,
-        messageId: latestCompletedAssistantId,
+        text: brief ?? passiveReply.text,
+        messageId: passiveReply.messageId,
         mode: "auto",
-      })
-      .then((outcome) => {
-        mobileCommanderVoiceChat.notifySpeakingFinished(commanderThreadKey, outcome);
       });
+    }
   }, [
     isSelectedCommander,
     commanderHistoryReady,
     commanderThreadKey,
-    latestCompletedAssistantId,
-    latestCompletedAssistantText,
-    commanderSpeech.talkBackEnabled,
+    routeFocused,
     commanderVoicePrepared,
+    voiceActive,
+    voiceReply,
+    passiveReply,
+    commanderSpeech.talkBackEnabled,
+    lastSpoken,
   ]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops audio playback when leaving the Computer thread
-  useEffect(() => {
-    if (!isSelectedCommander || commanderThreadKey === null) return;
-    return () => {
-      mobileCommanderSpeech.stop();
-      if (mobileCommanderVoiceChat.isActiveFor(commanderThreadKey)) {
-        mobileCommanderVoiceChat.stop();
-      }
-    };
-  }, [isSelectedCommander, commanderThreadKey]);
-
-  const isMobileVoiceChatActive =
-    commanderThreadKey !== null &&
-    commanderVoiceChat.activeThreadKey === commanderThreadKey &&
-    commanderVoiceChat.phase !== "off";
   const commanderVoiceChatHeaderAction =
     isSelectedCommander && commanderVoicePrepared && commanderThreadKey !== null
       ? {
-          accessibilityLabel: isMobileVoiceChatActive
+          accessibilityLabel: voiceActive
             ? gt("End Voice Chat with Computer")
             : gt("Start Voice Chat with Computer"),
-          icon: isMobileVoiceChatActive ? ("xmark.circle.fill" as const) : ("headphones" as const),
-          selected: isMobileVoiceChatActive,
+          icon: voiceActive ? ("xmark.circle.fill" as const) : ("headphones" as const),
+          selected: voiceActive,
           separateBackground: false,
           onPress: () => void mobileCommanderVoiceChat.toggleForThread(commanderThreadKey),
         }

@@ -588,6 +588,7 @@ export interface ProviderAdapterV2EnsureThreadInput {
 
 export interface ProviderAdapterV2TurnInput {
   readonly agentFeedback?: AgentFeedbackMode;
+  readonly commanderVoice?: true;
   readonly appThread: OrchestrationV2AppThread;
   readonly threadId: ThreadId;
   readonly runId: RunId;
