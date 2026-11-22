@@ -17,6 +17,7 @@ import {
 import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
 import { taskListMarkerOffset } from "@t3tools/shared/markdownTaskEdits";
 import { isHostPath, resolveWorkspaceFilePath } from "@t3tools/shared/path";
+import { stripSpokenTagsForDisplay } from "@t3tools/shared/skofoSpeech";
 import { usePullRequestLinking } from "~/hooks/usePullRequestLinking";
 import {
   AuthFilesystemReadScope,
@@ -2204,7 +2205,7 @@ const MarkdownSource = memo(function MarkdownSource({
 });
 
 function ChatMarkdown({
-  text,
+  text: rawText,
   className,
   inline = false,
   lineBreaks = false,
@@ -2213,6 +2214,7 @@ function ChatMarkdown({
   renderInsights = false,
   ...props
 }: ChatMarkdownProps) {
+  const text = stripSpokenTagsForDisplay(rawText, { isStreaming: props.isStreaming === true });
   const { isStreaming, streamingId } = props;
   const [textAtMount] = useState(text);
   const [remounted] = useState(

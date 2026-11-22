@@ -126,8 +126,10 @@ import {
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
 import {
   consumeMobileCommanderDictation,
+  isCommanderThread,
   subscribeMobileCommanderDictation,
 } from "../commander/commander";
+import { voiceSpeechOutputConnectionAtom } from "../voice-input/voiceDestination";
 import { mobileCommanderSpeech } from "../commander/mobileCommanderSpeech";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
@@ -470,9 +472,15 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
     onChangeSelection: composerMenu.onSelectionChange,
   });
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- triggers voice dictation when opened via the top Computer card mic button
+  const mobileCommanderVoiceChatAvailable =
+    useAtomValue(
+      voiceSpeechOutputConnectionAtom(
+        isCommanderThread(props.selectedThread) ? props.environmentId : null,
+      ),
+    ) !== null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- triggers voice dictation when opened via the top Computer card mic button (falls back only if Voice Chat is unavailable)
   useEffect(() => {
-    if (props.isDraft || !props.canOperateThread) return;
+    if (props.isDraft || !props.canOperateThread || mobileCommanderVoiceChatAvailable) return;
     const maybeStart = () => {
       if (!voiceInput.isAvailable || voiceInput.isBusy) return;
       if (consumeMobileCommanderDictation(composerOwnerKey)) {
@@ -487,7 +495,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         maybeStart();
       }
     });
-  }, [composerOwnerKey, props.canOperateThread, props.isDraft, voiceInput]);
+  }, [
+    composerOwnerKey,
+    mobileCommanderVoiceChatAvailable,
+    props.canOperateThread,
+    props.isDraft,
+    voiceInput,
+  ]);
   const isSubmissionLocked =
     props.interactionLocked === true || queuedEdit?.saving === true || voiceInput.blocksSubmission;
   const voicePresentation = resolveVoiceComposerPresentation(
