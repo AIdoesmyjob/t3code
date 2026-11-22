@@ -996,6 +996,7 @@ function ThreadRouteContent(
     RECONNECT_ERROR_DELAY_MS,
   );
   const isSelectedCommander = selectedThread !== null && isCommanderThread(selectedThread);
+  const commanderHistoryReady = selectedThreadDetail !== null;
   const commanderVoicePrepared = useAtomValue(voiceSpeechOutputConnectionAtom(environmentId));
   const commanderSpeech = useMobileCommanderSpeechState();
   const commanderThreadKey = selectedThread
@@ -1027,6 +1028,9 @@ function ThreadRouteContent(
       commanderLastSpokenIdRef.current = null;
       return;
     }
+    if (!commanderHistoryReady) {
+      return;
+    }
     if (commanderSeededKeyRef.current !== commanderThreadKey) {
       commanderSeededKeyRef.current = commanderThreadKey;
       commanderLastSpokenIdRef.current = latestCompletedAssistantId;
@@ -1049,6 +1053,7 @@ function ThreadRouteContent(
     });
   }, [
     isSelectedCommander,
+    commanderHistoryReady,
     commanderThreadKey,
     latestCompletedAssistantId,
     latestCompletedAssistantText,
