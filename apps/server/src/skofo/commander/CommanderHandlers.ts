@@ -33,13 +33,16 @@ const requireCommanderCaller = Effect.gen(function* () {
   return { scope, commander };
 });
 
+// Never use process.execPath: in a compiled SEA binary that points to the t3 CLI, not node.
+const FLEET_QUERY_NODE_BIN = process.env.SKOFO_COMMANDER_NODE_BIN?.trim() || "node";
+
 function runFleetQueryCli(
   scriptPath: string,
   args: ReadonlyArray<string>,
 ): Effect.Effect<string, OrchestratorMcpFailure> {
   return Effect.callback<string, OrchestratorMcpFailure>((resume) => {
     const child = NodeChildProcess.execFile(
-      process.execPath,
+      FLEET_QUERY_NODE_BIN,
       [scriptPath, ...args],
       {
         timeout: 25_000,
