@@ -111,6 +111,8 @@ import IconPlus from "@tabler/icons-react-native/IconPlus";
 import IconQrcode from "@tabler/icons-react-native/IconQrcode";
 import IconRefresh from "@tabler/icons-react-native/IconRefresh";
 import IconRobot from "@tabler/icons-react-native/IconRobot";
+import IconVolume from "@tabler/icons-react-native/IconVolume";
+import IconVolumeOff from "@tabler/icons-react-native/IconVolumeOff";
 import IconSearch from "@tabler/icons-react-native/IconSearch";
 import IconShare from "@tabler/icons-react-native/IconShare";
 import IconServer from "@tabler/icons-react-native/IconServer";
@@ -288,6 +290,8 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "plus.bubble": IconMessagePlus,
   "ellipsis.bubble": IconMessageDots,
   robot: IconRobot,
+  "speaker.wave.2": IconVolume,
+  "speaker.slash": IconVolumeOff,
   "text.word.spacing": IconLetterSpacing,
   textformat: IconLetterCase,
   "textformat.size": IconTypography,

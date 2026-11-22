@@ -364,3 +364,16 @@ export const SpeechStreamEvent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("error"), message: Schema.String }),
 ]);
 export type SpeechStreamEvent = typeof SpeechStreamEvent.Type;
+
+const SpeechSynthesizeFormat = Schema.Literals(["mp3", "wav"]);
+export const EnvironmentSpeechSynthesizeRequest = Schema.Struct({
+  text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(2_000)),
+  format: Schema.optionalKey(SpeechSynthesizeFormat),
+});
+export type EnvironmentSpeechSynthesizeRequest = typeof EnvironmentSpeechSynthesizeRequest.Type;
+
+export const EnvironmentSpeechSynthesizeResult = Schema.Struct({
+  audioBase64: Schema.String,
+  mimeType: Schema.String,
+});
+export type EnvironmentSpeechSynthesizeResult = typeof EnvironmentSpeechSynthesizeResult.Type;

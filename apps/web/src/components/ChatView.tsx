@@ -337,6 +337,8 @@ import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { pendingApprovalSlotLabel } from "./chat/MessagesTimeline.logic";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader, type HiddenTerminalChip } from "./chat/ChatHeader";
+import { isCommanderThread } from "../skofo/commander/commanderConstants";
+import { useCommanderAutoSpeak } from "../skofo/commander/CommanderVoiceControls";
 import { useSideChat } from "./chat/useSideChat";
 import { sideThreadComposer, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
 import { useRemoteOpenState } from "~/remoteOpen";
@@ -1792,6 +1794,16 @@ export default function ChatView(props: ChatViewProps) {
     entry.kind === "message" ? [entry.message] : [],
   );
   const timelineEmpty = timelineEntries.length === 0 && !hasStreamedTimelineRows;
+  useCommanderAutoSpeak({
+    environmentId: isServerThread && activeThread ? activeThread.environmentId : null,
+    threadId: isServerThread && activeThread ? activeThread.id : null,
+    isCommander:
+      isServerThread &&
+      activeThread !== undefined &&
+      activeThreadShell !== undefined &&
+      isCommanderThread(activeThreadShell),
+    messages: timelineMessages,
+  });
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const deferredChat = use(DeferredChatContext);
   const [timelineInstance, setTimelineInstance] = useState({

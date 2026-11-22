@@ -12,6 +12,7 @@ import {
   type MobileCommanderStats,
   requestMobileCommanderDictation,
 } from "./commander";
+import { mobileCommanderSpeech } from "./mobileCommanderSpeech";
 
 export interface CommanderTopCardProps {
   readonly thread: EnvironmentThreadShell;
@@ -55,6 +56,8 @@ export function CommanderTopCard({
   const computerName = gt("Computer", { $context: "name of the persistent top-level agent" });
 
   const handleVoicePress = () => {
+    mobileCommanderSpeech.stop();
+    mobileCommanderSpeech.setTalkBackEnabled(true);
     requestMobileCommanderDictation(threadKey);
     onSelectThread(thread);
   };

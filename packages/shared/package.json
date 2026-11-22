@@ -710,7 +710,8 @@
     "./assistantInsights": {
       "types": "./src/assistantInsights.ts",
       "import": "./src/assistantInsights.ts"
-    }
+    },
+    "./skofoSpeech": "./src/skofoSpeech.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit",
