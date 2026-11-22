@@ -73,6 +73,15 @@ vi.mock("expo-audio", () => ({
   setAudioModeAsync: audio.setAudioMode,
   setIsAudioActiveAsync: audio.setActive,
 }));
+vi.mock("../features/commander/mobileCommanderSpeech", () => ({
+  mobileCommanderSpeech: { speak: vi.fn(), stop: vi.fn() },
+  useMobileCommanderSpeechState: () => ({ status: "idle", speakingMessageId: null }),
+}));
+vi.mock("../features/voice-input/voiceDestination", async () => {
+  const { Atom } = await import("effect/reactivity");
+  const unavailableSpeechConnection = Atom.make(null);
+  return { voiceSpeechOutputConnectionAtom: () => unavailableSpeechConnection };
+});
 vi.mock("@react-navigation/native", () => ({
   useIsFocused: () => true,
   useNavigation: () => ({ navigate: audio.navigate }),
