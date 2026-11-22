@@ -1802,6 +1802,7 @@ export default function ChatView(props: ChatViewProps) {
       activeThread !== undefined &&
       activeThreadShell !== undefined &&
       isCommanderThread(activeThreadShell),
+    ready: !threadDetailLoading,
     messages: timelineMessages,
   });
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
