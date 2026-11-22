@@ -3,10 +3,13 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
   type OrchestrationV2ThreadShell,
+  OrchestratorMcpFailure,
+  type PeerLinkSummary,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
@@ -261,7 +264,7 @@ describe("summarizeShellAttention & formatCommanderEventBatch", () => {
 });
 
 describe("Commander MCP visibility & isolation", () => {
-  const makeTestMcpLayer = () => {
+  const makeTestMcpLayer = (links: ReadonlyArray<PeerLinkSummary> = []) => {
     const watches: CommanderStore.CommanderWatch[] = [];
     const mockCommander = Layer.succeed(
       CommanderService.CommanderService,
@@ -313,12 +316,14 @@ describe("Commander MCP visibility & isolation", () => {
         getShellSnapshot: () => Effect.succeed({ threads: [], archivedThreads: [] }),
       } as unknown as ProjectionStore.ProjectionStoreV2Shape),
       Layer.succeed(PeerLinks.PeerLinks, {
-        list: Effect.succeed([]),
+        list: Effect.succeed(links),
       } as unknown as PeerLinks.PeerLinks["Service"]),
-      Layer.succeed(
-        PeerMcpClient.PeerMcpClient,
-        {} as unknown as PeerMcpClient.PeerMcpClient["Service"],
-      ),
+      Layer.succeed(PeerMcpClient.PeerMcpClient, {
+        call: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({ code: "orchestration_error", message: "Offline" }),
+          ),
+      } as unknown as PeerMcpClient.PeerMcpClient["Service"]),
       Layer.succeed(ScheduledTasks.ScheduledTaskService, {
         list: () => Effect.succeed({ tasks: [] }),
       } as unknown as ScheduledTasks.ScheduledTaskService["Service"]),
@@ -372,6 +377,53 @@ describe("Commander MCP visibility & isolation", () => {
           expect(normalDenied.success.isError).toBe(true);
         }
       }).pipe(Effect.provide(makeTestMcpLayer())),
+  );
+
+  it.effect("defaults to the brief board and preserves explicit full output", () =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (args: Record<string, unknown>) =>
+        server
+          .callTool({ name: "skofo_work_board", arguments: args })
+          .pipe(
+            Effect.provideService(
+              McpInvocationContext.McpInvocationContext,
+              makeScope(commanderThreadId),
+            ),
+            Effect.provideService(McpSchema.McpServerClient, testClient),
+          );
+      const brief = yield* call({});
+      expect(brief.isError).not.toBe(true);
+      expect(brief.structuredContent).toMatchObject({
+        view: "brief",
+        machines: [
+          { status: "reachable", totals: { active: 0 } },
+          { label: "Offline", status: "unreachable", freshAt: null, totals: null },
+        ],
+        rows: [],
+      });
+      expect(brief.structuredContent).not.toHaveProperty("watches");
+      expect(brief.structuredContent).not.toHaveProperty("scheduledTasks");
+      const full = yield* call({ view: "full" });
+      expect(full.isError).not.toBe(true);
+      expect(full.structuredContent).toMatchObject({ watches: [], scheduledTasks: [] });
+    }).pipe(
+      Effect.provide(
+        makeTestMcpLayer([
+          {
+            environmentId: EnvironmentId.make("env-offline"),
+            label: "Offline",
+            urls: ["http://offline.example"],
+            status: "unreachable",
+            access: "read-only",
+            linkedAt: DateTime.makeUnsafe("2026-11-01T00:00:00Z"),
+            expiresAt: DateTime.makeUnsafe("2026-12-01T00:00:00Z"),
+            lastReachedAt: null,
+            lastError: "Connection refused",
+          },
+        ]),
+      ),
+    ),
   );
 
   it.effect(

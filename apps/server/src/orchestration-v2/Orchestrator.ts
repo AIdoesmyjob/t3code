@@ -516,6 +516,9 @@ export interface OrchestratorV2Shape {
     Effect.Success<ReturnType<ProjectionStoreV2["Service"]["getAgentAwarenessSnapshot"]>>,
     OrchestratorV2Error
   >;
+  readonly getLatestThreadActivity: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyMap<ThreadId, string>, OrchestratorV2Error>;
   readonly getShellSnapshot: (
     options?: ShellSnapshotOptions,
   ) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, OrchestratorV2Error>;
@@ -8157,6 +8160,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         modelSelection,
         providerThreadId: queuedProviderThread.id,
         userMessageId: command.messageId,
+        ...(command.commanderVoice ? { commanderVoice: true as const } : {}),
         rootNodeId,
         activeAttemptId: attemptId,
         status: "queued",
@@ -8600,6 +8604,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         modelSelection,
         providerThreadId,
         userMessageId: command.messageId,
+        ...(command.commanderVoice ? { commanderVoice: true as const } : {}),
         rootNodeId,
         activeAttemptId: attemptId,
         status: dispatchMode.type === "defer_start" ? "preparing" : "starting",
@@ -17359,6 +17364,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       function (threadId) {
         return projectionStore
           .getAgentAwarenessSnapshot(threadId)
+          .pipe(Effect.mapError(shellProjectionError));
+      },
+    ),
+    getLatestThreadActivity: Effect.fn("OrchestratorV2.getLatestThreadActivity")(
+      function (threadIds) {
+        return projectionStore
+          .getLatestThreadActivity(threadIds)
           .pipe(Effect.mapError(shellProjectionError));
       },
     ),

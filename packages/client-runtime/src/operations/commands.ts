@@ -191,6 +191,7 @@ interface StartThreadBootstrap {
 }
 
 export interface StartThreadTurnInput extends ThreadCommandInput {
+  readonly commanderVoice?: true;
   readonly manualContinuationOfRunId?: RunId;
   readonly retryOfRunId?: RunId;
   readonly message: {
@@ -859,6 +860,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
         type: "message.dispatch",
         commandId,
         createdBy: "user",
+        ...(input.commanderVoice ? { commanderVoice: true as const } : {}),
         creationSource: input.creationSource ?? "web",
         threadId: input.threadId,
         messageId: input.message.messageId,
@@ -897,6 +899,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       type: "message.dispatch",
       commandId,
       createdBy: "user",
+      ...(input.commanderVoice ? { commanderVoice: true as const } : {}),
       creationSource: input.creationSource ?? "web",
       threadId: input.threadId,
       messageId: input.message.messageId,
