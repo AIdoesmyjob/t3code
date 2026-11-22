@@ -318,6 +318,12 @@ import {
 import { ThreadWorkflowOpening, useWorkflowOpening } from "./thread-workflow-opening";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useV2ItemSupport } from "../../state/v2-item-support";
+import { useAtomValue } from "@effect/atom-react";
+import {
+  mobileCommanderSpeech,
+  useMobileCommanderSpeechState,
+} from "../commander/mobileCommanderSpeech";
+import { voiceSpeechOutputConnectionAtom } from "../voice-input/voiceDestination";
 import {
   fileRoutePathSegments,
   isAbsolutePath,
@@ -461,6 +467,54 @@ function UserMessageCopyButton(props: {
     >
       {button}
     </Menu>
+  );
+}
+
+function AssistantSpeakButton(props: {
+  readonly environmentId: EnvironmentId;
+  readonly iconColor: ColorValue;
+  readonly buttonSize: number;
+  readonly iconSize: number;
+  readonly messageId: string;
+  readonly text: string;
+}) {
+  const prepared = useAtomValue(voiceSpeechOutputConnectionAtom(props.environmentId));
+  const speech = useMobileCommanderSpeechState();
+  const gt = useGT();
+
+  if (!prepared || !props.text.trim()) return null;
+
+  const isThisSpeaking = speech.status !== "idle" && speech.speakingMessageId === props.messageId;
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={isThisSpeaking ? gt("Stop reading aloud") : gt("Read aloud")}
+      onPress={() => {
+        void Haptics.selectionAsync();
+        if (isThisSpeaking) {
+          mobileCommanderSpeech.stop();
+          return;
+        }
+        void mobileCommanderSpeech.speak({
+          prepared,
+          text: props.text,
+          messageId: props.messageId,
+        });
+      }}
+      style={{
+        width: props.buttonSize,
+        height: props.buttonSize,
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <SymbolView
+        name={isThisSpeaking ? "stop.fill" : "speaker.wave.2"}
+        size={props.iconSize}
+        tintColor={props.iconColor}
+      />
+    </Pressable>
   );
 }
 
@@ -2756,6 +2810,13 @@ function renderFeedEntry(
               iconColor={iconSubtleColor}
               buttonSize={props.replyActionSize.button}
               iconSize={props.replyActionSize.icon}
+            <AssistantSpeakButton
+              environmentId={props.environmentId}
+              iconColor={iconSubtleColor}
+              buttonSize={props.replyActionSize.button}
+              iconSize={props.replyActionSize.icon}
+              messageId={message.id}
+              text={renderedText}
             />
             {message.projectedItem ? (
               <AssistantForkButton

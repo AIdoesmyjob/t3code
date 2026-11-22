@@ -1,3 +1,4 @@
+import { useAtomValue } from "@effect/atom-react";
 import * as Dialog from "../../components/ui/Dialog";
 import { errorDisplayMessage } from "@t3tools/client-runtime/errors";
 import { useRememberThreadProject } from "./useRememberThreadProject";
@@ -122,6 +123,12 @@ import {
   threadRouteOpensDraft,
 } from "./thread-route-hydration";
 import { ThreadHeader } from "./ThreadHeader";
+import { isCommanderThread } from "../commander/commander";
+import {
+  mobileCommanderSpeech,
+  useMobileCommanderSpeechState,
+} from "../commander/mobileCommanderSpeech";
+import { voiceSpeechOutputConnectionAtom } from "../voice-input/voiceDestination";
 import { resumeThread } from "./resume-thread";
 import {
   useAndroidWorkspaceBack,
@@ -989,6 +996,96 @@ function ThreadRouteContent(
     connectionRetrying ? routeConnectionError : null,
     RECONNECT_ERROR_DELAY_MS,
   );
+  const isSelectedCommander = selectedThread !== null && isCommanderThread(selectedThread);
+  const commanderVoicePrepared = useAtomValue(voiceSpeechOutputConnectionAtom(environmentId));
+  const commanderSpeech = useMobileCommanderSpeechState();
+  const commanderThreadKey = selectedThread
+    ? `${selectedThread.environmentId}:${selectedThread.id}`
+    : null;
+  const commanderSeededKeyRef = useRef<string | null>(null);
+  const commanderLastSpokenIdRef = useRef<string | null>(null);
+  const latestCompletedAssistantMessage = (() => {
+    for (let i = composer.selectedThreadFeed.length - 1; i >= 0; i -= 1) {
+      const entry = composer.selectedThreadFeed[i];
+      if (
+        entry?.type === "message" &&
+        entry.message.role === "assistant" &&
+        !entry.message.streaming &&
+        entry.message.text.trim().length > 0
+      ) {
+        return entry.message;
+      }
+    }
+    return null;
+  })();
+  const latestCompletedAssistantId = latestCompletedAssistantMessage?.id ?? null;
+  const latestCompletedAssistantText = latestCompletedAssistantMessage?.text ?? "";
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- speaks newly completed Computer replies when talk-back is enabled without replaying history
+  useEffect(() => {
+    if (!isSelectedCommander || commanderThreadKey === null) {
+      commanderSeededKeyRef.current = null;
+      commanderLastSpokenIdRef.current = null;
+      return;
+    }
+    if (commanderSeededKeyRef.current !== commanderThreadKey) {
+      commanderSeededKeyRef.current = commanderThreadKey;
+      commanderLastSpokenIdRef.current = latestCompletedAssistantId;
+      return;
+    }
+    if (
+      !latestCompletedAssistantId ||
+      latestCompletedAssistantId === commanderLastSpokenIdRef.current
+    ) {
+      return;
+    }
+    commanderLastSpokenIdRef.current = latestCompletedAssistantId;
+    if (!commanderSpeech.talkBackEnabled || !commanderVoicePrepared) {
+      return;
+    }
+    void mobileCommanderSpeech.speak({
+      prepared: commanderVoicePrepared,
+      text: latestCompletedAssistantText,
+      messageId: latestCompletedAssistantId,
+    });
+  }, [
+    isSelectedCommander,
+    commanderThreadKey,
+    latestCompletedAssistantId,
+    latestCompletedAssistantText,
+    commanderSpeech.talkBackEnabled,
+    commanderVoicePrepared,
+  ]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops audio playback when leaving the Computer thread
+  useEffect(() => {
+    if (!isSelectedCommander || commanderThreadKey === null) return;
+    return () => {
+      mobileCommanderSpeech.stop();
+    };
+  }, [isSelectedCommander, commanderThreadKey]);
+
+  const commanderVoiceHeaderAction =
+    isSelectedCommander && commanderVoicePrepared
+      ? {
+          accessibilityLabel:
+            commanderSpeech.status !== "idle"
+              ? gt("Stop Computer voice")
+              : commanderSpeech.talkBackEnabled
+                ? gt("Mute Computer talk-back")
+                : gt("Enable Computer talk-back"),
+          icon:
+            commanderSpeech.status !== "idle"
+              ? ("stop.fill" as const)
+              : commanderSpeech.talkBackEnabled
+                ? ("speaker.wave.2" as const)
+                : ("speaker.slash" as const),
+          selected: commanderSpeech.status !== "idle" || commanderSpeech.talkBackEnabled,
+          separateBackground: false,
+          onPress: () => mobileCommanderSpeech.toggleTalkBack(),
+        }
+      : null;
+
   const connectionStatusLabel = connectionRetryLabel(
     {
       connectionError: retryConnectionError,
@@ -1059,6 +1156,7 @@ function ThreadRouteContent(
               inspectorMode={inspectorMode}
               onOpenFilesInspector={handleOpenFilesInspector}
               onReturnToThread={props.onReturnToThread}
+              voiceAction={commanderVoiceHeaderAction}
             />
           )
         }
