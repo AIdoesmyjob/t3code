@@ -247,19 +247,33 @@ class MobileCommanderSpeechController {
       try {
         await this.withPlaybackSession(signal, async (playbackSignal) => {
           const canSend = () => !playbackSignal.aborted;
-          for (const sentence of job.sentences.slice(job.index)) {
-            if (!job.clip) {
-              job.clip = await runSpeech(
-                synthesizeEnvironmentSpeech(
-                  job.input.prepared,
-                  { text: sentence, format: "mp3" },
-                  canSend,
-                ),
-                playbackSignal,
+          const fetchSentence = (sentence: string) =>
+            runSpeech(
+              synthesizeEnvironmentSpeech(
+                job.input.prepared,
+                { text: sentence, format: "mp3" },
                 canSend,
-              );
+              ),
+              playbackSignal,
+              canSend,
+            );
+          let nextPromise: Promise<{
+            readonly audioBase64: string;
+            readonly mimeType: string;
+          }> | null = null;
+          while (job.index < job.sentences.length) {
+            const sentence = job.sentences[job.index]!;
+            if (!job.clip) {
+              const pending = nextPromise ?? fetchSentence(sentence);
+              nextPromise = null;
+              job.clip = await pending;
             }
             if (playbackSignal.aborted) return;
+            const nextSentence = job.sentences[job.index + 1];
+            if (nextSentence && !nextPromise) {
+              nextPromise = fetchSentence(nextSentence);
+              void nextPromise.catch(() => {});
+            }
             const ext = job.clip.mimeType.includes("wav") ? "wav" : "mp3";
             this.fileSeq += 1;
             const tempFile = new File(Paths.cache, `skofo-tts-${this.fileSeq}.${ext}`);
