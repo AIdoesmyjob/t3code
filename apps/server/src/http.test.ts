@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Queue from "effect/Queue";
@@ -325,6 +326,50 @@ describe("desktop readiness proof", () => {
 });
 
 describe("untraced requests", () => {
+  it.effect("omits linked relay requests from HTTP traces and logs", () =>
+    Effect.gen(function* () {
+      const requestSpans: Array<Tracer.NativeSpan> = [];
+      const loggedUrls: Array<unknown> = [];
+      const layerTracer = Layer.succeed(
+        Tracer.Tracer,
+        Tracer.make({
+          span: (options) => {
+            const span = new Tracer.NativeSpan(options);
+            if (options.kind === "server") requestSpans.push(span);
+            return span;
+          },
+        }),
+      );
+      const layerLogger = Logger.layer([
+        Logger.map(Logger.formatStructured, ({ annotations }) => {
+          if ("http.url" in annotations) loggedUrls.push(annotations["http.url"]);
+        }),
+      ]);
+      const layerRoutes = Layer.mergeAll(
+        HttpRouter.add("GET", "/linked/*", HttpServerResponse.empty()),
+        HttpRouter.add("GET", "/api/environment", HttpServerResponse.empty()),
+      ).pipe(Layer.provide(ServerHttp.layerUnloggedSignedRequests));
+      const services = yield* Layer.build(
+        HttpRouter.serve(layerRoutes, { disableListenLog: true }).pipe(
+          ServerHttp.withUntracedRequests,
+          Layer.provideMerge(NodeHttpServer.layerTest),
+        ),
+      ).pipe(Effect.provide(Layer.merge(layerTracer, layerLogger)));
+      const client = Context.get(services, HttpClient.HttpClient);
+
+      const relay = yield* client.execute(
+        HttpClientRequest.get("/linked/peer/api/assets/private-path?ticket=private-ticket"),
+      );
+      expect(relay.status).toBe(204);
+      expect(requestSpans).toHaveLength(0);
+      expect(loggedUrls).toEqual([]);
+
+      yield* client.execute(HttpClientRequest.get("/api/environment"));
+      expect(requestSpans).toHaveLength(1);
+      expect(loggedUrls).toEqual(["/api/environment"]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("starts a separate trace for each request, not the server's lifetime trace", () =>
     Effect.gen(function* () {
       const requestSpans: Array<Tracer.NativeSpan> = [];
