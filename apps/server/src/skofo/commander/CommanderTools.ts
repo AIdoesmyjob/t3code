@@ -18,6 +18,8 @@ import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as CommanderService from "./CommanderService.ts";
 import { CommanderWatch, CommanderWatchUntil } from "./CommanderStore.ts";
 
+import { BriefWorkBoard } from "./CommanderWorkBoard.ts";
+
 const WorkBoardThreadEntry = Schema.Struct({
   environmentId: EnvironmentId,
   environmentLabel: Schema.String,
@@ -46,25 +48,29 @@ const WorkBoardMachineSummary = Schema.Struct({
 
 const WorkBoardTool = Tool.make("skofo_work_board", {
   description:
-    "One-call cross-machine command board for Computer: lists active, working, blocked, and failed threads across t3code-dev and every linked environment, plus active watches and scheduled fleet job status.",
+    "One-call fleet work board for Computer. Brief (default) gives reachability, totals and prioritized thread updates. Full adds detailed watches and scheduled jobs.",
   parameters: Schema.Struct({
+    view: Schema.optional(Schema.Literals(["brief", "full"])),
     includeIdle: Schema.optional(Schema.Boolean),
     limitPerMachine: Schema.optional(PositiveInt),
   }),
-  success: Schema.Struct({
-    generatedAt: Schema.String,
-    machines: Schema.Array(WorkBoardMachineSummary),
-    watches: Schema.Array(CommanderWatch),
-    scheduledTasks: Schema.Array(
-      Schema.Struct({
-        id: Schema.String,
-        title: Schema.String,
-        enabled: Schema.Boolean,
-        lastRunStatus: Schema.NullOr(Schema.String),
-        nextRunAt: Schema.NullOr(Schema.String),
-      }),
-    ),
-  }),
+  success: Schema.Union([
+    BriefWorkBoard,
+    Schema.Struct({
+      generatedAt: Schema.String,
+      machines: Schema.Array(WorkBoardMachineSummary),
+      watches: Schema.Array(CommanderWatch),
+      scheduledTasks: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          title: Schema.String,
+          enabled: Schema.Boolean,
+          lastRunStatus: Schema.NullOr(Schema.String),
+          nextRunAt: Schema.NullOr(Schema.String),
+        }),
+      ),
+    }),
+  ]),
   failure: OrchestratorMcpFailure,
   failureMode: "return" as const,
   dependencies: [

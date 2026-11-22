@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import { transcribeEnvironmentAudio } from "@t3tools/client-runtime/voice-input";
+import { CommanderVoiceReply, type CommanderSpeakOutcome } from "@t3tools/shared/skofoSpeech";
 import {
   AudioModule,
   RecordingPresets,
@@ -19,7 +20,7 @@ import {
 import { runSpeech } from "../voice-input/voiceDestination";
 
 type AudioSessionToken = ReturnType<typeof acquireAudioSession>;
-import { mobileCommanderSpeech, type MobileCommanderSpeakOutcome } from "./mobileCommanderSpeech";
+import { mobileCommanderSpeech } from "./mobileCommanderSpeech";
 
 export type MobileVoiceChatPhase =
   | "off"
@@ -41,7 +42,10 @@ export type MobileVoiceChatHintCode =
   | "paused"
   | "paused-silence"
   | "missed"
-  | "send-failed";
+  | "send-failed"
+  | "still-working"
+  | "no-reply"
+  | "run-failed";
 
 export type MobileVoiceChatErrorCode = "permission-denied" | "mic-error" | "transcribe-failed";
 
@@ -51,6 +55,7 @@ export interface MobileCommanderVoiceChatState {
   readonly level: number;
   readonly heardSpeech: boolean;
   readonly lastTranscript: string | null;
+  readonly pendingMessageId: string | null;
   readonly hintCode: MobileVoiceChatHintCode | null;
   readonly errorCode: MobileVoiceChatErrorCode | null;
   readonly errorDetail: string | null;
@@ -58,7 +63,7 @@ export interface MobileCommanderVoiceChatState {
 
 export interface MobileCommanderVoiceChatHost {
   readonly prepared: PreparedConnection;
-  readonly sendMessage: (text: string) => Promise<boolean>;
+  readonly sendMessage: (text: string) => Promise<string | null>;
 }
 
 const VAD_POLL_MS = 100;
@@ -89,6 +94,7 @@ class MobileCommanderVoiceChatController {
     level: 0,
     heardSpeech: false,
     lastTranscript: null,
+    pendingMessageId: null,
     hintCode: null,
     errorCode: null,
     errorDetail: null,
@@ -96,8 +102,12 @@ class MobileCommanderVoiceChatController {
   private listeners = new Set<() => void>();
   private hosts = new Map<string, MobileCommanderVoiceChatHost>();
   private generation = 0;
+  private reply: CommanderVoiceReply | null = null;
+  private thinkingTimer: ReturnType<typeof setTimeout> | null = null;
   private recorder: AudioRecorder | null = null;
   private recordingSession: AudioSessionToken | null = null;
+  private recorderPreparation: Promise<void> | null = null;
+  private recordingTeardown = Promise.resolve();
   private vadTimer: ReturnType<typeof setInterval> | null = null;
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private abortController: AbortController | null = null;
@@ -122,12 +132,10 @@ class MobileCommanderVoiceChatController {
   registerHost(threadKey: string, host: MobileCommanderVoiceChatHost): () => void {
     this.hosts.set(threadKey, host);
     return () => {
-      if (this.hosts.get(threadKey) === host) {
-        this.hosts.delete(threadKey);
-      }
-      if (this.state.activeThreadKey === threadKey) {
-        this.stop();
-      }
+      if (this.hosts.get(threadKey) !== host) return;
+      this.hosts.delete(threadKey);
+      if (this.isActiveFor(threadKey)) this.pause();
+      else mobileCommanderSpeech.stop();
     };
   }
 
@@ -138,6 +146,10 @@ class MobileCommanderVoiceChatController {
   }
 
   private clearTimers() {
+    if (this.thinkingTimer !== null) {
+      clearTimeout(this.thinkingTimer);
+      this.thinkingTimer = null;
+    }
     if (this.vadTimer !== null) {
       clearInterval(this.vadTimer);
       this.vadTimer = null;
@@ -158,43 +170,51 @@ class MobileCommanderVoiceChatController {
     }
   }
 
-  private async releaseRecordingResources(deleteUri?: string | null) {
+  private releaseRecordingResources(keepUri = false): Promise<string | null> {
     this.clearTimers();
-    const rec = this.recorder;
+    const recorder = this.recorder;
+    const session = this.recordingSession;
+    const preparing = this.recorderPreparation;
     this.recorder = null;
-    let uri: string | null = deleteUri ?? null;
-    if (rec) {
-      try {
-        if (rec.isRecording) {
-          await rec.stop();
+    this.recordingSession = null;
+    this.recorderPreparation = null;
+
+    const teardown = this.recordingTeardown.then(async () => {
+      let uri: string | null = null;
+      if (recorder) {
+        await preparing?.catch(() => {});
+        try {
+          if (recorder.isRecording) await recorder.stop();
+        } catch {}
+        try {
+          uri = recorder.uri;
+        } catch {
+        } finally {
+          try {
+            recorder.release();
+          } catch {}
         }
-        uri = uri ?? rec.uri ?? null;
-      } catch {
-        // Ignore teardown stop error.
       }
-      try {
-        rec.release();
-      } catch {
-        // Ignore release error.
+      if (session) await releaseAudioSession(session).catch(() => {});
+      if (keepUri) return uri;
+      if (uri) {
+        try {
+          const file = new File(uri);
+          if (file.exists) file.delete();
+        } catch {}
       }
-    }
-    if (this.recordingSession) {
-      const token = this.recordingSession;
-      this.recordingSession = null;
-      await releaseAudioSession(token).catch(() => {});
-    }
-    if (uri) {
-      try {
-        const f = new File(uri);
-        if (f.exists) f.delete();
-      } catch {
-        // Ignore temp file cleanup error.
-      }
-    }
+      return null;
+    });
+    this.recordingTeardown = teardown.then(
+      () => {},
+      () => {},
+    );
+    return teardown;
   }
 
   stop() {
     this.generation += 1;
+    this.reply = null;
     this.clearTimers();
     if (this.abortController) {
       this.abortController.abort();
@@ -207,6 +227,7 @@ class MobileCommanderVoiceChatController {
       this.emit({
         activeThreadKey: null,
         phase: "off",
+        pendingMessageId: null,
         level: 0,
         heardSpeech: false,
         hintCode: null,
@@ -229,13 +250,13 @@ class MobileCommanderVoiceChatController {
     if (!host) return;
 
     this.generation += 1;
+    this.reply = null;
     const myGen = this.generation;
     this.clearTimers();
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
     }
-    await this.releaseRecordingResources();
     mobileCommanderSpeech.stop();
     mobileCommanderSpeech.setTalkBackEnabled(true);
     this.setKeepAwake(true);
@@ -243,6 +264,7 @@ class MobileCommanderVoiceChatController {
     this.emit({
       activeThreadKey: threadKey,
       phase: "starting",
+      pendingMessageId: null,
       level: 0,
       heardSpeech: false,
       hintCode: "requesting-mic",
@@ -251,6 +273,8 @@ class MobileCommanderVoiceChatController {
     });
 
     try {
+      await this.releaseRecordingResources();
+      if (this.generation !== myGen) return;
       const permission = await requestRecordingPermissionsAsync();
       if (this.generation !== myGen) return;
       if (!permission.granted) {
@@ -294,6 +318,7 @@ class MobileCommanderVoiceChatController {
     }
 
     await this.releaseRecordingResources();
+    await mobileCommanderSpeech.whenIdle();
     if (this.generation !== sessionGen) return;
 
     const session = acquireAudioSession("recording", () => {
@@ -305,18 +330,15 @@ class MobileCommanderVoiceChatController {
 
     try {
       const activated = await activateAudioSession(session);
-      if (!activated || this.generation !== sessionGen) {
-        await this.releaseRecordingResources();
-        return;
-      }
+      if (this.generation !== sessionGen) return;
+      if (!activated) throw new Error("Could not activate recording audio session.");
 
       const recorder = new AudioModule.AudioRecorder(buildRecordingOptions());
       this.recorder = recorder;
-      await recorder.prepareToRecordAsync();
-      if (this.generation !== sessionGen) {
-        await this.releaseRecordingResources();
-        return;
-      }
+      this.recorderPreparation = recorder.prepareToRecordAsync();
+      await this.recorderPreparation;
+      if (this.generation !== sessionGen) return;
+      this.recorderPreparation = null;
       recorder.record();
 
       this.emit({
@@ -398,6 +420,8 @@ class MobileCommanderVoiceChatController {
     } catch (err) {
       if (this.generation !== sessionGen) return;
       await this.releaseRecordingResources();
+      if (this.generation !== sessionGen) return;
+      this.setKeepAwake(false);
       this.emit({
         phase: "error",
         level: 0,
@@ -420,42 +444,23 @@ class MobileCommanderVoiceChatController {
     const rec = this.recorder;
     if (!host || !rec) return;
 
-    this.clearTimers();
-    this.recorder = null;
     this.emit({
       phase: "transcribing",
       level: 0,
       hintCode: "transcribing",
     });
 
-    let recordingUri: string | null = null;
-    try {
-      if (rec.isRecording) {
-        await rec.stop();
-      }
-      recordingUri = rec.uri ?? null;
-    } catch {
-      recordingUri = rec.uri ?? null;
-    }
-    try {
-      rec.release();
-    } catch {
-      // Ignore release error.
-    }
-    if (this.recordingSession) {
-      const token = this.recordingSession;
-      this.recordingSession = null;
-      await releaseAudioSession(token).catch(() => {});
-    }
-
-    if (this.generation !== sessionGen || !recordingUri) {
+    const recordingUri = await this.releaseRecordingResources(true);
+    if (this.generation !== sessionGen) {
       if (recordingUri) {
         try {
           new File(recordingUri).delete();
-        } catch {
-          // Ignore cleanup error.
-        }
+        } catch {}
       }
+      return;
+    }
+    if (!recordingUri) {
+      this.emit({ phase: "error", errorCode: "transcribe-failed", hintCode: null });
       return;
     }
 
@@ -493,19 +498,22 @@ class MobileCommanderVoiceChatController {
         return;
       }
 
-      const sent = await host.sendMessage(transcript);
+      let messageId: string | null;
+      try {
+        messageId = await host.sendMessage(transcript);
+      } catch {
+        messageId = null;
+      }
       if (this.generation !== sessionGen) return;
-      if (!sent) {
-        this.emit({
-          phase: "paused",
-          lastTranscript: transcript,
-          hintCode: "send-failed",
-        });
+      if (!messageId) {
+        this.emit({ phase: "paused", lastTranscript: transcript, hintCode: "send-failed" });
         return;
       }
 
+      this.reply = new CommanderVoiceReply(messageId);
       this.emit({
         phase: "thinking",
+        pendingMessageId: messageId,
         level: 0,
         heardSpeech: false,
         lastTranscript: transcript,
@@ -513,6 +521,12 @@ class MobileCommanderVoiceChatController {
         errorCode: null,
         errorDetail: null,
       });
+      this.thinkingTimer = setTimeout(() => {
+        this.thinkingTimer = null;
+        if (this.generation === sessionGen && this.state.phase === "thinking") {
+          this.emit({ hintCode: "still-working" });
+        }
+      }, 5_000);
     } catch (err) {
       if (this.generation !== sessionGen || abort.signal.aborted) return;
       this.abortController = null;
@@ -527,73 +541,130 @@ class MobileCommanderVoiceChatController {
     }
   }
 
-  togglePause() {
-    const threadKey = this.state.activeThreadKey;
-    if (!threadKey) return;
-    if (this.state.phase === "listening") {
-      void this.releaseRecordingResources();
-      this.emit({
-        phase: "paused",
-        level: 0,
-        heardSpeech: false,
-        hintCode: "paused",
-      });
+  pause() {
+    if (this.state.phase === "off") {
+      mobileCommanderSpeech.stop();
       return;
     }
-    if (this.state.phase === "paused" || this.state.phase === "error") {
-      const host = this.hosts.get(threadKey);
-      if (!host) return;
-      const myGen = this.generation;
-      void mobileCommanderSpeech.playBeep(host.prepared, "listen").then(() => {
-        if (this.generation === myGen) {
-          void this.beginListeningTurn(threadKey, myGen);
-        }
-      });
-    }
-  }
-
-  interruptAndListen() {
-    const threadKey = this.state.activeThreadKey;
-    if (!threadKey || this.state.phase === "off") return;
-    mobileCommanderSpeech.stop();
+    this.generation += 1;
+    this.reply = null;
     this.clearTimers();
-    const host = this.hosts.get(threadKey);
-    if (!host) return;
-    const myGen = this.generation;
-    void mobileCommanderSpeech.playBeep(host.prepared, "listen").then(() => {
-      if (this.generation === myGen) {
-        void this.beginListeningTurn(threadKey, myGen);
-      }
-    });
-  }
-
-  notifySpeakingStart(threadKey: string) {
-    if (!this.isActiveFor(threadKey)) return;
+    this.abortController?.abort();
+    this.abortController = null;
     void this.releaseRecordingResources();
+    this.setKeepAwake(false);
+    mobileCommanderSpeech.stop();
     this.emit({
-      phase: "speaking",
+      phase: "paused",
+      pendingMessageId: null,
       level: 0,
       heardSpeech: false,
-      hintCode: "speaking",
+      hintCode: "paused",
       errorCode: null,
       errorDetail: null,
     });
   }
 
-  notifySpeakingFinished(threadKey: string, outcome: MobileCommanderSpeakOutcome) {
-    if (!this.isActiveFor(threadKey)) return;
-    if (this.state.phase !== "speaking" && this.state.phase !== "thinking") return;
-    if (outcome !== "completed") return;
+  togglePause() {
+    const threadKey = this.state.activeThreadKey;
+    if (!threadKey) return;
+    if (this.state.phase === "listening") {
+      this.pause();
+    } else if (this.state.phase === "paused" || this.state.phase === "error") {
+      if (this.reply) {
+        this.interruptAndListen();
+      } else {
+        void this.startForThread(threadKey);
+      }
+    }
+  }
+
+  interruptAndListen() {
+    const threadKey = this.state.activeThreadKey;
+    if (!threadKey || !this.reply) return;
+    mobileCommanderSpeech.stop();
+    this.finishReply(threadKey, this.reply, "completed");
+  }
+
+  observeReply(
+    threadKey: string,
+    run: { readonly id: string; readonly userMessageId: string; readonly status: string },
+    text: string,
+  ) {
+    const reply = this.reply;
+    if (!this.isActiveFor(threadKey) || reply?.messageId !== run.userMessageId) return;
+
+    const action = reply.observe(run, text);
+    if (!action) return;
+    if (action.type === "listen") {
+      this.resumeListening(threadKey);
+      return;
+    }
+    if (action.type === "failed" || action.type === "empty") {
+      this.clearTimers();
+      this.reply = null;
+      mobileCommanderSpeech.stop();
+      this.emit({
+        phase: "paused",
+        pendingMessageId: null,
+        hintCode: action.type === "failed" ? "run-failed" : "no-reply",
+      });
+      return;
+    }
     const host = this.hosts.get(threadKey);
     if (!host) return;
-    const myGen = this.generation;
+    void mobileCommanderSpeech
+      .speak({
+        prepared: host.prepared,
+        text: action.text,
+        messageId: run.id,
+        mode: "auto",
+        onPlaying: () => {
+          if (this.reply !== reply) return;
+          this.clearTimers();
+          this.emit({ phase: "speaking", hintCode: "speaking" });
+        },
+      })
+      .then((outcome) => this.finishReply(threadKey, reply, outcome));
+  }
+
+  retryAudio() {
+    const threadKey = this.state.activeThreadKey;
+    const reply = this.reply;
+    if (!threadKey || !reply) return;
+    void mobileCommanderSpeech
+      .retry()
+      .then((outcome) => this.finishReply(threadKey, reply, outcome));
+  }
+
+  private finishReply(
+    threadKey: string,
+    reply: CommanderVoiceReply,
+    outcome: CommanderSpeakOutcome,
+  ) {
+    if (this.reply !== reply || outcome === "stopped") return;
+    if (reply.finishAudio(outcome)) {
+      this.resumeListening(threadKey);
+    } else if (outcome === "error") {
+      this.clearTimers();
+      this.emit({ phase: "paused", hintCode: "paused" });
+    } else {
+      this.emit({ phase: "thinking", hintCode: "still-working" });
+    }
+  }
+
+  private resumeListening(threadKey: string) {
+    const host = this.hosts.get(threadKey);
+    if (!host) return;
+    const generation = this.generation;
+    this.reply = null;
+    this.emit({ phase: "thinking", pendingMessageId: null });
     this.clearTimers();
     this.resumeTimer = setTimeout(() => {
       this.resumeTimer = null;
-      if (this.generation !== myGen || !this.isActiveFor(threadKey)) return;
       void mobileCommanderSpeech.playBeep(host.prepared, "listen").then(() => {
-        if (this.generation === myGen && this.isActiveFor(threadKey)) {
-          void this.beginListeningTurn(threadKey, myGen);
+        if (this.generation === generation) {
+          void this.beginListeningTurn(threadKey, generation);
         }
       });
     }, POST_SPEECH_RESUME_MS);
