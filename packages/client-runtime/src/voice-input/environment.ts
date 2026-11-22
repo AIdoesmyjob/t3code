@@ -12,6 +12,8 @@ import type {
   SpeechModelUnloadTimeout,
   SpeechTranscriptionOptions,
   EnvironmentSpeechSynthesizeRequest,
+  EnvironmentSpeechTranscribeAudioRequest,
+  SpeechBeepKind,
   SpeechPostProcessingOptions,
 } from "@t3tools/contracts";
 
@@ -350,4 +352,34 @@ export const synthesizeEnvironmentSpeech = (
     ...(canSend ? { canSend } : {}),
     timeoutMs: 45_000,
     run: ({ client, headers }) => client.synthesize({ headers, payload }),
+  });
+
+export const transcribeEnvironmentAudio = (
+  prepared: PreparedConnection,
+  payload: EnvironmentSpeechTranscribeAudioRequest,
+  canSend?: () => boolean,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.transcribeAudio(),
+    ...(canSend ? { canSend } : {}),
+    timeoutMs: 45_000,
+    run: ({ client, headers }) => client.transcribeAudio({ headers, payload }),
+  });
+
+export const fetchEnvironmentSpeechBeep = (
+  prepared: PreparedConnection,
+  kind: SpeechBeepKind,
+  canSend?: () => boolean,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.beep(),
+    ...(canSend ? { canSend } : {}),
+    timeoutMs: 15_000,
+    run: ({ client, headers }) => client.beep({ headers, payload: { kind } }),
   });

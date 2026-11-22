@@ -333,7 +333,10 @@ import { pendingApprovalSlotLabel } from "./chat/MessagesTimeline.logic";
 import { resolveScrollToEndClearance } from "./composerFooterLayout";
 import { ChatHeader, type HiddenTerminalChip } from "./chat/ChatHeader";
 import { isCommanderThread } from "../skofo/commander/commanderConstants";
-import { useCommanderAutoSpeak } from "../skofo/commander/CommanderVoiceControls";
+import {
+  CommanderVoiceChatBar,
+  useCommanderAutoSpeak,
+} from "../skofo/commander/CommanderVoiceControls";
 import { useSideChat } from "./chat/useSideChat";
 import { sideThreadComposer, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
 import { useRemoteOpenState } from "~/remoteOpen";
@@ -1702,16 +1705,18 @@ export default function ChatView(props: ChatViewProps) {
     entry.kind === "message" ? [entry.message] : [],
   );
   const timelineEmpty = timelineEntries.length === 0 && !hasStreamedTimelineRows;
+  const isCommanderView =
+    isServerThread &&
+    activeThread !== undefined &&
+    activeThreadShell !== undefined &&
+    isCommanderThread(activeThreadShell);
   useCommanderAutoSpeak({
     environmentId: isServerThread && activeThread ? activeThread.environmentId : null,
     threadId: isServerThread && activeThread ? activeThread.id : null,
-    isCommander:
-      isServerThread &&
-      activeThread !== undefined &&
-      activeThreadShell !== undefined &&
-      isCommanderThread(activeThreadShell),
+    isCommander: isCommanderView,
     ready: !threadDetailLoading,
     messages: timelineMessages,
+    sendMessage: (text) => composerRef.current?.submitPromptText(text) ?? false,
   });
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const deferredChat = use(DeferredChatContext);
@@ -3997,6 +4002,13 @@ export default function ChatView(props: ChatViewProps) {
                                   />
                                 ) : null
                               }
+                            />
+                          ) : null}
+                          {isCommanderView && activeThread ? (
+                            <CommanderVoiceChatBar
+                              environmentId={activeThread.environmentId}
+                              threadId={activeThread.id}
+                              isCommander={isCommanderView}
                             />
                           ) : null}
                           {!composerMounted ? null : (
