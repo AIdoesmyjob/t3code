@@ -55,6 +55,7 @@ import { isModelPickerOpen, subscribeToModelPickerVisibility } from "../modelPic
 import { shortcutModifierStore } from "../shortcutModifierState";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
+import { isCommanderThread, type CommanderThreadLike } from "../skofo/commander/commanderConstants";
 
 export function shouldNavigateAfterThreadPark(input: {
   readonly threadKey: string;
@@ -588,9 +589,10 @@ export async function deleteSelectedThreadEntries<
  * the sidebar lists, by thread key; they show under that thread, as subagents do.
  */
 export function filterSidebarV2VisibleThreads<
-  T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
-    projectId: string;
-  },
+  T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> &
+    CommanderThreadLike & {
+      projectId: string;
+    },
 >(
   threads: readonly T[],
   scopedProjectKeys: ReadonlySet<string> | null,
@@ -599,6 +601,7 @@ export function filterSidebarV2VisibleThreads<
   return threads.filter(
     (thread) =>
       thread.archivedAt === null &&
+      !isCommanderThread(thread) &&
       !isShownUnderParent(
         { environmentId: thread.environmentId, threadId: thread.id },
         thread.lineage,
