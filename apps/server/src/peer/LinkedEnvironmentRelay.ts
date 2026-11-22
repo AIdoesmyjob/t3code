@@ -271,10 +271,8 @@ const handle = Effect.fn("LinkedEnvironmentRelay.handle")(function* (
   if (isWebSocketUpgrade(request)) {
     const upstreamUrl = `${relay.success.origin}${peerPathAndQuery}`.replace(/^http/, "ws");
     return yield* proxyWebSocket(request, upstreamUrl, relay.success.token).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("Linked environment relay could not open the peer's socket", cause).pipe(
-          Effect.as(jsonError(502, "unreachable", "The linked environment did not answer.")),
-        ),
+      Effect.orElseSucceed(() =>
+        jsonError(502, "unreachable", "The linked environment did not answer."),
       ),
     );
   }
@@ -286,10 +284,8 @@ const handle = Effect.fn("LinkedEnvironmentRelay.handle")(function* (
     peerPathAndQuery,
     relayBase,
   ).pipe(
-    Effect.catch((cause) =>
-      Effect.logWarning("Linked environment relay request failed", cause).pipe(
-        Effect.as(jsonError(502, "unreachable", "The linked environment did not answer.")),
-      ),
+    Effect.orElseSucceed(() =>
+      jsonError(502, "unreachable", "The linked environment did not answer."),
     ),
   );
 });
