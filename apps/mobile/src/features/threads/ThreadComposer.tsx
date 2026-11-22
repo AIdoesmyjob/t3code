@@ -125,6 +125,7 @@ import {
   consumeMobileCommanderDictation,
   subscribeMobileCommanderDictation,
 } from "../commander/commander";
+import { mobileCommanderSpeech } from "../commander/mobileCommanderSpeech";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 import {
@@ -466,6 +467,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     const maybeStart = () => {
       if (!voiceInput.isAvailable || voiceInput.isBusy) return;
       if (consumeMobileCommanderDictation(composerOwnerKey)) {
+        mobileCommanderSpeech.stop();
+        mobileCommanderSpeech.setTalkBackEnabled(true);
         voiceInput.start();
       }
     };

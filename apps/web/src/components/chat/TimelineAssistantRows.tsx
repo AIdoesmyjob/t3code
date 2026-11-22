@@ -5,6 +5,7 @@ import {
 } from "./TimelineRowParts";
 import { type TimelineRow, TimelineRowActivityCtx, TimelineRowCtx } from "./timelineRowContext";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/assistantInsights";
+import { AssistantSpeakButton } from "../../skofo/commander/CommanderVoiceControls";
 import { MessageId, type RunId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { agentWorkingDirectories } from "@t3tools/client-runtime/workspace-basename-lookup";
@@ -261,6 +262,7 @@ function AssistantMessageMeta({
         showCopyButton={showCopyButton}
         streaming={copyStreaming}
       />
+      <AssistantSpeakButton environmentId={ctx.activeThreadEnvironmentId} message={message} />
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
       ) : null}
