@@ -11,6 +11,7 @@ import type {
   SpeechAcceleration,
   SpeechModelUnloadTimeout,
   SpeechTranscriptionOptions,
+  EnvironmentSpeechSynthesizeRequest,
   SpeechPostProcessingOptions,
 } from "@t3tools/contracts";
 
@@ -334,4 +335,19 @@ export const removeEnvironmentSpeechModel = (prepared: PreparedConnection, model
     method: "POST",
     path: (urls) => urls.removeModel(),
     run: ({ client, headers }) => client.removeModel({ headers, payload: { modelId } }),
+  });
+
+export const synthesizeEnvironmentSpeech = (
+  prepared: PreparedConnection,
+  payload: EnvironmentSpeechSynthesizeRequest,
+  canSend?: () => boolean,
+) =>
+  request({
+    group: "voice",
+    prepared,
+    method: "POST",
+    path: (urls) => urls.synthesize(),
+    ...(canSend ? { canSend } : {}),
+    timeoutMs: 45_000,
+    run: ({ client, headers }) => client.synthesize({ headers, payload }),
   });
