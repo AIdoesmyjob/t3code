@@ -127,9 +127,12 @@ export function resolveMessageDispatchIntent(
   deliveryIntent?: "auto" | "steer" | "restart",
 ): MessageDispatchMode {
   const mode = resolveDeliveryIntent(projection, requestedMode, deliveryIntent);
+  if (mode.type !== "steer_active" && mode.type !== "restart_active") return mode;
+  const target = projection.runs.find((run) => run.id === mode.targetRunId);
+  // A voice client reads the answer to this run's original user message.
+  if (target?.commanderVoice && isActiveRun(target)) return { type: "queue_after_active" };
   if (mode.type !== "steer_active") return mode;
   // Compaction and sign-out cannot accept steers; queue follow-ups.
-  const target = projection.runs.find((run) => run.id === mode.targetRunId);
   const targetMessage = projection.messages.find((message) => message.id === target?.userMessageId);
   if (targetMessage !== undefined && isNativeMaintenanceCommand(targetMessage)) {
     return { type: "queue_after_active" };
