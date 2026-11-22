@@ -2062,9 +2062,6 @@ function ChatMarkdown({
   ...props
 }: ChatMarkdownProps) {
   const text = stripSpokenTagsForDisplay(rawText, { isStreaming: props.isStreaming === true });
-  const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
-    useChatMarkdownState({ text, inline, ...props });
-  const hasInsights = renderInsights && text.includes("★ Insight");
   // Streaming re-renders only the last block; offsets for task edits, and extensions that read
   // the whole message, need the whole text.
   const streamingBlocks =

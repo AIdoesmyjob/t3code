@@ -11,9 +11,9 @@ import { AppRoot } from "./AppRoot";
 import { whenLocaleReady } from "./i18n/runtime";
 import { timelineGapRecorderEnabled } from "./components/chat/timelineGapRecorderEnabled";
 import { startSurfaceGrainTiles } from "./surfaceGrainTile";
+import { chunkLoadState } from "./lib/chunkReloadGuard";
 
 if (timelineGapRecorderEnabled) void import("./components/chat/timelineGapConsole");
-import { chunkLoadState } from "./lib/chunkReloadGuard";
 
 const router = startAppServices();
 startSurfaceGrainTiles();
