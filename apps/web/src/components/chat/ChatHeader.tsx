@@ -47,6 +47,7 @@ import { ContentButton } from "../ui/button";
 import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { GuestShareIndicator } from "./GuestShareControls";
+import { CommanderVoiceHeaderButton } from "../../skofo/commander/CommanderVoiceControls";
 import { useLayoutPane } from "../../layout/layoutPaneContext";
 import {
   LAYOUT_TAB_ICON_CLASS,
@@ -498,6 +499,12 @@ export const ChatHeader = memo(function ChatHeader({
         ) : null}
       </PaneNotch>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {isServerThread ? (
+        <CommanderVoiceHeaderButton
+          environmentId={activeThreadEnvironmentId}
+          threadId={activeThreadId}
+        />
+      ) : null}
     </div>
   );
 });
