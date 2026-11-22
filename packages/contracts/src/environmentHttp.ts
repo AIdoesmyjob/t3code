@@ -69,6 +69,8 @@ import {
   EnvironmentSpeechPostProcessingResult,
   EnvironmentSpeechStatus,
   EnvironmentSpeechTranscriptionResult,
+  EnvironmentSpeechSynthesizeRequest,
+  EnvironmentSpeechSynthesizeResult,
 } from "./speech.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -980,6 +982,14 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
       payload: EnvironmentSpeechPostProcessingRequest,
       success: EnvironmentSpeechPostProcessingResult,
       error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("synthesize", "/api/voice/synthesize", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechSynthesizeRequest,
+      success: EnvironmentSpeechSynthesizeResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 

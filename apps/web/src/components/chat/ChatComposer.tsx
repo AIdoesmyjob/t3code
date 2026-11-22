@@ -159,6 +159,7 @@ import {
   consumeCommanderDictation,
   subscribeCommanderDictation,
 } from "../../skofo/commander/commanderConstants";
+import { commanderSpeechController } from "../../skofo/commander/commanderSpeech";
 import { ComposerSpeechButton } from "./ComposerSpeechButton";
 import { COMPOSER_PILL_SLOT_BUTTON_CLASS_NAME } from "./ComposerPrimaryActions";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -2031,6 +2032,8 @@ export function ChatComposer(props: ChatComposerProps) {
     ) {
       return;
     }
+    commanderSpeechController.stop();
+    commanderSpeechController.setTalkBackEnabled(true);
     void speechInput.start();
   });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listens for one-tap Voice button clicks from the fixed top Computer sidebar card
@@ -2482,6 +2485,7 @@ export function ChatComposer(props: ChatComposerProps) {
         disabled={dictationDisabled}
         unavailableReason={speechUnavailableReason}
         onStart={() => {
+          commanderSpeechController.stop();
           if (isComposerCollapsedMobile) expandMobileComposerStable();
           void speechInput.start();
         }}

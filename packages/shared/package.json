@@ -654,7 +654,8 @@
     "./paletteSearchCopy": {
       "types": "./src/paletteSearchCopy.ts",
       "import": "./src/paletteSearchCopy.ts"
-    }
+    },
+    "./skofoSpeech": "./src/skofoSpeech.ts"
   },
   "scripts": {
     "typecheck": "effect-tsgo tsrs --noEmit",
