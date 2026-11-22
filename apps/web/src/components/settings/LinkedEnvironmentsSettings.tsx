@@ -25,7 +25,11 @@ import { T, useGT, useMessages, Var } from "gt-react";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
-import { useEnvironment, useEnvironmentIdentities, usePrimaryEnvironmentId } from "~/state/environments";
+import {
+  useEnvironment,
+  useEnvironmentIdentities,
+  usePrimaryEnvironmentId,
+} from "~/state/environments";
 import { canOpenLinkedEnvironment, useOpenLinkedEnvironment } from "~/state/linkedRelay";
 import { mintPairingCodeOn } from "~/state/peerPairingCode";
 import {
