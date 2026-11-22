@@ -105,6 +105,8 @@ import { useWorkspaceTabs } from "../layout/workspace/WorkspaceTabsContext";
 import { HostPressureBanner } from "./HostPressureBanner";
 import { ThreadListFilters } from "./ThreadListFilters";
 import { deriveHomeEmptyState } from "./home-empty-state";
+import { CommanderTopCard } from "../commander/CommanderTopCard";
+import { computeMobileCommanderStats, findCommanderThread } from "../commander/commander";
 
 interface HomeScreenProps {
   /** Whether this list is the one on screen; see `useHomeRouteVisible`. */
@@ -681,12 +683,32 @@ export function HomeScreen(props: HomeScreenProps) {
     );
   }
 
+  const commanderThread = findCommanderThread(props.threads);
+  const commanderThreadKey = commanderThread
+    ? scopedThreadKey(commanderThread.environmentId, commanderThread.id)
+    : null;
+  const commanderStats = commanderThread
+    ? computeMobileCommanderStats(props.threads, commanderThreadKey)
+    : null;
+  const commanderCard =
+    commanderThread && commanderStats ? (
+      <CommanderTopCard
+        thread={commanderThread}
+        stats={commanderStats}
+        selected={commanderThreadKey === selectedThreadKey}
+        horizontalPadding={
+          12 + (contentSideInsets?.left ?? 0) + (sidebarSurface ? 8 : 0) + androidListGutter
+        }
+        onSelectThread={selectThread}
+      />
+    ) : null;
   const listHeader = Platform.OS === "ios" ? undefined : <HomeTopContentSpacer />;
 
   const v2ListHeader = (
     <>
       {listHeader}
       <HostPressureBanner />
+      {Platform.OS === "ios" ? commanderCard : null}
       {Platform.OS === "ios" && workspace ? (
         <ThreadListFilters
           gutter={sidebarSurface ? 8 : 0}
@@ -755,6 +777,8 @@ export function HomeScreen(props: HomeScreenProps) {
   if (Platform.OS === "android" && threadListV2Items.length === 0) {
     return (
       <ScreenContent surface="screen">
+        {/* sticky Computer card on Android empty filter */}
+        {commanderCard}
         <View
           className="flex-1 items-center justify-center px-4"
           style={{ paddingBottom: insets.bottom }}
@@ -772,6 +796,7 @@ export function HomeScreen(props: HomeScreenProps) {
     <View className={containerClassName}>
       <ScreenContent surface="screen">
         <View className={cn("flex-1", Platform.OS !== "android" && contentBackground)}>
+          {Platform.OS === "android" ? commanderCard : null}
           <SwipeableScrollGateProvider enabled={swipeEnabled} activation={swipeRowActivation}>
             <GestureDetector gesture={homeScrollGesture}>
               <AnimatedLegendList

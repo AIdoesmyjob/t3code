@@ -276,6 +276,11 @@ import {
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import { CommanderSidebarCard } from "../skofo/commander/CommanderSidebarCard";
+import {
+  computeCommanderSidebarStats,
+  findCommanderThread,
+} from "../skofo/commander/commanderConstants";
 import { TooltipScrollDismissArea } from "./ui/tooltip";
 import { DraftId, useComposerDraftStore, usePromotingDraftThreadKeys } from "../composerDraftStore";
 import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
@@ -3345,6 +3350,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const newThreadShortcutLabel =
     shortcutLabelForCommand(keybindings, "chat.new") ??
     shortcutLabelForCommand(keybindings, "chat.newLocal");
+  const commanderThread = findCommanderThread(listedThreads);
+  const commanderThreadKey = commanderThread
+    ? scopedThreadKey(scopeThreadRef(commanderThread.environmentId, commanderThread.id))
+    : null;
+  const commanderStats = commanderThread
+    ? computeCommanderSidebarStats(listedThreads, commanderThreadKey)
+    : null;
   return (
     <SidebarFolderDrop>
       <SidebarChromeHeader isElectron={isElectron} />
@@ -3611,6 +3623,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            {commanderThread && commanderStats ? (
+              <CommanderSidebarCard
+                thread={commanderThread}
+                stats={commanderStats}
+                isActive={commanderThreadKey === routeRowThreadKey}
+                onOpen={(ref) => {
+                  void navigateToThread(ref);
+                }}
+                onOpenToSide={openThreadToTheSide}
+              />
+            ) : null}
           </SidebarGroup>
         }
       >

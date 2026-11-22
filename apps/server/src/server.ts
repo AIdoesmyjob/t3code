@@ -261,6 +261,9 @@ import {
   readTailscaleStatus,
 } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
+import * as CommanderHttpRoutes from "./skofo/commander/CommanderHttpRoutes.ts";
+import * as CommanderService from "./skofo/commander/CommanderService.ts";
+import * as CommanderWatchReactor from "./skofo/commander/CommanderWatchReactor.ts";
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
 const HTTP_ROUTER_CONFIG = {
@@ -932,6 +935,7 @@ const layerMakeRoutes = Layer.mergeAll(
     LinkedEnvironmentRelay.layer,
     PeerBrowserPairingRoute.layer,
     PeerProjectTransferRoute.layer,
+    CommanderHttpRoutes.layer,
     ServerBrowserStream.routeLayer,
     PreviewTunnel.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
@@ -947,12 +951,19 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
+  // Provisions and monitors the persistent Skofo Computer thread when enabled.
+  Layer.effectDiscard(
+    CommanderWatchReactor.CommanderWatchReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+  ),
 ).pipe(
   Layer.provide(
     PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
   ),
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  // Persistent Skofo Computer watch reactor + service shared by /mcp and /api/skofo/commander.
+  Layer.provide(CommanderWatchReactor.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  Layer.provide(CommanderService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.

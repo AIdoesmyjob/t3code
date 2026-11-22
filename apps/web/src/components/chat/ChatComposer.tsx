@@ -168,6 +168,10 @@ import {
   useEnvironmentSpeechInput,
   useSpeechUnavailableReason,
 } from "../../speech/useEnvironmentSpeechInput";
+import {
+  consumeCommanderDictation,
+  subscribeCommanderDictation,
+} from "../../skofo/commander/commanderConstants";
 import { ComposerSpeechButton } from "./ComposerSpeechButton";
 import { COMPOSER_PILL_SLOT_BUTTON_CLASS_NAME } from "./ComposerPrimaryActions";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -2209,6 +2213,35 @@ export function ChatComposer(props: ChatComposerProps) {
     dictationActiveRef.current = speechInput.state.phase !== "idle";
   });
   const speechUnavailableReason = useSpeechUnavailableReason(speechInput);
+  const commanderDictationThreadKey = activeThread
+    ? `${activeThread.environmentId}:${activeThread.id}`
+    : null;
+  const startCommanderDictation = useStableCallback(() => {
+    if (
+      hiddenThread ||
+      dictationDisabled ||
+      !speechInput.available ||
+      speechInput.state.phase !== "idle"
+    ) {
+      return;
+    }
+    void speechInput.start();
+  });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- listens for one-tap Voice button clicks from the fixed top Computer sidebar card
+  useEffect(() => {
+    if (commanderDictationThreadKey === null || hiddenThread) return;
+    if (consumeCommanderDictation(commanderDictationThreadKey)) {
+      startCommanderDictation();
+    }
+    return subscribeCommanderDictation((requestedKey) => {
+      if (
+        requestedKey === commanderDictationThreadKey &&
+        consumeCommanderDictation(commanderDictationThreadKey)
+      ) {
+        startCommanderDictation();
+      }
+    });
+  }, [commanderDictationThreadKey, hiddenThread, startCommanderDictation]);
 
   const resolveActiveComposerTrigger = (): {
     snapshot: { value: string; cursor: number; expandedCursor: number };
