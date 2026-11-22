@@ -222,19 +222,31 @@ class CommanderSpeechController {
     const generation = this.generation;
     const { signal } = this.abortController;
     const isCurrent = () => generation === this.generation && !signal.aborted;
+    const fetchSentence = (sentence: string) =>
+      runEnvironmentSpeech(
+        synthesizeEnvironmentSpeech(
+          job.input.prepared,
+          { text: sentence, format: "mp3" },
+          isCurrent,
+        ),
+        { signal },
+      );
+    let nextPromise: Promise<{ readonly audioBase64: string; readonly mimeType: string }> | null =
+      null;
     try {
-      for (const sentence of job.sentences.slice(job.index)) {
+      while (job.index < job.sentences.length) {
+        const sentence = job.sentences[job.index]!;
         if (!job.clip) {
-          const result = await runEnvironmentSpeech(
-            synthesizeEnvironmentSpeech(
-              job.input.prepared,
-              { text: sentence, format: "mp3" },
-              isCurrent,
-            ),
-            { signal },
-          );
+          const pending = nextPromise ?? fetchSentence(sentence);
+          nextPromise = null;
+          const result = await pending;
           if (!isCurrent()) return "stopped";
           job.clip = base64ToBlob(result.audioBase64, result.mimeType);
+        }
+        const nextSentence = job.sentences[job.index + 1];
+        if (nextSentence && !nextPromise) {
+          nextPromise = fetchSentence(nextSentence);
+          void nextPromise.catch(() => {});
         }
         await this.playBlob(job.clip, signal, 1, () => {
           if (this.state.status !== "speaking") {
