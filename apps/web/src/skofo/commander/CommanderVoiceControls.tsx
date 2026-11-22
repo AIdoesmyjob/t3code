@@ -72,6 +72,7 @@ export function useCommanderAutoSpeak(input: {
   readonly environmentId: EnvironmentId | null;
   readonly threadId: ThreadId | null;
   readonly isCommander: boolean;
+  readonly ready: boolean;
   readonly messages: ReadonlyArray<ChatMessage>;
 }) {
   const prepared = useThreadVoiceSpeechOutput(input.isCommander ? input.environmentId : null);
@@ -94,6 +95,9 @@ export function useCommanderAutoSpeak(input: {
       lastSpokenMessageIdRef.current = null;
       return;
     }
+    if (!input.ready) {
+      return;
+    }
     if (seededThreadKeyRef.current !== threadKey) {
       seededThreadKeyRef.current = threadKey;
       lastSpokenMessageIdRef.current = latestId;
@@ -111,7 +115,15 @@ export function useCommanderAutoSpeak(input: {
       text: latestText,
       messageId: latestId,
     });
-  }, [input.isCommander, threadKey, latestId, latestText, speech.talkBackEnabled, prepared]);
+  }, [
+    input.isCommander,
+    input.ready,
+    threadKey,
+    latestId,
+    latestText,
+    speech.talkBackEnabled,
+    prepared,
+  ]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops audio playback when switching away from Computer
   useEffect(() => {
