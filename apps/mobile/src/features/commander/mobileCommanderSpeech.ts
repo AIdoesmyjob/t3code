@@ -1,17 +1,24 @@
 import { useSyncExternalStore } from "react";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import { synthesizeEnvironmentSpeech } from "@t3tools/client-runtime/voice-input";
+import {
+  fetchEnvironmentSpeechBeep,
+  synthesizeEnvironmentSpeech,
+} from "@t3tools/client-runtime/voice-input";
+import type { SpeechBeepKind } from "@t3tools/contracts";
 import { splitIntoSpokenSentences } from "@t3tools/shared/skofoSpeech";
-import { createAudioPlayer } from "expo-audio";
+import { createAudioPlayer, type AudioPlayer } from "expo-audio";
 import { File, Paths } from "expo-file-system";
 
 import {
   acquireAudioSession,
   activateAudioSession,
-  disposeAudioPlayer,
   releaseAudioSession,
 } from "../../lib/audioSession";
 import { runSpeech } from "../voice-input/voiceDestination";
+
+type AudioSessionToken = ReturnType<typeof acquireAudioSession>;
+
+export type MobileCommanderSpeakOutcome = "completed" | "stopped" | "error";
 
 interface MobileCommanderSpeechState {
   readonly talkBackEnabled: boolean;
@@ -29,6 +36,19 @@ function base64ToBytes(base64: string): Uint8Array {
   return bytes;
 }
 
+function disposeAudioPlayer(player: AudioPlayer): void {
+  try {
+    player.pause();
+  } catch {
+    // Ignore pause errors during teardown.
+  }
+  try {
+    player.remove();
+  } catch {
+    // Ignore remove errors during teardown.
+  }
+}
+
 class MobileCommanderSpeechController {
   private state: MobileCommanderSpeechState = {
     talkBackEnabled: true,
@@ -40,8 +60,9 @@ class MobileCommanderSpeechController {
   private generation = 0;
   private fileSeq = 0;
   private abortController: AbortController | null = null;
-  private activePlayer: ReturnType<typeof createAudioPlayer> | null = null;
-  private activeSession: ReturnType<typeof acquireAudioSession> | null = null;
+  private activePlayer: AudioPlayer | null = null;
+  private activeSession: AudioSessionToken | null = null;
+  private beepUriCache = new Map<string, string>();
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -95,13 +116,63 @@ class MobileCommanderSpeechController {
     }
   }
 
+  async playBeep(prepared: PreparedConnection, kind: SpeechBeepKind): Promise<void> {
+    try {
+      const cacheKey = `${prepared.environmentId}:${kind}`;
+      let uri = this.beepUriCache.get(cacheKey);
+      if (!uri) {
+        const result = await runSpeech(fetchEnvironmentSpeechBeep(prepared, kind));
+        const beepFile = new File(Paths.cache, `skofo-beep-${kind}.mp3`);
+        beepFile.write(base64ToBytes(result.audioBase64));
+        uri = beepFile.uri;
+        this.beepUriCache.set(cacheKey, uri);
+      }
+
+      const session = acquireAudioSession("playback");
+      const activated = await activateAudioSession(session);
+      if (!activated) {
+        await releaseAudioSession(session).catch(() => {});
+        return;
+      }
+
+      const player = createAudioPlayer(uri, { updateInterval: 80 });
+      try {
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(watchdog);
+            sub.remove();
+            resolve();
+          };
+          const watchdog = setTimeout(finish, 1_500);
+          const sub = player.addListener("playbackStatusUpdate", (status) => {
+            if (status.didJustFinish) finish();
+          });
+          try {
+            player.play();
+          } catch {
+            finish();
+          }
+        });
+      } finally {
+        disposeAudioPlayer(player);
+        await releaseAudioSession(session).catch(() => {});
+      }
+    } catch {
+      // Never block voice chat turns on optional LCARS beep cues.
+    }
+  }
+
   async speak(input: {
     readonly prepared: PreparedConnection;
     readonly text: string;
     readonly messageId: string;
-  }): Promise<void> {
-    const sentences = splitIntoSpokenSentences(input.text);
-    if (sentences.length === 0) return;
+    readonly mode?: "auto" | "full";
+  }): Promise<MobileCommanderSpeakOutcome> {
+    const sentences = splitIntoSpokenSentences(input.text, { mode: input.mode ?? "full" });
+    if (sentences.length === 0) return "completed";
 
     this.stop();
     const myGen = this.generation;
@@ -125,15 +196,15 @@ class MobileCommanderSpeechController {
 
     try {
       const activated = await activateAudioSession(session);
-      if (!activated || !canSend()) return;
+      if (!activated || !canSend()) return "stopped";
 
       let nextPromise: Promise<{ readonly audioBase64: string; readonly mimeType: string }> | null =
         fetchSentence(sentences[0]!);
 
       for (let i = 0; i < sentences.length; i += 1) {
-        if (!canSend()) return;
+        if (!canSend()) return "stopped";
         const result = await nextPromise;
-        if (!result || !canSend()) return;
+        if (!result || !canSend()) return "stopped";
 
         const nextSentence = sentences[i + 1];
         nextPromise = nextSentence ? fetchSentence(nextSentence) : null;
@@ -193,12 +264,15 @@ class MobileCommanderSpeechController {
           void releaseAudioSession(session);
         }
         this.emit({ status: "idle", speakingMessageId: null });
+        return "completed";
       }
+      return "stopped";
     } catch (err) {
-      if (this.generation !== myGen || abort.signal.aborted) return;
+      if (this.generation !== myGen || abort.signal.aborted) return "stopped";
       const message = err instanceof Error ? err.message : String(err);
       this.stop();
       this.emit({ error: message });
+      return "error";
     }
   }
 }

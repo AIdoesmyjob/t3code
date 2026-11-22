@@ -30,7 +30,9 @@ export {
   removeEnvironmentSpeechModel,
   selectEnvironmentSpeechModel,
   transcribeEnvironmentPcm,
+  fetchEnvironmentSpeechBeep,
   synthesizeEnvironmentSpeech,
+  transcribeEnvironmentAudio,
   updateEnvironmentSpeechAcceleration,
   updateEnvironmentSpeechModelUnloadTimeout,
 } from "./environment.ts";

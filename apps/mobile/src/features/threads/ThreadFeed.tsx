@@ -319,6 +319,7 @@ import {
   mobileCommanderSpeech,
   useMobileCommanderSpeechState,
 } from "../commander/mobileCommanderSpeech";
+import { stripSpokenTagsForDisplay } from "@t3tools/shared/skofoSpeech";
 import { voiceSpeechOutputConnectionAtom } from "../voice-input/voiceDestination";
 import {
   fileRoutePathSegments,
@@ -490,6 +491,7 @@ function AssistantSpeakButton(props: {
           prepared,
           text: props.text,
           messageId: props.messageId,
+          mode: "full",
         });
       }}
       style={{
@@ -1529,7 +1531,10 @@ function AssistantMarkdownBlocks(props: {
         <SelectableMarkdownText
           key={`markdown:${offset}`}
           markdown={renderCodexInlineDirectivesAsMarkdown(
-            withReferenceDefinitions(segment.markdown, definitions),
+            withReferenceDefinitions(
+              stripSpokenTagsForDisplay(segment.markdown, { isStreaming: true }),
+              definitions,
+            ),
           )}
           skills={props.skills}
           models={props.models}
