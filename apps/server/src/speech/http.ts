@@ -26,6 +26,7 @@ import {
 import * as SpeechPostProcessing from "./postProcessing.ts";
 import * as CloudSpeech from "./CloudSpeech.ts";
 import * as SpeechService from "./SpeechService.ts";
+import { synthesizeSkofoSpeech } from "../skofo/tts/SkofoTtsClient.ts";
 
 const MAX_TRANSCRIBE_BODY_BYTES = SpeechService.MAX_SPEECH_BYTES + SPEECH_MAX_OPTIONS_BYTES + 4;
 const parseAudio = Option.liftThrowable(decodeSpeechPcmRequest);
@@ -234,6 +235,13 @@ export const speechHttpApiLayer = HttpApiBuilder.group(
           return yield* postProcessing
             .process(args.payload)
             .pipe(Effect.catch((error) => failEnvironmentInternal("internal_error", error)));
+        }),
+      )
+      .handle(
+        "synthesize",
+        Effect.fn("environment.voice.synthesize")(function* (args) {
+          yield* guard(args.endpoint.name);
+          return yield* synthesizeSkofoSpeech(args.payload).pipe(mapSpeechError);
         }),
       );
   }),
