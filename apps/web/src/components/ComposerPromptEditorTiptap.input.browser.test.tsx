@@ -71,7 +71,6 @@ function Composer({
   literalText = false,
   placeholder = "",
   disabled = false,
-  placeholder = "",
   placeholderSuffix,
 }: {
   value: string;
@@ -83,7 +82,6 @@ function Composer({
   importContextFragment?: ComposerPromptEditorProps["importContextFragment"];
   literalText?: boolean;
   disabled?: boolean;
-  placeholder?: string;
   placeholderSuffix?: ComposerPromptEditorProps["placeholderSuffix"];
 }) {
   const [prompt, setPrompt] = useState({ value, cursor: value.length });

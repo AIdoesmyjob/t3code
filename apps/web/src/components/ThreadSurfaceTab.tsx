@@ -596,9 +596,7 @@ function ThreadSurfacePane({
       open
       keybindings={keybindings}
       surfaces={[surface]}
-      environmentId={
-              (surface.environmentId as EnvironmentId | undefined) ?? threadRef.environmentId
-            }
+      environmentId={threadRef.environmentId}
       activeSurfaceId={surface.id}
       pendingSurfaceIds={EMPTY_PENDING}
       previewSessions={previewState.sessions}
@@ -852,7 +850,9 @@ function ThreadSurfaceContent({
             }
             getShortcutContext={getShortcutContext}
             shortcutsEnabled={visible}
-            environmentId={threadRef.environmentId}
+            environmentId={
+              (surface.environmentId as EnvironmentId | undefined) ?? threadRef.environmentId
+            }
             onSelectPullRequest={(reference) =>
               useRightPanelStore.getState().openPullRequest(threadRef, {
                 ...(surface.environmentId === undefined
