@@ -865,7 +865,8 @@ const make = Effect.gen(function* () {
       capabilities: peer.capabilities,
     };
     const browserRelay = offersBrowserRelay(link, peer);
-    const projectCopy = link.access === "full-access" && peer.capabilities.linkedProjectCopy === true;
+    const projectCopy =
+      link.access === "full-access" && peer.capabilities.linkedProjectCopy === true;
     return { resolved, browserRelay, projectCopy };
   });
 
