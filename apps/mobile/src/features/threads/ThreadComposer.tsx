@@ -124,6 +124,10 @@ import {
   ComposerDictationToolbar,
 } from "../voice-input/ComposerDictationControl";
 import { useVoiceInputController } from "../voice-input/useVoiceInputController";
+import {
+  consumeMobileCommanderDictation,
+  subscribeMobileCommanderDictation,
+} from "../commander/commander";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 import { perfProbe } from "../development/perf-probe-hooks";
@@ -465,6 +469,22 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     onChangeDraftMessage: (text) => setComposerDraftText(composerDraftKey, text),
     onChangeSelection: composerMenu.onSelectionChange,
   });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- triggers voice dictation when opened via the top Computer card mic button
+  useEffect(() => {
+    if (props.isDraft || !props.canOperateThread) return;
+    const maybeStart = () => {
+      if (!voiceInput.isAvailable || voiceInput.isBusy) return;
+      if (consumeMobileCommanderDictation(composerOwnerKey)) {
+        voiceInput.start();
+      }
+    };
+    maybeStart();
+    return subscribeMobileCommanderDictation((requestedKey) => {
+      if (requestedKey === composerOwnerKey) {
+        maybeStart();
+      }
+    });
+  }, [composerOwnerKey, props.canOperateThread, props.isDraft, voiceInput]);
   const isSubmissionLocked =
     props.interactionLocked === true || queuedEdit?.saving === true || voiceInput.blocksSubmission;
   const voicePresentation = resolveVoiceComposerPresentation(

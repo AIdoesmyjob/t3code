@@ -101,6 +101,10 @@ import {
   PreviewStandardToolkit,
 } from "./toolkits/preview/tools.ts";
 import * as WorktreeHandlers from "./toolkits/worktree/handlers.ts";
+import * as CommanderHandlers from "../skofo/commander/CommanderHandlers.ts";
+import * as CommanderService from "../skofo/commander/CommanderService.ts";
+import { CommanderToolkit } from "../skofo/commander/CommanderTools.ts";
+import { SKOFO_COMMANDER_TOOL_PREFIX } from "../skofo/commander/constants.ts";
 import { WorktreeToolkit } from "./toolkits/worktree/tools.ts";
 import * as WorktreeMcpService from "./WorktreeMcpService.ts";
 import * as PullRequestsHandlers from "./toolkits/pullRequests/handlers.ts";
@@ -1638,12 +1642,15 @@ const layerToolExposure = Layer.effect(
     const server = yield* McpServer.McpServer;
     return McpToolExposure.make(
       () =>
-        server.tools.map(({ tool, annotations }) => ({
-          name: tool.name,
-          description: tool.description ?? "",
-          inputSchema: tool.inputSchema,
-          isEnabled: () => isToolRegistrationEnabled(annotations),
-        })),
+        server.tools
+          // The Skofo Commander tools stay out of search (fork).
+          .filter(({ tool }) => !tool.name.startsWith(SKOFO_COMMANDER_TOOL_PREFIX))
+          .map(({ tool, annotations }) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+            inputSchema: tool.inputSchema,
+            isEnabled: () => isToolRegistrationEnabled(annotations),
+          })),
       () => server.notifications["notifications/tools/list_changed"]({}),
     );
   }),
@@ -1790,6 +1797,8 @@ const layerDeferredListing = McpServer.visibility(
     // Untraced: it runs once per tool on every list request.
     return Effect.fnUntraced(function* ({ method, target, headers }: McpServer.MiddlewareOptions) {
       if (method !== "tools/list") return true;
+      // Commander tools are gated strictly by layerCommanderVisibility.
+      if (target.startsWith(SKOFO_COMMANDER_TOOL_PREFIX)) return true;
       const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
       const providerSessionId = Option.getOrUndefined(scope)?.thread?.providerSessionId;
       const mode = parseMcpToolExposureMode(headers[MCP_TOOL_EXPOSURE_HEADER]);
@@ -1870,6 +1879,25 @@ export const layerMilestoneEvents = Layer.effectDiscard(
   Layer.provide(layerWebhookTransport),
 );
 
+/** Commander-only MCP tools; visible and callable solely from the persistent Computer thread. */
+const layerCommanderToolkit = toolkitRegistration(CommanderToolkit, CommanderHandlers.layer);
+
+const layerCommanderVisibility = McpServer.visibility(
+  Effect.gen(function* () {
+    const commander = yield* CommanderService.CommanderService;
+    return Effect.fnUntraced(function* ({ target }: McpServer.MiddlewareOptions) {
+      if (!target.startsWith(SKOFO_COMMANDER_TOOL_PREFIX)) return true;
+      const scope = yield* Effect.serviceOption(McpInvocationContext.McpInvocationContext);
+      const threadId = Option.getOrUndefined(scope)?.thread?.threadId;
+      return yield* commander.isCommanderThread(threadId);
+    });
+  }),
+  { global: true },
+);
+
+/** Outside layerTools: only the persistent Computer thread lists or calls skofo_* tools. */
+export const layerCommander = Layer.mergeAll(layerCommanderToolkit, layerCommanderVisibility);
+
 export const layer = layerMcpTransport(
-  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents),
+  Layer.mergeAll(layerTools, layerToolSearch, layerMilestoneEvents, layerCommander),
 );
