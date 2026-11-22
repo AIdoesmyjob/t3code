@@ -236,7 +236,11 @@ export function createSidebarListMotion(parent: HTMLUListElement) {
       else {
         for (const [node, position] of next) {
           const previousTop = positions!.get(node)?.top;
-          if (previousTop === undefined || previousTop + shift === position.top || crossing.has(node)) {
+          if (
+            previousTop === undefined ||
+            previousTop + shift === position.top ||
+            crossing.has(node)
+          ) {
             continue;
           }
           movedDelta.set(node, previousTop + remainingOffset(node) - position.top + shift);

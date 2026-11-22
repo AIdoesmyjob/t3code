@@ -1106,7 +1106,11 @@ function KeybindingSettingsRow(props: KeybindingRowProps & { activate: boolean }
             })}
             onClick={() => setEditing("shortcut")}
           >
-            {row.key && !row.isUnassigned ? <KeybindingPill shortcut={row.binding.shortcut} /> : unassignedLabel}
+            {row.key && !row.isUnassigned ? (
+              <KeybindingPill shortcut={row.binding.shortcut} />
+            ) : (
+              unassignedLabel
+            )}
           </Button>
         ) : row.key && !row.isUnassigned ? (
           <KeybindingPill shortcut={row.binding.shortcut} />
