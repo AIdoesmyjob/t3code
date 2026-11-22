@@ -9643,7 +9643,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const compactSession = isCompactionMessage(turnInput.message)
               ? flavor.compactSession
               : undefined;
-            const sendPrompt = runtime.prompt({ prompt: promptParts!.prompt }, promptOptions);
+            const sendPrompt = () => runtime.prompt({ prompt: promptParts!.prompt }, promptOptions);
             const prepareVoice = flavor.prepareCommanderVoicePrompt;
             yield* followPrompt(
               context,
@@ -9653,20 +9653,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       context,
                       () =>
                         turnInput.commanderVoice && prepareVoice !== undefined
-                          ? Effect.acquireUseRelease(
-                              prepareVoice(runtime),
-                              () => sendPrompt,
-                              (restore) =>
-                                Effect.gen(function* () {
-                                  if (
-                                    (yield* Ref.get(activeSessionId)) === requestedSessionId &&
-                                    (yield* Ref.get(runtimeCallbackGeneration)) === promptGeneration
-                                  ) {
-                                    yield* restore;
-                                  }
-                                }),
+                          ? Effect.acquireUseRelease(prepareVoice(runtime), sendPrompt, (restore) =>
+                              Effect.gen(function* () {
+                                if (
+                                  (yield* Ref.get(activeSessionId)) === requestedSessionId &&
+                                  (yield* Ref.get(runtimeCallbackGeneration)) === promptGeneration
+                                ) {
+                                  yield* restore;
+                                }
+                              }),
                             )
-                          : sendPrompt,
+                          : sendPrompt(),
                       superseded,
                     )
                   : Deferred.succeed(context.promptDispatched, undefined).pipe(
