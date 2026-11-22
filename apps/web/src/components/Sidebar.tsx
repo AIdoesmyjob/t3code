@@ -285,7 +285,11 @@ import {
   type SidebarProviderEntry,
   type SidebarSweepAction,
 } from "./sidebar/SidebarThreadRow";
-import { SidebarDraftBlock, useSidebarDrafts } from "./sidebar/SidebarDraftBlock";
+import {
+  SidebarDraftBlock,
+  useDraftTerminalLabels,
+  useSidebarDrafts,
+} from "./sidebar/SidebarDraftBlock";
 import {
   SidebarProjectFolderHeader,
   sidebarFolderRowId,
@@ -1319,7 +1323,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // Until every environment has answered, an empty list means "loading", not "empty".
   const shellsBootstrapped = useAllEnvironmentShellsBootstrapped();
   const routeDraftIdForRows = routeTarget?.kind === "draft" ? routeTarget.draftId : null;
-  const { draftIds, routeDraftComposer } = useSidebarDrafts(scopedProjectKeys, routeDraftIdForRows);
+  const draftTerminalLabels = useDraftTerminalLabels();
+  const { draftIds, routeDraftComposer } = useSidebarDrafts(
+    scopedProjectKeys,
+    routeDraftIdForRows,
+    draftTerminalLabels,
+  );
   const visibleDraftSessionCount = draftIds.length;
 
   const openProjectSettings = useStableCallback(
@@ -3816,6 +3825,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           key="draft-sessions"
                           draftIds={draftIds}
                           routeDraftComposer={routeDraftComposer}
+                          terminalLabels={draftTerminalLabels}
                           jumpLabelByDraftId={draftJumpLabelById}
                           projectByKey={projectByKey}
                           projectDisplayNameByKey={projectDisplayNameByKey}
