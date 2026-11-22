@@ -2300,6 +2300,7 @@ export const layer: Layer.Layer<
             : { senderThreadId: message.senderThreadId }),
         },
         modelSelection: run.modelSelection,
+        ...(run.commanderVoice ? { commanderVoice: true as const } : {}),
         runtimePolicy: resolvedRuntimePolicy,
       });
     });

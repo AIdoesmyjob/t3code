@@ -19,6 +19,8 @@ import {
   requestCommanderDictation,
 } from "./commanderConstants";
 
+import { commanderSpeechController } from "./commanderSpeech";
+
 export interface CommanderSidebarCardProps {
   readonly thread: SidebarThreadSummary;
   readonly stats: CommanderSidebarStats;
@@ -46,6 +48,8 @@ export function CommanderSidebarCard({
 
   const handleVoiceClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
+    commanderSpeechController.stop();
+    commanderSpeechController.primePlayback();
     requestCommanderDictation(threadKey);
     onOpen(threadRef);
   };

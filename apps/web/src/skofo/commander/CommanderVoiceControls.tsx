@@ -1,5 +1,5 @@
 import { memo, useEffect, useEffectEvent, useRef } from "react";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
 import { T, useGT } from "gt-react";
 import {
   AudioLinesIcon,
@@ -16,7 +16,17 @@ import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Text } from "~/components/ui/text";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { useThreadShell } from "~/state/entities";
+import {
+  useAssistantMessageText,
+  useQuietThreadProjection,
+  useThreadShell,
+  useTimelineVisibleTurnItems,
+} from "~/state/entities";
+import {
+  commanderReplyForMessage,
+  extractLeadingSpokenBrief,
+  isCommanderReplyItem,
+} from "@t3tools/shared/skofoSpeech";
 import type { ChatMessage } from "~/types";
 import {
   consumeCommanderDictation,
@@ -140,6 +150,7 @@ export const CommanderVoiceChatBar = memo(function CommanderVoiceChatBar({
 }) {
   const gt = useGT();
   const voiceChat = useCommanderVoiceChatState();
+  const speech = useCommanderSpeechState();
   const threadKey = `${environmentId}:${threadId}`;
   const active =
     isCommander && voiceChat.activeThreadKey === threadKey && voiceChat.phase !== "off";
@@ -223,6 +234,12 @@ export const CommanderVoiceChatBar = memo(function CommanderVoiceChatBar({
         return gt("Transcribing your voice…");
       case "thinking":
         return gt("Computer is working…");
+      case "still-working":
+        return gt("Still working…");
+      case "no-reply":
+        return gt("Computer finished without a reply. Select Talk to continue.");
+      case "run-failed":
+        return gt("Computer’s turn ended early. Select Talk to continue.");
       case "speaking":
         return gt("Tap Interrupt or press Space to cut in.");
       case "paused":
@@ -258,6 +275,7 @@ export const CommanderVoiceChatBar = memo(function CommanderVoiceChatBar({
   };
 
   const detail =
+    (speech.error ? gt("Audio failed: {detail}", { detail: speech.error }) : null) ??
     formatError(voiceChat.errorCode, voiceChat.errorDetail) ??
     formatHint(voiceChat.hintCode) ??
     voiceChat.lastTranscript;
@@ -301,6 +319,16 @@ export const CommanderVoiceChatBar = memo(function CommanderVoiceChatBar({
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5">
+        {speech.recovery ? (
+          <Button
+            type="button"
+            size="xs"
+            variant="secondary"
+            onClick={() => commanderVoiceChatController.retryAudio()}
+          >
+            {speech.recovery === "play" ? <T>Play reply</T> : <T>Retry audio</T>}
+          </Button>
+        ) : null}
         {voiceChat.phase === "listening" ? (
           <>
             <Button
@@ -369,106 +397,100 @@ export const CommanderVoiceChatBar = memo(function CommanderVoiceChatBar({
   );
 });
 
-export function useCommanderAutoSpeak(input: {
-  readonly environmentId: EnvironmentId | null;
-  readonly threadId: ThreadId | null;
-  readonly isCommander: boolean;
+export const CommanderReplyObserver = memo(function CommanderReplyObserver({
+  threadRef,
+  ready,
+  submitPromptText,
+}: {
+  readonly threadRef: ScopedThreadRef;
   readonly ready: boolean;
-  readonly messages: ReadonlyArray<ChatMessage>;
-  readonly sendMessage: (text: string) => boolean;
+  readonly submitPromptText: (text: string) => Promise<string | null>;
 }) {
-  const prepared = useThreadVoiceSpeechOutput(input.isCommander ? input.environmentId : null);
-  const speech = useCommanderSpeechState();
-  const threadKey =
-    input.environmentId && input.threadId ? `${input.environmentId}:${input.threadId}` : null;
-  const seededThreadKeyRef = useRef<string | null>(null);
-  const lastSpokenMessageIdRef = useRef<string | null>(null);
-  const onVoiceSend = useEffectEvent((text: string) => input.sendMessage(text));
-
-  const latestCompletedAssistant = input.messages.findLast(
-    (msg) => msg.role === "assistant" && !msg.streaming && msg.text.trim().length > 0,
+  const prepared = useThreadVoiceSpeechOutput(threadRef.environmentId);
+  const threadKey = `${threadRef.environmentId}:${threadRef.threadId}`;
+  const voiceChat = useCommanderVoiceChatState();
+  const onVoiceSend = useEffectEvent(submitPromptText);
+  const projection = useQuietThreadProjection(threadRef)?.projection;
+  const rows = useTimelineVisibleTurnItems(threadRef);
+  const voiceActive = voiceChat.activeThreadKey === threadKey && voiceChat.phase !== "off";
+  const voiceReply = commanderReplyForMessage(
+    projection?.runs ?? [],
+    rows,
+    voiceActive ? voiceChat.pendingMessageId : null,
   );
-  const latestId = latestCompletedAssistant?.id ?? null;
-  const latestText = latestCompletedAssistant?.text ?? "";
+  const lastReplyRow = rows.findLast(
+    ({ item, visibility }) => visibility === "local" && isCommanderReplyItem(item),
+  );
+  const lastReply = lastReplyRow?.item;
+  const passiveReply = lastReply && isCommanderReplyItem(lastReply) ? lastReply : null;
+  const observed = voiceActive ? voiceReply?.item : passiveReply;
+  const text = useAssistantMessageText(threadRef, observed?.id) ?? observed?.text ?? "";
+  const lastSpokenOrdinal = useRef<number | null>(null);
+  const talkBackEnabled = useCommanderSpeechState().talkBackEnabled;
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers Computer thread as a live Voice Chat host and handles one-tap sidebar mic launches
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the Computer route's mic and audio lifecycle
   useEffect(() => {
-    if (!input.isCommander || threadKey === null || !prepared) return;
+    if (!prepared) return;
     const unregister = commanderVoiceChatController.registerHost(threadKey, {
       prepared,
       sendMessage: (text) => onVoiceSend(text),
     });
-    if (consumeCommanderDictation(threadKey)) {
-      void commanderVoiceChatController.startForThread(threadKey);
-    }
-    const unsubDictation = subscribeCommanderDictation((requestedKey) => {
-      if (requestedKey === threadKey && consumeCommanderDictation(threadKey)) {
+    const start = (requestedKey: string) => {
+      if (requestedKey === threadKey && consumeCommanderDictation(threadKey) && !document.hidden) {
         void commanderVoiceChatController.startForThread(threadKey);
       }
-    });
+    };
+    start(threadKey);
+    const unsubscribe = subscribeCommanderDictation(start);
+    const onVisibilityChange = () => {
+      if (document.hidden) commanderVoiceChatController.pause();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
-      unsubDictation();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      unsubscribe();
       unregister();
     };
-  }, [input.isCommander, threadKey, prepared]);
+  }, [threadKey, prepared]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tracks newly completed Computer replies to trigger audio talk-back and Voice Chat turn continuation without replaying history
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- claims streamed replies for playback after the initial conversation snapshot arrives
   useEffect(() => {
-    if (!input.isCommander || threadKey === null) {
-      seededThreadKeyRef.current = null;
-      lastSpokenMessageIdRef.current = null;
+    if (!ready || !projection) return;
+    const ordinal = passiveReply?.ordinal ?? -1;
+    if (lastSpokenOrdinal.current === null || voiceActive || document.hidden) {
+      lastSpokenOrdinal.current = Math.max(lastSpokenOrdinal.current ?? -1, ordinal);
+    }
+    if (document.hidden || !prepared) return;
+    if (voiceActive) {
+      if (voiceReply) commanderVoiceChatController.observeReply(threadKey, voiceReply.run, text);
       return;
     }
-    if (!input.ready) {
-      return;
-    }
-    if (seededThreadKeyRef.current !== threadKey) {
-      seededThreadKeyRef.current = threadKey;
-      lastSpokenMessageIdRef.current = latestId;
-      return;
-    }
-    if (!latestId || latestId === lastSpokenMessageIdRef.current) {
-      return;
-    }
-    lastSpokenMessageIdRef.current = latestId;
-    const voiceChatActive = commanderVoiceChatController.isActiveFor(threadKey);
-    if ((!speech.talkBackEnabled && !voiceChatActive) || !prepared) {
-      return;
-    }
-    if (voiceChatActive) {
-      commanderVoiceChatController.notifySpeakingStart(threadKey);
-    }
-    void commanderSpeechController
-      .speak({
+    if (!passiveReply || ordinal <= lastSpokenOrdinal.current) return;
+    const brief = extractLeadingSpokenBrief(text);
+    if (!brief && (passiveReply.streaming || !text.trim())) return;
+    lastSpokenOrdinal.current = ordinal;
+    if (talkBackEnabled) {
+      void commanderSpeechController.speak({
         prepared,
-        text: latestText,
-        messageId: latestId,
+        text: brief ?? text,
+        messageId: passiveReply.messageId,
         mode: "auto",
-      })
-      .then((outcome) => {
-        commanderVoiceChatController.notifySpeakingFinished(threadKey, outcome);
       });
+    }
   }, [
-    input.isCommander,
-    input.ready,
+    ready,
+    projection,
+    voiceActive,
+    passiveReply,
+    voiceReply,
+    text,
     threadKey,
-    latestId,
-    latestText,
-    speech.talkBackEnabled,
     prepared,
+    talkBackEnabled,
   ]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops audio playback and voice chat when switching away from Computer
-  useEffect(() => {
-    if (!input.isCommander || threadKey === null) return;
-    return () => {
-      commanderSpeechController.stop();
-      if (commanderVoiceChatController.isActiveFor(threadKey)) {
-        commanderVoiceChatController.stop();
-      }
-    };
-  }, [input.isCommander, threadKey]);
-}
+  return null;
+});
 
 export const AssistantSpeakButton = memo(function AssistantSpeakButton({
   environmentId,
@@ -500,6 +522,7 @@ export const AssistantSpeakButton = memo(function AssistantSpeakButton({
                 commanderSpeechController.stop();
                 return;
               }
+              commanderSpeechController.primePlayback();
               void commanderSpeechController.speak({
                 prepared,
                 text: message.text,

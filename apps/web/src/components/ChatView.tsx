@@ -335,7 +335,7 @@ import { ChatHeader, type HiddenTerminalChip } from "./chat/ChatHeader";
 import { isCommanderThread } from "../skofo/commander/commanderConstants";
 import {
   CommanderVoiceChatBar,
-  useCommanderAutoSpeak,
+  CommanderReplyObserver,
 } from "../skofo/commander/CommanderVoiceControls";
 import { useSideChat } from "./chat/useSideChat";
 import { sideThreadComposer, sideThreadKindOf } from "@t3tools/client-runtime/side-thread";
@@ -1756,14 +1756,6 @@ export default function ChatView(props: ChatViewProps) {
     activeThread !== undefined &&
     activeThreadShell !== undefined &&
     isCommanderThread(activeThreadShell);
-  useCommanderAutoSpeak({
-    environmentId: isServerThread && activeThread ? activeThread.environmentId : null,
-    threadId: isServerThread && activeThread ? activeThread.id : null,
-    isCommander: isCommanderView,
-    ready: !threadDetailLoading,
-    messages: timelineMessages,
-    sendMessage: (text) => composerRef.current?.submitPromptText(text) ?? false,
-  });
   const displayedTimelineKey = activeThreadKey ?? routeThreadKey;
   const deferredChat = use(DeferredChatContext);
   const [timelineInstance, setTimelineInstance] = useState({
@@ -2098,6 +2090,22 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
   const sendAppMessageStable = useStableCallback(sendAppMessage);
+  const submitPromptText = useStableCallback(async (text: string) => {
+    if (!isCommanderView || activeThreadId === null) return null;
+    const messageId = newMessageId();
+    const result = await startThreadTurn({
+      environmentId,
+      input: {
+        threadId: activeThreadId,
+        message: { messageId, role: "user", text, attachments: [] },
+        runtimeMode,
+        interactionMode: DEFAULT_INTERACTION_MODE,
+        dispatchMode: "queue",
+        commanderVoice: true,
+      },
+    });
+    return result._tag === "Success" ? messageId : null;
+  });
   const queuedRunsControlRef = useRef<QueuedRunsControlHandle>(null);
 
   const {
@@ -3740,6 +3748,14 @@ export default function ChatView(props: ChatViewProps) {
           state={deviceState}
         />
       )}
+      {isCommanderView && routeThreadDetailRef ? (
+        <CommanderReplyObserver
+          key={routeThreadKey}
+          threadRef={routeThreadDetailRef}
+          ready={!threadDetailLoading}
+          submitPromptText={submitPromptText}
+        />
+      ) : null}
       {rightPanelControlsAtRoot && !embedded ? panelLayoutControls : null}
       <div
         className={cn(
