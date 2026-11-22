@@ -335,7 +335,9 @@ describe("untraced requests", () => {
         Tracer.make({
           span: (options) => {
             const span = new Tracer.NativeSpan(options);
-            if (options.kind === "server") requestSpans.push(span);
+            if (options.kind === "server" || options.name === "relay.upstream") {
+              requestSpans.push(span);
+            }
             return span;
           },
         }),
@@ -346,7 +348,11 @@ describe("untraced requests", () => {
         }),
       ]);
       const layerRoutes = Layer.mergeAll(
-        HttpRouter.add("GET", "/linked/*", HttpServerResponse.empty()),
+        HttpRouter.add(
+          "GET",
+          "/linked/*",
+          Effect.succeed(HttpServerResponse.empty()).pipe(Effect.withSpan("relay.upstream")),
+        ),
         HttpRouter.add("GET", "/api/environment", HttpServerResponse.empty()),
       ).pipe(Layer.provide(ServerHttp.layerUnloggedSignedRequests));
       const services = yield* Layer.build(

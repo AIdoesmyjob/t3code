@@ -506,7 +506,9 @@ const layerUntracedRequests = Layer.succeed(HttpMiddleware.TracerDisabledWhen)((
 export const layerUnloggedSignedRequests = HttpRouter.middleware(
   (httpEffect) =>
     Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-      isLinkedRelayRequest(request) ? HttpMiddleware.withLoggerDisabled(httpEffect) : httpEffect,
+      isLinkedRelayRequest(request)
+        ? httpEffect.pipe(HttpMiddleware.withLoggerDisabled, Effect.withTracerEnabled(false))
+        : httpEffect,
     ),
   { global: true },
 );
