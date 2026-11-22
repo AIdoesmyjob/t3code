@@ -1,3 +1,4 @@
+import { extractLeadingSpokenBrief, stripSpokenTagsForDisplay } from "@t3tools/shared/skofoSpeech";
 import type { ProjectThreadAwarenessV2Input } from "@t3tools/shared/agentAwareness";
 import { applyOrchestrationV2ThreadVisit, pendingGuestMessageCount } from "@t3tools/contracts";
 import { applyThreadPullRequestLinkUpdate } from "../sourceControl/threadPullRequests.ts";
@@ -636,6 +637,9 @@ export interface ProjectionStoreV2Shape {
     { readonly snapshotSequence: number; readonly threads: ReadonlyArray<AgentAwarenessThread> },
     ProjectionStoreV2Error
   >;
+  readonly getLatestThreadActivity: (
+    threadIds: ReadonlyArray<ThreadId>,
+  ) => Effect.Effect<ReadonlyMap<ThreadId, string>, ProjectionStoreV2Error>;
   readonly getShellSnapshot: (
     options?: ShellSnapshotOptions,
   ) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, ProjectionStoreV2Error>;
@@ -1347,6 +1351,7 @@ type ShellItemCountRow = {
   readonly runless_item_count: number;
 };
 
+const encodeActivityThreads = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(ThreadId)));
 const encodeTimelineSources = Schema.encodeEffect(
   Schema.fromJsonString(
     Schema.Array(Schema.Struct({ threadId: Schema.String, id: Schema.NullOr(Schema.String) })),
@@ -7995,7 +8000,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, ProjectionStoreService
                       findCursorEndIndex(indexed, decodeThreadHistoryCursor(cursor)),
                       indexed.length - 1,
                     );
-              while (workMode !== undefined) {
+              for (;;) {
+                if (workMode === undefined) break;
                 const { page } = selection;
                 const span = [...page.items.slice(0, 1), ...page.items.slice(-1)].map(
                   (row) => row.canonicalPosition,
@@ -9766,6 +9772,56 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, ProjectionStoreService
       Effect.mapError(shellSnapshotReadError),
     );
 
+    const getLatestThreadActivity = Effect.fn("ProjectionStore.getLatestThreadActivity")(function* (
+      threadIds: ReadonlyArray<ThreadId>,
+    ) {
+      if (threadIds.length === 0) return new Map<ThreadId, string>();
+      const rows = yield* sql<{ readonly thread_id: ThreadId; readonly activity: string | null }>`
+        SELECT requested.value AS thread_id, (
+          SELECT substr(
+            CASE item.type
+              WHEN 'notification' THEN json_extract(item.payload_json, '$.summary')
+              ELSE json_extract(item.payload_json, '$.text')
+            END,
+            1, 1200
+          )
+          FROM orchestration_v2_projection_turn_items AS item
+            INDEXED BY orchestration_v2_projection_turn_items_conversation_idx
+          WHERE item.thread_id = requested.value
+            AND item.type NOT IN ${CONVERSATION_INDEX_EXCLUDED_TYPES}
+            AND (
+              item.type = 'notification'
+              OR (
+                item.type = 'assistant_message' AND item.status = 'completed'
+                AND COALESCE(json_extract(item.payload_json, '$.phase'), '') <> 'partial_answer'
+                AND trim(json_extract(item.payload_json, '$.text'), char(9, 10, 13, 32)) <> ''
+                AND NOT EXISTS (
+                  SELECT 1 FROM orchestration_v2_projection_runs AS run
+                  WHERE run.run_id = item.run_id AND run.status = 'rolled_back'
+                )
+              )
+            )
+          ORDER BY item.ordinal DESC LIMIT 1
+        ) AS activity
+        FROM json_each(${yield* encodeActivityThreads(threadIds)}) AS requested
+      `;
+
+      return new Map(
+        rows.flatMap(({ thread_id, activity }) => {
+          if (!activity) return [];
+          const clean = (
+            extractLeadingSpokenBrief(activity) ??
+            stripSpokenTagsForDisplay(activity, {
+              isStreaming: true,
+            })
+          )
+            .replace(/\s+/gu, " ")
+            .trim();
+          return clean ? [[thread_id, Array.from(clean).slice(0, 160).join("")] as const] : [];
+        }),
+      );
+    }, Effect.mapError(shellSnapshotReadError));
+
     const getShellSnapshot: ProjectionStoreV2Shape["getShellSnapshot"] = (options) =>
       sql
         .withTransaction(readShellSnapshotRows(options))
@@ -10172,6 +10228,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, ProjectionStoreService
       carryProviderTurnContextUsage,
       getAgentAwarenessSnapshot: readOnReader(getAgentAwarenessSnapshot),
       getShellSnapshot: readOnReader(getShellSnapshot),
+      getLatestThreadActivity: readOnReader(getLatestThreadActivity),
       getPullRequestSnapshot: readOnReader(getPullRequestSnapshot),
       listActiveSubagentThreadIds: readOnReader(listActiveSubagentThreadIds),
       countThreads: readOnReader(countThreads),

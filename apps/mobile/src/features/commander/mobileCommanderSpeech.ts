@@ -5,7 +5,7 @@ import {
   synthesizeEnvironmentSpeech,
 } from "@t3tools/client-runtime/voice-input";
 import type { SpeechBeepKind } from "@t3tools/contracts";
-import { splitIntoSpokenSentences } from "@t3tools/shared/skofoSpeech";
+import { splitIntoSpokenSentences, type CommanderSpeakOutcome } from "@t3tools/shared/skofoSpeech";
 import { createAudioPlayer, type AudioPlayer } from "expo-audio";
 import { File, Paths } from "expo-file-system";
 
@@ -13,18 +13,31 @@ import {
   acquireAudioSession,
   activateAudioSession,
   releaseAudioSession,
+  pauseAudioPlayer,
 } from "../../lib/audioSession";
 import { runSpeech } from "../voice-input/voiceDestination";
 
-type AudioSessionToken = ReturnType<typeof acquireAudioSession>;
+interface SpeechRequest {
+  readonly prepared: PreparedConnection;
+  readonly text: string;
+  readonly messageId: string;
+  readonly mode?: "auto" | "full";
+  readonly onPlaying?: () => void;
+}
 
-export type MobileCommanderSpeakOutcome = "completed" | "stopped" | "error";
+interface SpeechJob {
+  readonly input: SpeechRequest;
+  readonly sentences: ReadonlyArray<string>;
+  index: number;
+  clip: { readonly audioBase64: string; readonly mimeType: string } | null;
+}
 
 interface MobileCommanderSpeechState {
   readonly talkBackEnabled: boolean;
   readonly status: "idle" | "loading" | "speaking";
   readonly speakingMessageId: string | null;
   readonly error: string | null;
+  readonly canRetry: boolean;
 }
 
 function base64ToBytes(base64: string): Uint8Array {
@@ -38,7 +51,7 @@ function base64ToBytes(base64: string): Uint8Array {
 
 function disposeAudioPlayer(player: AudioPlayer): void {
   try {
-    player.pause();
+    pauseAudioPlayer(player);
   } catch {
     // Ignore pause errors during teardown.
   }
@@ -55,13 +68,13 @@ class MobileCommanderSpeechController {
     status: "idle",
     speakingMessageId: null,
     error: null,
+    canRetry: false,
   };
   private listeners = new Set<() => void>();
-  private generation = 0;
   private fileSeq = 0;
-  private abortController: AbortController | null = null;
-  private activePlayer: AudioPlayer | null = null;
-  private activeSession: AudioSessionToken | null = null;
+  private abortController = new AbortController();
+  private audioQueue = Promise.resolve();
+  private job: SpeechJob | null = null;
   private beepUriCache = new Map<string, string>();
 
   subscribe = (listener: () => void): (() => void) => {
@@ -96,184 +109,192 @@ class MobileCommanderSpeechController {
   }
 
   stop() {
-    this.generation += 1;
-    if (this.abortController) {
-      this.abortController.abort();
-      this.abortController = null;
-    }
-    if (this.activePlayer) {
-      const player = this.activePlayer;
-      this.activePlayer = null;
-      disposeAudioPlayer(player);
-    }
-    if (this.activeSession) {
-      const session = this.activeSession;
-      this.activeSession = null;
-      void releaseAudioSession(session);
-    }
-    if (this.state.status !== "idle" || this.state.speakingMessageId !== null) {
-      this.emit({ status: "idle", speakingMessageId: null });
+    this.abortController.abort();
+    this.abortController = new AbortController();
+    this.job = null;
+    if (this.state.status !== "idle" || this.state.canRetry) {
+      this.emit({ status: "idle", speakingMessageId: null, error: null, canRetry: false });
     }
   }
 
-  async playBeep(prepared: PreparedConnection, kind: SpeechBeepKind): Promise<void> {
-    try {
-      const cacheKey = `${prepared.environmentId}:${kind}`;
-      let uri = this.beepUriCache.get(cacheKey);
-      if (!uri) {
-        const result = await runSpeech(fetchEnvironmentSpeechBeep(prepared, kind));
-        const beepFile = new File(Paths.cache, `skofo-beep-${kind}.mp3`);
-        beepFile.write(base64ToBytes(result.audioBase64));
-        uri = beepFile.uri;
-        this.beepUriCache.set(cacheKey, uri);
-      }
+  whenIdle(): Promise<void> {
+    return this.audioQueue;
+  }
 
-      const session = acquireAudioSession("playback");
-      const activated = await activateAudioSession(session);
-      if (!activated) {
-        await releaseAudioSession(session).catch(() => {});
+  private enqueueAudio<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.audioQueue.then(operation);
+    this.audioQueue = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
+
+  private async withPlaybackSession(
+    signal: AbortSignal,
+    play: (signal: AbortSignal) => Promise<void>,
+  ) {
+    const playback = new AbortController();
+    const cancel = () => playback.abort();
+    signal.addEventListener("abort", cancel, { once: true });
+    let displaced = false;
+    const session = acquireAudioSession("playback", () => {
+      displaced = true;
+      cancel();
+    });
+    try {
+      if (!(await activateAudioSession(session))) {
+        if (!signal.aborted) throw new Error("Could not activate audio playback.");
         return;
       }
-
-      const player = createAudioPlayer(uri, { updateInterval: 80 });
-      try {
-        await new Promise<void>((resolve) => {
-          let settled = false;
-          const finish = () => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(watchdog);
-            sub.remove();
-            resolve();
-          };
-          const watchdog = setTimeout(finish, 1_500);
-          const sub = player.addListener("playbackStatusUpdate", (status) => {
-            if (status.didJustFinish) finish();
-          });
-          try {
-            player.play();
-          } catch {
-            finish();
-          }
-        });
-      } finally {
-        disposeAudioPlayer(player);
-        await releaseAudioSession(session).catch(() => {});
-      }
-    } catch {
-      // Never block voice chat turns on optional LCARS beep cues.
+      if (!playback.signal.aborted) await play(playback.signal);
+      if (displaced && !signal.aborted) throw new Error("Audio playback was interrupted.");
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      await releaseAudioSession(session);
     }
   }
 
-  async speak(input: {
-    readonly prepared: PreparedConnection;
-    readonly text: string;
-    readonly messageId: string;
-    readonly mode?: "auto" | "full";
-  }): Promise<MobileCommanderSpeakOutcome> {
-    const sentences = splitIntoSpokenSentences(input.text, { mode: input.mode ?? "full" });
-    if (sentences.length === 0) return "completed";
+  private async playFile(
+    uri: string,
+    signal: AbortSignal,
+    timeoutMs: number,
+    onPlaying?: () => void,
+  ) {
+    if (signal.aborted) return;
+    const player = createAudioPlayer(uri, { updateInterval: 80 });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: unknown) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(watchdog);
+          sub.remove();
+          signal.removeEventListener("abort", onAbort);
+          if (error === undefined) resolve();
+          else reject(error);
+        };
+        const onAbort = () => finish();
+        const watchdog = setTimeout(
+          () => finish(new Error("Audio playback timed out.")),
+          timeoutMs,
+        );
+        const sub = player.addListener("playbackStatusUpdate", (status) => {
+          if (status.playing) onPlaying?.();
+          if (status.didJustFinish) finish();
+        });
+        signal.addEventListener("abort", onAbort, { once: true });
+        try {
+          player.play();
+        } catch (error) {
+          finish(error);
+        }
+      });
+    } finally {
+      disposeAudioPlayer(player);
+    }
+  }
 
-    this.stop();
-    const myGen = this.generation;
-    const abort = new AbortController();
-    this.abortController = abort;
-    const session = acquireAudioSession("playback", () => {
-      if (this.generation === myGen) {
-        this.stop();
+  playBeep(prepared: PreparedConnection, kind: SpeechBeepKind): Promise<void> {
+    const { signal } = this.abortController;
+    return this.enqueueAudio(async () => {
+      if (signal.aborted) return;
+      try {
+        const cacheKey = `${prepared.environmentId}:${kind}`;
+        let uri = this.beepUriCache.get(cacheKey);
+        if (!uri) {
+          const result = await runSpeech(fetchEnvironmentSpeechBeep(prepared, kind), signal);
+          if (signal.aborted) return;
+          const beepFile = new File(Paths.cache, `skofo-beep-${kind}.mp3`);
+          beepFile.write(base64ToBytes(result.audioBase64));
+          uri = beepFile.uri;
+          this.beepUriCache.set(cacheKey, uri);
+        }
+        await this.withPlaybackSession(signal, (playbackSignal) =>
+          this.playFile(uri, playbackSignal, 1_500),
+        );
+      } catch {
+        // Cues are optional.
       }
     });
-    this.activeSession = session;
-    this.emit({ status: "loading", speakingMessageId: input.messageId, error: null });
+  }
 
-    const canSend = () => !abort.signal.aborted && this.generation === myGen;
-    const fetchSentence = (sentence: string) =>
-      runSpeech(
-        synthesizeEnvironmentSpeech(input.prepared, { text: sentence, format: "mp3" }, canSend),
-        abort.signal,
-        canSend,
-      );
+  speak(input: SpeechRequest): Promise<CommanderSpeakOutcome> {
+    if (this.job) this.stop();
+    const sentences = splitIntoSpokenSentences(input.text, { mode: input.mode ?? "full" });
+    if (sentences.length === 0) return Promise.resolve("completed");
+    const job: SpeechJob = { input, sentences, index: 0, clip: null };
+    this.job = job;
+    return this.playReply(job);
+  }
 
-    try {
-      const activated = await activateAudioSession(session);
-      if (!activated || !canSend()) return "stopped";
+  retry(): Promise<CommanderSpeakOutcome> {
+    if (!this.job || !this.state.canRetry) return Promise.resolve("stopped");
+    return this.playReply(this.job);
+  }
 
-      let nextPromise: Promise<{ readonly audioBase64: string; readonly mimeType: string }> | null =
-        fetchSentence(sentences[0]!);
-
-      for (let i = 0; i < sentences.length; i += 1) {
-        if (!canSend()) return "stopped";
-        const result = await nextPromise;
-        if (!result || !canSend()) return "stopped";
-
-        const nextSentence = sentences[i + 1];
-        nextPromise = nextSentence ? fetchSentence(nextSentence) : null;
-
-        this.fileSeq += 1;
-        const ext = result.mimeType.includes("wav") ? "wav" : "mp3";
-        const tempFile = new File(Paths.cache, `skofo-tts-${myGen}-${this.fileSeq}.${ext}`);
-        tempFile.write(base64ToBytes(result.audioBase64));
-
-        const player = createAudioPlayer(tempFile.uri, { updateInterval: 150 });
-        this.activePlayer = player;
-        this.emit({ status: "speaking", speakingMessageId: input.messageId });
-
-        try {
-          await new Promise<void>((resolve, reject) => {
-            let settled = false;
-            const finish = (err?: Error) => {
-              if (settled) return;
-              settled = true;
-              clearTimeout(watchdog);
-              sub.remove();
-              abort.signal.removeEventListener("abort", onAbort);
-              if (err) reject(err);
-              else resolve();
-            };
-            const onAbort = () => finish();
-            const watchdog = setTimeout(() => finish(), 45_000);
-            const sub = player.addListener("playbackStatusUpdate", (status) => {
-              if (status.didJustFinish) {
-                finish();
-              }
-            });
-            abort.signal.addEventListener("abort", onAbort, { once: true });
-            try {
-              player.play();
-            } catch (err) {
-              finish(err instanceof Error ? err : new Error(String(err)));
+  private playReply(job: SpeechJob): Promise<CommanderSpeakOutcome> {
+    const { signal } = this.abortController;
+    this.emit({
+      status: "loading",
+      speakingMessageId: job.input.messageId,
+      error: null,
+      canRetry: false,
+    });
+    return this.enqueueAudio(async () => {
+      if (signal.aborted) return "stopped";
+      try {
+        await this.withPlaybackSession(signal, async (playbackSignal) => {
+          const canSend = () => !playbackSignal.aborted;
+          for (const sentence of job.sentences.slice(job.index)) {
+            if (!job.clip) {
+              job.clip = await runSpeech(
+                synthesizeEnvironmentSpeech(
+                  job.input.prepared,
+                  { text: sentence, format: "mp3" },
+                  canSend,
+                ),
+                playbackSignal,
+                canSend,
+              );
             }
-          });
-        } finally {
-          if (this.activePlayer === player) {
-            this.activePlayer = null;
+            if (playbackSignal.aborted) return;
+            const ext = job.clip.mimeType.includes("wav") ? "wav" : "mp3";
+            this.fileSeq += 1;
+            const tempFile = new File(Paths.cache, `skofo-tts-${this.fileSeq}.${ext}`);
+            try {
+              tempFile.write(base64ToBytes(job.clip.audioBase64));
+              await this.playFile(tempFile.uri, playbackSignal, 45_000, () => {
+                if (!playbackSignal.aborted && this.state.status !== "speaking") {
+                  this.emit({ status: "speaking" });
+                  job.input.onPlaying?.();
+                }
+              });
+            } finally {
+              try {
+                if (tempFile.exists) tempFile.delete();
+              } catch {}
+            }
+            if (playbackSignal.aborted) return;
+            job.clip = null;
+            job.index += 1;
           }
-          disposeAudioPlayer(player);
-          try {
-            if (tempFile.exists) tempFile.delete();
-          } catch {
-            // Ignore temp cleanup errors.
-          }
-        }
-      }
-
-      if (this.generation === myGen) {
-        this.abortController = null;
-        if (this.activeSession === session) {
-          this.activeSession = null;
-          void releaseAudioSession(session);
-        }
+        });
+        if (signal.aborted) return "stopped";
+        this.job = null;
         this.emit({ status: "idle", speakingMessageId: null });
         return "completed";
+      } catch (error) {
+        if (signal.aborted) return "stopped";
+        this.emit({
+          status: "idle",
+          error: error instanceof Error ? error.message : String(error),
+          canRetry: true,
+        });
+        return "error";
       }
-      return "stopped";
-    } catch (err) {
-      if (this.generation !== myGen || abort.signal.aborted) return "stopped";
-      const message = err instanceof Error ? err.message : String(err);
-      this.stop();
-      this.emit({ error: message });
-      return "error";
-    }
+    });
   }
 }
 

@@ -1,17 +1,25 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
+import * as NodeProcess from "node:process";
 
 import {
   isListedThreadLineage,
   OrchestratorMcpFailure,
   OrchestratorMcpThreadListResult,
+  type OrchestratorMcpThreadListItem,
+  type EnvironmentId,
+  type PeerLinkSummary,
 } from "@t3tools/contracts";
+import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 
 import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { isSnoozed } from "../../orchestration-v2/ThreadSettlementService.ts";
+import { visibleThreadPullRequests } from "../../sourceControl/threadPullRequests.ts";
 import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
@@ -19,6 +27,7 @@ import * as ScheduledTasks from "../../scheduledTasks/ScheduledTaskService.ts";
 import * as CommanderService from "./CommanderService.ts";
 import { watchKey } from "./CommanderStore.ts";
 import { CommanderToolkit } from "./CommanderTools.ts";
+import { boundBriefWorkBoard, selectBriefWorkBoard } from "./CommanderWorkBoard.ts";
 
 const requireCommanderCaller = Effect.gen(function* () {
   const scope = yield* McpInvocationContext.McpInvocationContext;
@@ -34,7 +43,7 @@ const requireCommanderCaller = Effect.gen(function* () {
 });
 
 // Never use process.execPath: in a compiled SEA binary that points to the t3 CLI, not node.
-const FLEET_QUERY_NODE_BIN = process.env.SKOFO_COMMANDER_NODE_BIN?.trim() || "node";
+const FLEET_QUERY_NODE_BIN = NodeProcess.env.SKOFO_COMMANDER_NODE_BIN?.trim() || "node";
 
 function runFleetQueryCli(
   scriptPath: string,
@@ -47,7 +56,7 @@ function runFleetQueryCli(
       {
         timeout: 25_000,
         maxBuffer: 2 * 1024 * 1024,
-        env: { ...process.env },
+        env: { ...NodeProcess.env },
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -72,10 +81,215 @@ function runFleetQueryCli(
 
 const ACTIVE_STATUSES = new Set(["preparing", "starting", "running", "waiting", "queued"]);
 
+const loadPeerBoardThreads = Effect.fn("Commander.loadPeerBoardThreads")(function* (
+  peerClient: PeerMcpClient.PeerMcpClient["Service"],
+  environmentId: EnvironmentId,
+) {
+  const threads = new Map<string, OrchestratorMcpThreadListItem>();
+  let cursor = 0;
+  while (true) {
+    const page = yield* peerClient.call({
+      environmentId,
+      tool: "t3_thread_list",
+      arguments: {
+        allProjects: true,
+        settled: false,
+        snoozed: false,
+        includeSubagents: false,
+        includeLatestActivity: true,
+        limit: 100,
+        cursor,
+      },
+      limits: { runtimeMode: "full-access", interactionMode: "default" },
+      success: OrchestratorMcpThreadListResult,
+    });
+    for (const thread of page.threads) threads.set(thread.threadId, thread);
+    if (page.nextCursor === null) return Array.from(threads.values());
+    if (page.nextCursor <= cursor) {
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "The linked work board returned an invalid thread cursor.",
+      });
+    }
+    cursor = page.nextCursor;
+  }
+});
+
+const readBriefPeer = Effect.fn("Commander.readBriefPeer")(function* (
+  peerClient: PeerMcpClient.PeerMcpClient["Service"],
+  scope: McpInvocationContext.McpInvocationScope,
+  link: PeerLinkSummary,
+  watchedKeys: ReadonlySet<string>,
+) {
+  const machine = { environmentId: link.environmentId, label: link.label };
+  const lastContact = link.lastReachedAt === null ? null : DateTime.formatIso(link.lastReachedAt);
+  if (link.status !== "reachable") {
+    return { ...machine, status: link.status, freshAt: lastContact, rows: [] };
+  }
+  const threads = yield* loadPeerBoardThreads(peerClient, link.environmentId).pipe(
+    Effect.orElseSucceed(() => null),
+  );
+  if (!threads)
+    return { ...machine, status: "unreachable" as const, freshAt: lastContact, rows: [] };
+  return {
+    ...machine,
+    status: "reachable" as const,
+    freshAt: DateTime.formatIso(yield* DateTime.now),
+    rows: threads.map((t) => {
+      const openPrCount = t.openPullRequestCount ?? 0;
+      const primaryPr =
+        t.pullRequests?.find((pr) => pr.state === "open") ??
+        (openPrCount > 0 ? t.linkedPullRequest : null);
+      const pendingKind =
+        t.pendingRequestKind ??
+        (t.blockedOnThreadWait
+          ? "thread_wait"
+          : t.pendingRequestKind === undefined &&
+              t.status === "waiting" &&
+              (t.pendingBackgroundTasks?.length ?? 0) === 0
+            ? "waiting"
+            : undefined);
+      return {
+        environmentId: link.environmentId,
+        machine: link.label,
+        threadId: t.threadId,
+        title: t.title,
+        link:
+          t.link ??
+          McpInvocationContext.threadLinkFor(
+            { ...scope, environmentId: link.environmentId },
+            t.threadId,
+            t.title,
+          ),
+        status: t.status,
+        ...(pendingKind ? { pendingKind } : {}),
+        watched: watchedKeys.has(
+          watchKey({ threadId: t.threadId, environmentId: link.environmentId }),
+        ),
+        openPrCount,
+        ...(primaryPr ? { primaryPr: { url: primaryPr.url, number: primaryPr.number } } : {}),
+        updatedAt: t.updatedAt,
+        latestActivity:
+          t.latestActivity == null
+            ? null
+            : Array.from(t.latestActivity.replace(/\s+/gu, " ").trim()).slice(0, 160).join(""),
+      };
+    }),
+  };
+});
+
+const readBriefWorkBoard = Effect.fn("Commander.readBriefWorkBoard")(function* (input: {
+  readonly scope: McpInvocationContext.McpInvocationScope;
+  readonly commander: CommanderService.CommanderService["Service"];
+  readonly includeIdle: boolean;
+}) {
+  const { scope, commander, includeIdle } = input;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const peerLinks = yield* PeerLinks.PeerLinks;
+  const peerClient = yield* PeerMcpClient.PeerMcpClient;
+  const commanderThreadId = yield* commander.getCommanderThreadId;
+  const watches = yield* commander.listWatches;
+  const watchedKeys = new Set(watches.map(watchKey));
+  const now = yield* DateTime.now;
+  const label = NodeOS.hostname();
+
+  const [snapshot, links] = yield* Effect.all(
+    [
+      projections
+        .getShellSnapshot({ location: "active", unsettledOnly: true })
+        .pipe(Effect.orElseSucceed(() => null)),
+      peerLinks.list.pipe(Effect.orElseSucceed(() => null)),
+    ],
+    { concurrency: 2 },
+  );
+  const peers = yield* Effect.forEach(
+    links ?? [],
+    (link) => readBriefPeer(peerClient, scope, link, watchedKeys),
+    { concurrency: 4 },
+  );
+  const local = {
+    environmentId: scope.environmentId,
+    label,
+    status: snapshot ? ("reachable" as const) : ("unreachable" as const),
+    freshAt: snapshot ? DateTime.formatIso(now) : null,
+    rows: (snapshot?.threads ?? [])
+      .filter(
+        (t) =>
+          t.id !== commanderThreadId &&
+          t.archivedAt === null &&
+          t.deletedAt === null &&
+          t.settledOverride !== "settled" &&
+          !isSnoozed(t, DateTime.toEpochMillis(now)) &&
+          isListedThreadLineage(t.lineage),
+      )
+      .map((t) => {
+        const openPrs = visibleThreadPullRequests(t.pullRequests ?? []).filter(
+          (pr) => pr.snapshot?.state === "open",
+        );
+        const primaryPr = openPrs.find((pr) => pr.watch !== undefined) ?? openPrs[0];
+        const pendingKind =
+          t.pendingRuntimeRequest?.kind ?? (t.blockedOnThreadWait ? "thread_wait" : undefined);
+        const status =
+          t.activityRunStatus ??
+          (t.status !== "failed" && backgroundWorkHoldsCompletion(t.pendingBackgroundTasks ?? [])
+            ? "waiting"
+            : t.status);
+        return {
+          environmentId: scope.environmentId,
+          machine: label,
+          threadId: t.id,
+          title: t.title,
+          link: McpInvocationContext.threadLinkFor(scope, t.id, t.title),
+          status,
+          ...(pendingKind ? { pendingKind } : {}),
+          watched:
+            watchedKeys.has(watchKey({ threadId: t.id })) ||
+            watchedKeys.has(watchKey({ environmentId: scope.environmentId, threadId: t.id })),
+          openPrCount: openPrs.length,
+          ...(primaryPr ? { primaryPr: { url: primaryPr.url, number: primaryPr.number } } : {}),
+          updatedAt: DateTime.formatIso(t.updatedAt),
+          latestActivity: null,
+        };
+      }),
+  };
+
+  const board = selectBriefWorkBoard({
+    asOf: DateTime.formatIso(yield* DateTime.now),
+    includeIdle,
+    machines: [local, ...peers],
+    peerDiscovery: links === null ? "unavailable" : "available",
+  });
+  const localIds = board.rows
+    .filter((row) => row.environmentId === scope.environmentId)
+    .map((row) => row.threadId);
+  const activity =
+    localIds.length === 0
+      ? new Map()
+      : yield* projections
+          .getLatestThreadActivity(localIds)
+          .pipe(Effect.orElseSucceed(() => new Map()));
+  return boundBriefWorkBoard({
+    ...board,
+    rows: board.rows.map((row) =>
+      row.environmentId === scope.environmentId
+        ? { ...row, latestActivity: activity.get(row.threadId) ?? null }
+        : row,
+    ),
+  });
+});
+
 export const layer = McpToolAccess.toLayer(CommanderToolkit, {
   skofo_work_board: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const { scope, commander } = yield* requireCommanderCaller;
+      if (input.view !== "full") {
+        return yield* readBriefWorkBoard({
+          scope,
+          commander,
+          includeIdle: input.includeIdle !== false,
+        });
+      }
+
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerClient = yield* PeerMcpClient.PeerMcpClient;

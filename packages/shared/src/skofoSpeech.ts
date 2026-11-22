@@ -14,6 +14,11 @@ const MIN_FRAGMENT_CHARS = 24;
 const COMPLETED_SPOKEN_TAG_RE = /<!--\s*spoken\s*:([\s\S]*?)-->/gi;
 const STREAMING_SPOKEN_TAG_RE = /<!--\s*spoken\s*:[\s\S]*?(?:-->|$)/gi;
 
+export function extractLeadingSpokenBrief(markdown: string): string | null {
+  const match = /^\s*<!--\s*spoken\s*:([\s\S]*?)-->/i.exec(markdown);
+  return match?.[1]?.replace(/\s+/g, " ").trim() || null;
+}
+
 /**
  * Extracts explicit concise spoken text embedded by Computer via `<!-- spoken: ... -->`.
  */
@@ -36,8 +41,16 @@ export function stripSpokenTagsForDisplay(
   options?: { readonly isStreaming?: boolean },
 ): string {
   const pattern = options?.isStreaming ? STREAMING_SPOKEN_TAG_RE : COMPLETED_SPOKEN_TAG_RE;
-  if (!markdown.includes("<!--")) return markdown;
-  return markdown.replace(pattern, "").trimEnd();
+  const stripped = markdown.replace(pattern, "");
+  if (!options?.isStreaming) return stripped === markdown ? markdown : stripped.trimEnd();
+
+  // Treat a lone angle bracket as an opener only at a block boundary.
+  const partial = /(?:^|\n)[ \t]*(<[^\n]*)$|(<[!-][^\n]*)$/.exec(stripped);
+  const opener = (partial?.[1] ?? partial?.[2])?.toLowerCase().replace(/\s+/g, "");
+  if (opener && "<!--spoken:".startsWith(opener)) {
+    return stripped.slice(0, partial?.index).trimEnd();
+  }
+  return stripped === markdown ? markdown : stripped.trimEnd();
 }
 
 function stripMarkdownTables(input: string): string {
@@ -232,4 +245,71 @@ export function splitIntoSpokenSentences(
   }
 
   return selected;
+}
+
+export type CommanderSpeakOutcome = "completed" | "stopped" | "error";
+
+export class CommanderVoiceReply {
+  private claimed = false;
+  private settled = false;
+  private audioDone = false;
+
+  readonly messageId: string;
+
+  constructor(messageId: string) {
+    this.messageId = messageId;
+  }
+
+  observe(run: { readonly status: string }, text: string) {
+    if (["failed", "cancelled", "interrupted", "rolled_back"].includes(run.status)) {
+      return { type: "failed" } as const;
+    }
+    this.settled = run.status === "completed";
+    if (!this.claimed) {
+      const brief = extractLeadingSpokenBrief(text);
+      if (brief || (this.settled && text.trim())) {
+        this.claimed = true;
+        return { type: "speak", text: brief ?? text } as const;
+      }
+      if (this.settled) return { type: "empty" } as const;
+    }
+    return this.audioDone && this.settled ? ({ type: "listen" } as const) : null;
+  }
+
+  finishAudio(outcome: CommanderSpeakOutcome) {
+    if (outcome === "completed") this.audioDone = true;
+    return this.audioDone && this.settled;
+  }
+}
+
+export function isCommanderReplyItem(
+  item: import("@t3tools/contracts").OrchestrationV2TurnItem,
+): item is Extract<typeof item, { type: "assistant_message" }> {
+  return (
+    item.type === "assistant_message" &&
+    item.phase !== "commentary" &&
+    item.status !== "failed" &&
+    item.status !== "cancelled" &&
+    item.status !== "interrupted"
+  );
+}
+
+export function commanderReplyForMessage(
+  runs: ReadonlyArray<
+    Pick<import("@t3tools/contracts").OrchestrationV2Run, "id" | "userMessageId" | "status">
+  >,
+  rows: ReadonlyArray<import("@t3tools/contracts").OrchestrationV2ProjectedTurnItem>,
+  messageId: string | null,
+) {
+  if (messageId === null) return null;
+  const run = runs.findLast((candidate) => candidate.userMessageId === messageId);
+  if (!run) return null;
+  const row = rows.findLast(
+    ({ item, visibility }) =>
+      visibility === "local" &&
+      item.runId === run.id &&
+      isCommanderReplyItem(item) &&
+      (run.status !== "completed" || item.text.trim() !== ""),
+  );
+  return { run, item: row && isCommanderReplyItem(row.item) ? row.item : null };
 }

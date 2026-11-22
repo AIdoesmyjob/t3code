@@ -291,6 +291,47 @@ const addRolledBackRecoveryCandidate = Effect.fn("addRolledBackRecoveryCandidate
   return threadId;
 });
 
+it.effect("projects one indexed line of visible activity for each requested thread", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const first = ThreadId.make("thread:activity:first");
+    const second = ThreadId.make("thread:activity:second");
+    const noSummary = ThreadId.make("thread:activity:empty");
+    const now = DateTime.formatIso(yield* DateTime.now);
+    const add = (threadId: ThreadId, ordinal: number, type: string, status: string, body: object) =>
+      sql`
+        INSERT INTO orchestration_v2_projection_turn_items
+          (turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json)
+        VALUES (${`${threadId}:${ordinal}`}, ${threadId}, ${ordinal}, ${type}, ${status}, ${now}, ${encodeUnknownJsonString(body)})
+      `;
+    yield* add(first, 1, "assistant_message", "completed", {
+      text: "<!-- spoken: Build passed. -->\nVerbose evidence below.",
+      phase: "final_answer",
+    });
+    yield* add(first, 2, "command_execution", "completed", { text: "raw terminal output" });
+    yield* add(first, 3, "reasoning", "completed", { text: "hidden reasoning" });
+    yield* add(first, 4, "assistant_message", "running", { text: "Incomplete reply" });
+    yield* add(second, 1, "notification", "completed", {
+      summary: `Check passed.\n${"Details ".repeat(30)}`,
+    });
+    const { tracer, statements } = traceSqlStatements();
+    const activity = yield* store
+      .getLatestThreadActivity([first, second, noSummary])
+      .pipe(Effect.withTracer(tracer));
+
+    assert.equal(activity.get(first), "Build passed.");
+    assert.match(activity.get(second) ?? "", /^Check passed\. Details/);
+    assert.lengthOf(activity.get(second) ?? "", 160);
+    assert.isFalse(activity.has(noSummary));
+    assert.lengthOf(
+      statements.filter((query) => query.includes("json_each")),
+      1,
+    );
+    assert.isTrue(statements.some((query) => query.includes("turn_items_conversation_idx")));
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("routes full projection reads to readers and retains uncommitted writer state", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;
