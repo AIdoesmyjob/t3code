@@ -249,6 +249,8 @@ describe("sidebar numbered jumps", () => {
     const initial = useComposerDraftStore.getState();
     using stack = new DisposableStack();
     stack.defer(() => useComposerDraftStore.setState(initial, true));
+    const draftStore = useComposerDraftStore.getInitialState();
+    useComposerDraftStore.setState(draftStore, true);
     const previousSettings = getClientSettings();
     stack.defer(() => __setClientSettingsForTests(previousSettings));
     __setClientSettingsForTests(DEFAULT_CLIENT_SETTINGS);
@@ -269,11 +271,11 @@ describe("sidebar numbered jumps", () => {
       routeThreadRef: threadRef,
     });
     const draftId = DraftId.make("unsent-draft");
-    initial.setProjectDraftThreadId(scopeProjectRef(web.environmentId, web.id), draftId, {
+    draftStore.setProjectDraftThreadId(scopeProjectRef(web.environmentId, web.id), draftId, {
       threadId: ThreadId.make("unsent-draft-thread"),
       createdAt: "2026-01-02T00:00:00.000Z",
     });
-    initial.setPrompt(draftId, "Unsent prompt");
+    draftStore.setPrompt(draftId, "Unsent prompt");
 
     await using screen = await render(
       <SidebarProvider>
@@ -283,6 +285,7 @@ describe("sidebar numbered jumps", () => {
     const draftRow = screen.getByTestId("sidebar-draft-row");
     await expect.element(draftRow).toBeInTheDocument();
     await expect.element(screen.getByText("Thread 0").first()).toBeInTheDocument();
+    await act(() => (draftRow.element() as HTMLElement).focus());
     await userEvent.keyboard("{Control>}");
     await expect.element(screen.getByText("Ctrl+1")).toBeVisible();
     await expect.element(draftRow.getByText("Ctrl+1")).toBeVisible();
@@ -354,7 +357,15 @@ describe("sidebar render isolation", () => {
         <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
       </SidebarProvider>,
     );
-    await expect.element(screen.getByText("Thread 4").first()).toBeInTheDocument();
+    const threadLabel = screen.getByText("Thread 4").first();
+    await expect.element(threadLabel).toBeInTheDocument();
+    const sidebarRow = threadLabel.element().closest<HTMLElement>("[data-sidebar-row]")!;
+    const focusSidebarRow = () =>
+      vi.waitFor(async () => {
+        await act(() => sidebarRow.focus());
+        expect(document.activeElement).toBe(sidebarRow);
+      });
+    await focusSidebarRow();
     const rowRenders = () => vi.mocked(SortableThreadRow).mock.calls.length;
 
     using _timers = fakeTimers();
@@ -376,12 +387,24 @@ describe("sidebar render isolation", () => {
         .mock.calls.slice(start)
         .map(([props]) => props.jumpLabel)
         .filter((label) => label !== null);
+    await focusSidebarRow();
+    const dispatchModifier = (type: "keydown" | "keyup") =>
+      sidebarRow.dispatchEvent(
+        new KeyboardEvent(type, {
+          bubbles: true,
+          key: modifier,
+          ctrlKey: type === "keydown" && modifier === "Control",
+          metaKey: type === "keydown" && modifier === "Meta",
+        }),
+      );
     const beforeHold = rowRenders();
-    await userEvent.keyboard(`{${modifier}>}`);
-    await act(() => vi.advanceTimersByTime(THREAD_JUMP_HINT_SHOW_DELAY_MS));
+    await act(() => {
+      dispatchModifier("keydown");
+      vi.advanceTimersByTime(THREAD_JUMP_HINT_SHOW_DELAY_MS);
+    });
     expect(jumpLabelsSince(beforeHold), "holding Mod showed no jump hints").toHaveLength(2);
     const beforeRelease = rowRenders();
-    await userEvent.keyboard(`{/${modifier}}`);
+    await act(() => dispatchModifier("keyup"));
     expect(rowRenders()).toBeGreaterThan(beforeRelease);
     expect(jumpLabelsSince(beforeRelease)).toEqual([]);
   });
