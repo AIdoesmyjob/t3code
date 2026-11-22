@@ -170,9 +170,13 @@ import {
 } from "../../speech/useEnvironmentSpeechInput";
 import {
   consumeCommanderDictation,
+  isCommanderThread,
   subscribeCommanderDictation,
 } from "../../skofo/commander/commanderConstants";
-import { commanderSpeechController } from "../../skofo/commander/commanderSpeech";
+import {
+  commanderSpeechController,
+  useThreadVoiceSpeechOutput,
+} from "../../skofo/commander/commanderSpeech";
 import { ComposerSpeechButton } from "./ComposerSpeechButton";
 import { COMPOSER_PILL_SLOT_BUTTON_CLASS_NAME } from "./ComposerPrimaryActions";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -402,6 +406,7 @@ export interface ChatComposerHandle {
     clipboardData: DataTransfer,
     options: { bypassAutoAttachment: boolean },
   ) => boolean;
+  submitPromptText: (text: string) => boolean;
   citeAssistantText: (
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
@@ -2214,9 +2219,14 @@ export function ChatComposer(props: ChatComposerProps) {
     dictationActiveRef.current = speechInput.state.phase !== "idle";
   });
   const speechUnavailableReason = useSpeechUnavailableReason(speechInput);
-  const commanderDictationThreadKey = activeThread
-    ? `${activeThread.environmentId}:${activeThread.id}`
-    : null;
+  const commanderVoiceChatAvailable =
+    useThreadVoiceSpeechOutput(
+      activeThread && isCommanderThread(activeThread) ? activeThread.environmentId : null,
+    ) !== null;
+  const commanderDictationThreadKey =
+    activeThread && !commanderVoiceChatAvailable
+      ? `${activeThread.environmentId}:${activeThread.id}`
+      : null;
   const startCommanderDictation = useStableCallback(() => {
     if (
       hiddenThread ||
@@ -3596,6 +3606,21 @@ export function ChatComposer(props: ChatComposerProps) {
         countPreparingComposerImages(attachmentTargetKey) > 0 ||
         pendingDraftWork.has(attachmentTargetKey),
       insertTextAtEnd: insertComposerTextAtEndStable,
+      submitPromptText: (text: string) => {
+        const clean = text.trim();
+        if (!clean || submissionBlocked) return false;
+        const snapshot = readComposerSnapshot();
+        const applied = applyPromptReplacement(0, snapshot.value.length, clean, {
+          expectedText: snapshot.value,
+          focusEditorAfterReplace: false,
+        });
+        if (!applied) return false;
+        promptRef.current = clean;
+        window.setTimeout(() => {
+          submitComposerRef.current();
+        }, 0);
+        return true;
+      },
       pasteTextAtEnd: (clipboardData, options) => {
         if (!canInsertComposerText) return false;
         const shortcutArmed = consumePasteAsTextShortcut(pasteAsTextShortcutUntilRef);

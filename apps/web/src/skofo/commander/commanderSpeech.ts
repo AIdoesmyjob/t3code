@@ -1,7 +1,14 @@
 import { useSyncExternalStore } from "react";
-import { AuthOrchestrationOperateScope, type EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type SpeechBeepKind,
+} from "@t3tools/contracts";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
-import { synthesizeEnvironmentSpeech } from "@t3tools/client-runtime/voice-input";
+import {
+  fetchEnvironmentSpeechBeep,
+  synthesizeEnvironmentSpeech,
+} from "@t3tools/client-runtime/voice-input";
 import { splitIntoSpokenSentences } from "@t3tools/shared/skofoSpeech";
 import * as Option from "effect/Option";
 
@@ -10,6 +17,8 @@ import { useEnvironment } from "~/state/environments";
 import { useEnvironmentScope, usePreparedConnection } from "~/state/session";
 
 const TALK_BACK_STORAGE_KEY = "skofo.computer.talkBack";
+
+export type CommanderSpeakOutcome = "completed" | "stopped" | "error";
 
 interface CommanderSpeechState {
   readonly talkBackEnabled: boolean;
@@ -49,6 +58,7 @@ class CommanderSpeechController {
   private abortController: AbortController | null = null;
   private activeAudio: HTMLAudioElement | null = null;
   private activeObjectUrl: string | null = null;
+  private beepCache = new Map<string, Blob>();
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -110,13 +120,41 @@ class CommanderSpeechController {
     }
   }
 
+  async playBeep(prepared: PreparedConnection, kind: SpeechBeepKind): Promise<void> {
+    if (typeof Audio === "undefined") return;
+    try {
+      const cacheKey = `${prepared.environmentId}:${kind}`;
+      let blob = this.beepCache.get(cacheKey);
+      if (!blob) {
+        const result = await runEnvironmentSpeech(fetchEnvironmentSpeechBeep(prepared, kind));
+        blob = base64ToBlob(result.audioBase64, result.mimeType);
+        this.beepCache.set(cacheKey, blob);
+      }
+      const objectUrl = URL.createObjectURL(blob);
+      const audio = new Audio(objectUrl);
+      audio.volume = 0.65;
+      await new Promise<void>((resolve) => {
+        const cleanup = () => {
+          URL.revokeObjectURL(objectUrl);
+          resolve();
+        };
+        audio.onended = cleanup;
+        audio.onerror = cleanup;
+        void audio.play().catch(cleanup);
+      });
+    } catch {
+      // Never block voice chat turns on optional LCARS audio cues.
+    }
+  }
+
   async speak(input: {
     readonly prepared: PreparedConnection;
     readonly text: string;
     readonly messageId: string;
-  }): Promise<void> {
-    const sentences = splitIntoSpokenSentences(input.text);
-    if (sentences.length === 0) return;
+    readonly mode?: "auto" | "full";
+  }): Promise<CommanderSpeakOutcome> {
+    const sentences = splitIntoSpokenSentences(input.text, { mode: input.mode ?? "full" });
+    if (sentences.length === 0) return "completed";
 
     this.stop();
     const myGen = this.generation;
@@ -139,18 +177,19 @@ class CommanderSpeechController {
         fetchSentence(sentences[0]!);
 
       for (let i = 0; i < sentences.length; i += 1) {
-        if (this.generation !== myGen || abort.signal.aborted) return;
+        if (this.generation !== myGen || abort.signal.aborted) return "stopped";
         const result = await nextPromise;
-        if (!result || this.generation !== myGen || abort.signal.aborted) return;
+        if (!result || this.generation !== myGen || abort.signal.aborted) return "stopped";
 
         // Pipeline next sentence synthesis while this sentence plays
         const nextSentence = sentences[i + 1];
         nextPromise = nextSentence ? fetchSentence(nextSentence) : null;
 
         const blob = base64ToBlob(result.audioBase64, result.mimeType);
-        const url = URL.createObjectURL(blob);
-        this.activeObjectUrl = url;
-        const audio = new Audio(url);
+        const objectUrl = URL.createObjectURL(blob);
+        this.activeObjectUrl = objectUrl;
+
+        const audio = new Audio(objectUrl);
         this.activeAudio = audio;
         this.emit({ status: "speaking", speakingMessageId: input.messageId });
 
@@ -173,33 +212,33 @@ class CommanderSpeechController {
             reject(new Error("Audio playback failed."));
           };
           abort.signal.addEventListener("abort", onAbort, { once: true });
-          const playPromise = audio.play();
-          if (playPromise && typeof playPromise.catch === "function") {
-            playPromise.catch((err: unknown) => {
-              cleanup();
-              reject(err instanceof Error ? err : new Error(String(err)));
-            });
-          }
+          void audio.play().catch((err) => {
+            cleanup();
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
         });
 
+        if (this.activeObjectUrl === objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          this.activeObjectUrl = null;
+        }
         if (this.activeAudio === audio) {
           this.activeAudio = null;
-        }
-        if (this.activeObjectUrl === url) {
-          URL.revokeObjectURL(url);
-          this.activeObjectUrl = null;
         }
       }
 
       if (this.generation === myGen) {
         this.abortController = null;
         this.emit({ status: "idle", speakingMessageId: null });
+        return "completed";
       }
+      return "stopped";
     } catch (err) {
-      if (this.generation !== myGen || abort.signal.aborted) return;
+      if (this.generation !== myGen || abort.signal.aborted) return "stopped";
       const message = err instanceof Error ? err.message : String(err);
       this.stop();
       this.emit({ error: message });
+      return "error";
     }
   }
 }

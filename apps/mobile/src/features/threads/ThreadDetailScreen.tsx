@@ -211,6 +211,8 @@ import {
   ThreadComposer,
   type ThreadComposerProps,
 } from "./ThreadComposer";
+import { isCommanderThread } from "../commander/commander";
+import { MobileCommanderVoiceChatBar } from "../commander/MobileCommanderVoiceChatBar";
 import { ComposerPopoverHost } from "./ComposerPopoverHost";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
 import { WorkspaceMutationIdProvider } from "./WorkspaceMutationIdProvider";
@@ -1936,6 +1938,12 @@ function ThreadDetailBody(
                     </View>
                   ) : (
                     <>
+                      <MobileCommanderVoiceChatBar
+                        environmentId={props.environmentId}
+                        threadId={props.selectedThread.id}
+                        isCommander={isCommanderThread(props.selectedThread)}
+                        maxWidth={contentMaxWidth}
+                      />
                       <ThreadComposer
                         isDraft={Boolean(props.draftMode)}
                         canOperateThread={props.canOperateThread}

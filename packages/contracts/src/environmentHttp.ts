@@ -70,8 +70,11 @@ import {
   EnvironmentSpeechPostProcessingResult,
   EnvironmentSpeechStatus,
   EnvironmentSpeechTranscriptionResult,
+  EnvironmentSpeechBeepRequest,
   EnvironmentSpeechSynthesizeRequest,
   EnvironmentSpeechSynthesizeResult,
+  EnvironmentSpeechTranscribeAudioRequest,
+  EnvironmentSpeechTranscribeAudioResult,
 } from "./speech.ts";
 import { PeerLinkClientPairingCredential, PeerLinkClientPairingRequest } from "./peerLink.ts";
 import { SecretReference } from "./secretReference.ts";
@@ -998,6 +1001,24 @@ export class EnvironmentVoiceHttpApi extends HttpApiGroup.make("voice")
     HttpApiEndpoint.post("synthesize", "/api/voice/synthesize", {
       headers: OptionalBearerHeaders,
       payload: EnvironmentSpeechSynthesizeRequest,
+      success: EnvironmentSpeechSynthesizeResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("transcribeAudio", "/api/voice/transcribe-audio", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechTranscribeAudioRequest,
+      success: EnvironmentSpeechTranscribeAudioResult,
+      error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
+    })
+      .middleware(EnvironmentVoiceBodyLimit)
+      .middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("beep", "/api/voice/beep", {
+      headers: OptionalBearerHeaders,
+      payload: EnvironmentSpeechBeepRequest,
       success: EnvironmentSpeechSynthesizeResult,
       error: [...EnvironmentScopedOperationErrors, EnvironmentRequestInvalidError],
     }).middleware(EnvironmentAuthenticatedAuth),

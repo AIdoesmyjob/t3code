@@ -23,6 +23,7 @@ export function ThreadHeader(props: {
   readonly hasThreadCwd: boolean;
   readonly inspectorMode: ThreadInspectorMode | null;
   readonly onOpenFilesInspector: () => void;
+  readonly voiceChatAction?: AppBarAction | null;
   readonly voiceAction?: AppBarAction | null;
 }) {
   const gt = useGT();
@@ -34,6 +35,7 @@ export function ThreadHeader(props: {
   const terminalMenu = threadTerminalMenu(props.gitControls, m);
   const filesVisible = props.inspectorMode === "files" && panes.auxiliaryPaneVisible;
   const actions: AppBarAction[] = [
+    ...(props.voiceChatAction ? [props.voiceChatAction] : []),
     ...(props.voiceAction ? [props.voiceAction] : []),
     ...(props.hasThreadCwd
       ? [

@@ -377,3 +377,28 @@ export const EnvironmentSpeechSynthesizeResult = Schema.Struct({
   mimeType: Schema.String,
 });
 export type EnvironmentSpeechSynthesizeResult = typeof EnvironmentSpeechSynthesizeResult.Type;
+
+export const EnvironmentSpeechTranscribeAudioRequest = Schema.Struct({
+  audioBase64: Schema.String.check(Schema.isMinLength(4), Schema.isMaxLength(16_000_000)),
+  mimeType: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(128))),
+  language: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(16))),
+});
+export type EnvironmentSpeechTranscribeAudioRequest =
+  typeof EnvironmentSpeechTranscribeAudioRequest.Type;
+
+export const EnvironmentSpeechTranscribeAudioResult = Schema.Struct({
+  text: Schema.String,
+  language: Schema.optionalKey(Schema.String),
+  durationSeconds: Schema.optionalKey(Schema.Number),
+  inferenceMs: Schema.optionalKey(Schema.Number),
+});
+export type EnvironmentSpeechTranscribeAudioResult =
+  typeof EnvironmentSpeechTranscribeAudioResult.Type;
+
+export const SpeechBeepKind = Schema.Literals(["listen", "ack"]);
+export type SpeechBeepKind = typeof SpeechBeepKind.Type;
+
+export const EnvironmentSpeechBeepRequest = Schema.Struct({
+  kind: SpeechBeepKind,
+});
+export type EnvironmentSpeechBeepRequest = typeof EnvironmentSpeechBeepRequest.Type;

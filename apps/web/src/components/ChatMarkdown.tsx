@@ -17,6 +17,7 @@ import {
 import { maskMarkdownFrontmatter } from "@t3tools/shared/markdownFrontmatter";
 import { taskListMarkerOffset } from "@t3tools/shared/markdownTaskEdits";
 import { isHostPath, resolveWorkspaceFilePath } from "@t3tools/shared/path";
+import { stripSpokenTagsForDisplay } from "@t3tools/shared/skofoSpeech";
 import { usePullRequestLinking } from "~/hooks/usePullRequestLinking";
 import {
   AuthFilesystemReadScope,
@@ -2204,7 +2205,7 @@ const MarkdownSource = memo(function MarkdownSource({
 });
 
 function ChatMarkdown({
-  text,
+  text: rawText,
   className,
   inline = false,
   lineBreaks = false,
@@ -2222,6 +2223,10 @@ function ChatMarkdown({
   useEffect(() => {
     if (isStreaming && streamingId !== undefined) shownStreamingIds.add(streamingId);
   }, [isStreaming, streamingId]);
+  const text = stripSpokenTagsForDisplay(rawText, { isStreaming: props.isStreaming === true });
+  const { componentState, handleCopy, markdownRef, localMediaPreview, closeLocalMediaPreview } =
+    useChatMarkdownState({ text, inline, ...props });
+  const hasInsights = renderInsights && text.includes("★ Insight");
   // Streaming re-renders only the last block; offsets for task edits, and extensions that read
   // the whole message, need the whole text.
   const streamingBlocks =

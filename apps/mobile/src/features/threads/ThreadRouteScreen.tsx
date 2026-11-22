@@ -123,7 +123,16 @@ import {
   threadRouteOpensDraft,
 } from "./thread-route-hydration";
 import { ThreadHeader } from "./ThreadHeader";
-import { isCommanderThread } from "../commander/commander";
+import {
+  consumeMobileCommanderDictation,
+  isCommanderThread,
+  subscribeMobileCommanderDictation,
+} from "../commander/commander";
+import {
+  mobileCommanderVoiceChat,
+  useMobileCommanderVoiceChatState,
+} from "../commander/mobileCommanderVoiceChat";
+import { setComposerDraftText } from "../../state/use-composer-drafts";
 import {
   mobileCommanderSpeech,
   useMobileCommanderSpeechState,
@@ -1000,9 +1009,41 @@ function ThreadRouteContent(
   const commanderHistoryReady = selectedThreadDetail !== null;
   const commanderVoicePrepared = useAtomValue(voiceSpeechOutputConnectionAtom(environmentId));
   const commanderSpeech = useMobileCommanderSpeechState();
+  const commanderVoiceChat = useMobileCommanderVoiceChatState();
   const commanderThreadKey = selectedThread
-    ? `${selectedThread.environmentId}:${selectedThread.id}`
+    ? scopedThreadKey(selectedThread.environmentId, selectedThread.id)
     : null;
+  const onMobileVoiceSend = useEffectEvent(async (text: string) => {
+    const clean = text.trim();
+    if (!clean || !composer.composerDraftKey || !canOperateThread) return false;
+    setComposerDraftText(composer.composerDraftKey, clean);
+    const result = await composer.onSendMessage();
+    return result !== null;
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers Computer thread as a mobile Voice Chat host and handles top-card mic launches
+  useEffect(() => {
+    if (!isSelectedCommander || commanderThreadKey === null || !commanderVoicePrepared) return;
+    const unregister = mobileCommanderVoiceChat.registerHost(commanderThreadKey, {
+      prepared: commanderVoicePrepared,
+      sendMessage: (text) => onMobileVoiceSend(text),
+    });
+    if (consumeMobileCommanderDictation(commanderThreadKey)) {
+      void mobileCommanderVoiceChat.startForThread(commanderThreadKey);
+    }
+    const unsub = subscribeMobileCommanderDictation((requestedKey) => {
+      if (
+        requestedKey === commanderThreadKey &&
+        consumeMobileCommanderDictation(commanderThreadKey)
+      ) {
+        void mobileCommanderVoiceChat.startForThread(commanderThreadKey);
+      }
+    });
+    return () => {
+      unsub();
+      unregister();
+    };
+  }, [isSelectedCommander, commanderThreadKey, commanderVoicePrepared]);
   const commanderSeededKeyRef = useRef<string | null>(null);
   const commanderLastSpokenIdRef = useRef<string | null>(null);
   const latestCompletedAssistantMessage = (() => {
@@ -1044,14 +1085,23 @@ function ThreadRouteContent(
       return;
     }
     commanderLastSpokenIdRef.current = latestCompletedAssistantId;
-    if (!commanderSpeech.talkBackEnabled || !commanderVoicePrepared) {
+    const voiceChatActive = mobileCommanderVoiceChat.isActiveFor(commanderThreadKey);
+    if ((!commanderSpeech.talkBackEnabled && !voiceChatActive) || !commanderVoicePrepared) {
       return;
     }
-    void mobileCommanderSpeech.speak({
-      prepared: commanderVoicePrepared,
-      text: latestCompletedAssistantText,
-      messageId: latestCompletedAssistantId,
-    });
+    if (voiceChatActive) {
+      mobileCommanderVoiceChat.notifySpeakingStart(commanderThreadKey);
+    }
+    void mobileCommanderSpeech
+      .speak({
+        prepared: commanderVoicePrepared,
+        text: latestCompletedAssistantText,
+        messageId: latestCompletedAssistantId,
+        mode: "auto",
+      })
+      .then((outcome) => {
+        mobileCommanderVoiceChat.notifySpeakingFinished(commanderThreadKey, outcome);
+      });
   }, [
     isSelectedCommander,
     commanderHistoryReady,
@@ -1067,8 +1117,28 @@ function ThreadRouteContent(
     if (!isSelectedCommander || commanderThreadKey === null) return;
     return () => {
       mobileCommanderSpeech.stop();
+      if (mobileCommanderVoiceChat.isActiveFor(commanderThreadKey)) {
+        mobileCommanderVoiceChat.stop();
+      }
     };
   }, [isSelectedCommander, commanderThreadKey]);
+
+  const isMobileVoiceChatActive =
+    commanderThreadKey !== null &&
+    commanderVoiceChat.activeThreadKey === commanderThreadKey &&
+    commanderVoiceChat.phase !== "off";
+  const commanderVoiceChatHeaderAction =
+    isSelectedCommander && commanderVoicePrepared && commanderThreadKey !== null
+      ? {
+          accessibilityLabel: isMobileVoiceChatActive
+            ? gt("End Voice Chat with Computer")
+            : gt("Start Voice Chat with Computer"),
+          icon: isMobileVoiceChatActive ? ("xmark.circle.fill" as const) : ("headphones" as const),
+          selected: isMobileVoiceChatActive,
+          separateBackground: false,
+          onPress: () => void mobileCommanderVoiceChat.toggleForThread(commanderThreadKey),
+        }
+      : null;
 
   const commanderVoiceHeaderAction =
     isSelectedCommander && commanderVoicePrepared
@@ -1161,6 +1231,7 @@ function ThreadRouteContent(
               inspectorMode={inspectorMode}
               onOpenFilesInspector={handleOpenFilesInspector}
               onReturnToThread={props.onReturnToThread}
+              voiceChatAction={commanderVoiceChatHeaderAction}
               voiceAction={commanderVoiceHeaderAction}
             />
           )
