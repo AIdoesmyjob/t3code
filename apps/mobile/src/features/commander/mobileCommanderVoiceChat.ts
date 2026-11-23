@@ -10,7 +10,7 @@ import {
 } from "expo-audio";
 import { File } from "expo-file-system";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 
 import {
   acquireAudioSession,
@@ -18,6 +18,7 @@ import {
   releaseAudioSession,
 } from "../../lib/audioSession";
 import { runSpeech } from "../voice-input/voiceDestination";
+import { normalizeVoiceInputDecibels } from "../voice-input/voiceInputMetering";
 
 type AudioSessionToken = ReturnType<typeof acquireAudioSession>;
 import { mobileCommanderSpeech } from "./mobileCommanderSpeech";
@@ -67,7 +68,7 @@ export interface MobileCommanderVoiceChatHost {
 }
 
 const VAD_POLL_MS = 100;
-const NOISE_CALIBRATION_MS = 400;
+const POST_BEEP_SETTLE_MS = 200;
 const SPEECH_ONSET_MIN_MS = 200;
 const SILENCE_END_MS = 1_400;
 const MAX_UTTERANCE_MS = 45_000;
@@ -83,7 +84,7 @@ function buildRecordingOptions() {
     numberOfChannels: RecordingPresets.HIGH_QUALITY.numberOfChannels,
     bitRate: RecordingPresets.HIGH_QUALITY.bitRate,
     isMeteringEnabled: true,
-    ...(Platform.OS === "ios" ? ios : android),
+    ...(Platform.OS === "ios" ? ios : { ...android, audioSource: "voice_recognition" as const }),
   };
 }
 
@@ -112,6 +113,7 @@ class MobileCommanderVoiceChatController {
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
   private abortController: AbortController | null = null;
   private keepAwakeActive = false;
+  private permissionRequest: { onActive: (() => void) | null } | null = null;
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -137,6 +139,27 @@ class MobileCommanderVoiceChatController {
       if (this.isActiveFor(threadKey)) this.pause();
       else mobileCommanderSpeech.stop();
     };
+  }
+
+  updateHostPrepared(threadKey: string, prepared: PreparedConnection) {
+    const existing = this.hosts.get(threadKey);
+    if (!existing) return;
+    this.hosts.set(threadKey, { ...existing, prepared });
+  }
+
+  handleAppStateChange(state: string) {
+    if (state === "active") {
+      this.permissionRequest?.onActive?.();
+      return;
+    }
+    if (this.permissionRequest !== null) return;
+    this.pause();
+  }
+
+  private clearPermissionRequest() {
+    const request = this.permissionRequest;
+    this.permissionRequest = null;
+    request?.onActive?.();
   }
 
   isActiveFor(threadKey: string | null): boolean {
@@ -183,11 +206,17 @@ class MobileCommanderVoiceChatController {
       let uri: string | null = null;
       if (recorder) {
         await preparing?.catch(() => {});
+        let stopUrl: string | null = null;
         try {
-          if (recorder.isRecording) await recorder.stop();
+          if (recorder.isRecording) {
+            const stopped = (await recorder.stop()) as { readonly url?: string | null } | undefined;
+            if (typeof stopped?.url === "string" && stopped.url.length > 0) {
+              stopUrl = stopped.url;
+            }
+          }
         } catch {}
         try {
-          uri = recorder.uri;
+          uri = recorder.uri || stopUrl || recorder.getStatus().url || null;
         } catch {
         } finally {
           try {
@@ -216,6 +245,7 @@ class MobileCommanderVoiceChatController {
     this.generation += 1;
     this.reply = null;
     this.clearTimers();
+    this.clearPermissionRequest();
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -253,6 +283,7 @@ class MobileCommanderVoiceChatController {
     this.reply = null;
     const myGen = this.generation;
     this.clearTimers();
+    this.clearPermissionRequest();
     if (this.abortController) {
       this.abortController.abort();
       this.abortController = null;
@@ -275,7 +306,27 @@ class MobileCommanderVoiceChatController {
     try {
       await this.releaseRecordingResources();
       if (this.generation !== myGen) return;
-      const permission = await requestRecordingPermissionsAsync();
+
+      // Android's permission activity briefly backgrounds the app.
+      const request: NonNullable<typeof this.permissionRequest> = { onActive: null };
+      this.permissionRequest = request;
+      let permission: Awaited<ReturnType<typeof requestRecordingPermissionsAsync>>;
+      try {
+        permission = await requestRecordingPermissionsAsync();
+        if (
+          Platform.OS === "android" &&
+          this.generation === myGen &&
+          AppState.currentState !== "active"
+        ) {
+          await new Promise<void>((resolve) => {
+            request.onActive = resolve;
+          });
+        }
+      } finally {
+        if (this.permissionRequest === request) {
+          this.permissionRequest = null;
+        }
+      }
       if (this.generation !== myGen) return;
       if (!permission.granted) {
         this.setKeepAwake(false);
@@ -339,7 +390,7 @@ class MobileCommanderVoiceChatController {
       await this.recorderPreparation;
       if (this.generation !== sessionGen) return;
       this.recorderPreparation = null;
-      recorder.record();
+      recorder.record({ forDuration: Math.ceil(MAX_UTTERANCE_MS / 1000) });
 
       this.emit({
         activeThreadKey: threadKey,
@@ -352,9 +403,7 @@ class MobileCommanderVoiceChatController {
       });
 
       const startedAt = Date.now();
-      let noiseSamples = 0;
-      let noiseSumDb = 0;
-      let noiseFloorDb = -48;
+      let noiseFloorDb = -50;
       let speechMs = 0;
       let heardSpeech = false;
       let silenceMs = 0;
@@ -365,21 +414,25 @@ class MobileCommanderVoiceChatController {
           return;
         }
         const elapsed = Date.now() - startedAt;
-        const status = this.recorder.getStatus();
+        const status =
+          typeof this.recorder.getStatus === "function" ? this.recorder.getStatus() : null;
         const metering =
           typeof status?.metering === "number" && Number.isFinite(status.metering)
             ? status.metering
             : null;
 
         if (metering !== null) {
-          if (elapsed <= NOISE_CALIBRATION_MS) {
-            noiseSumDb += metering;
-            noiseSamples += 1;
-            noiseFloorDb = Math.max(-55, Math.min(-28, noiseSumDb / Math.max(1, noiseSamples)));
+          // Android MediaRecorder.getMaxAmplitude() returns 0 (-160 dB) on the first poll or silence.
+          if (metering > -120 && elapsed >= POST_BEEP_SETTLE_MS && !heardSpeech) {
+            if (metering < noiseFloorDb) {
+              noiseFloorDb = Math.max(-58, noiseFloorDb * 0.65 + metering * 0.35);
+            } else if (metering < -34) {
+              noiseFloorDb = Math.min(-36, noiseFloorDb * 0.94 + metering * 0.06);
+            }
           }
-          const onsetDb = Math.max(-34, noiseFloorDb + 10);
-          const releaseDb = Math.max(-38, noiseFloorDb + 6);
-          const visualLevel = Math.max(0, Math.min(1, (metering + 55) / 45));
+          const onsetDb = Math.max(-42, Math.min(-26, noiseFloorDb + 8));
+          const releaseDb = onsetDb - 4;
+          const visualLevel = normalizeVoiceInputDecibels(metering);
 
           if (metering >= onsetDb) {
             speechMs += VAD_POLL_MS;
@@ -549,6 +602,7 @@ class MobileCommanderVoiceChatController {
     this.generation += 1;
     this.reply = null;
     this.clearTimers();
+    this.clearPermissionRequest();
     this.abortController?.abort();
     this.abortController = null;
     void this.releaseRecordingResources();
