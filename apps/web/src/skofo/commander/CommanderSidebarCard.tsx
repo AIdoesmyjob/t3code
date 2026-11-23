@@ -119,12 +119,16 @@ export function CommanderSidebarCard({
         }
       }}
       className={cn(
+        // oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later
         "group/commander mt-1.5 flex w-full cursor-pointer items-center gap-2 rounded-lg border px-2 py-1.5 text-left transition-colors select-none",
         isActive
-          ? "border-primary/40 bg-accent text-accent-foreground shadow-xs"
-          : "border-sidebar-border/80 bg-accent/40 text-sidebar-foreground hover:bg-accent/75",
+          ? // oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later
+            "border-primary/40 bg-accent text-accent-foreground shadow-xs"
+          : // oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later
+            "border-sidebar-border/80 bg-accent/40 text-sidebar-foreground hover:bg-accent/75",
       )}
     >
+      {/* oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later */}
       <div className="relative flex size-6 shrink-0 items-center justify-center rounded-md bg-primary/12 text-primary">
         <BotIcon className="size-3.5" />
         <span
