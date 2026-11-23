@@ -100,7 +100,7 @@ const voiceConnections = (
     Atom.make((get) => {
       const environment = get(environmentPresentations.presentationAtom(id));
       if (
-        !hasEnvironmentVoiceCapture ||
+        (capability !== "voiceSpeechOutput" && !hasEnvironmentVoiceCapture) ||
         environment?.connection.phase !== "connected" ||
         !environment.serverConfig?.environment.capabilities[capability] ||
         !sessionHasScope(
