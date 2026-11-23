@@ -24,7 +24,7 @@ import * as Stream from "effect/Stream";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { encodeThreadSnapshotBody } from "./threadSnapshotBody.ts";
-import { projectThreadProjectionForWire } from "./WireProjection.ts";
+import { projectThreadProjectionForWire } from "@t3tools/shared/wireProjection";
 
 const provider = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId: provider, model: "gpt-5.4" };
