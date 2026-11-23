@@ -26,8 +26,14 @@ vi.mock("expo-keep-awake", () => ({
   activateKeepAwakeAsync: vi.fn(async () => {}),
   deactivateKeepAwake: vi.fn(async () => {}),
 }));
+const appStateMock = vi.hoisted(() => ({ currentState: "active" }));
 vi.mock("react-native", () => ({
   Platform: { OS: "android" },
+  AppState: {
+    get currentState() {
+      return appStateMock.currentState;
+    },
+  },
 }));
 
 import { mobileCommanderVoiceChat } from "./mobileCommanderVoiceChat";
@@ -104,6 +110,157 @@ describe("mobileCommanderVoiceChat", () => {
       unsubscribe();
       unregister();
       mobileCommanderVoiceChat.stop();
+    }
+  });
+
+  it("keeps Voice Chat alive while Android's permission dialog backgrounds the app", async () => {
+    const supersededPermission =
+      Promise.withResolvers<Awaited<ReturnType<typeof requestRecordingPermissionsAsync>>>();
+    const permission = Promise.withResolvers<{
+      granted: boolean;
+      status: string;
+      canAskAgain: boolean;
+      expires: string;
+    }>();
+    const recorder = {
+      isRecording: false,
+      uri: "file:///voice.m4a",
+      prepareToRecordAsync: vi.fn(async () => {}),
+      record: vi.fn(),
+      stop: vi.fn(async () => {}),
+      getStatus: vi.fn(() => ({ isRecording: true, metering: -50, url: "file:///voice.m4a" })),
+      release: vi.fn(),
+    };
+    vi.mocked(AudioModule.AudioRecorder).mockImplementation(function () {
+      return recorder as unknown as AudioRecorder;
+    });
+    vi.mocked(requestRecordingPermissionsAsync)
+      .mockClear()
+      .mockReturnValueOnce(supersededPermission.promise)
+      .mockReturnValueOnce(
+        permission.promise as ReturnType<typeof requestRecordingPermissionsAsync>,
+      );
+    const unregister = mobileCommanderVoiceChat.registerHost("env-1:thread-perm", {
+      prepared: { environmentId: "env-1" } as never,
+      sendMessage: async () => "message-voice",
+    });
+    try {
+      vi.mocked(runSpeech).mockRejectedValueOnce(new Error("skip-listen-beep"));
+      const supersededStart = mobileCommanderVoiceChat.startForThread("env-1:thread-perm");
+      await vi.waitFor(() => expect(requestRecordingPermissionsAsync).toHaveBeenCalledTimes(1));
+      const starting = mobileCommanderVoiceChat.startForThread("env-1:thread-perm");
+      await vi.waitFor(() => expect(requestRecordingPermissionsAsync).toHaveBeenCalledTimes(2));
+
+      supersededPermission.resolve({
+        granted: true,
+        status: "granted",
+        canAskAgain: true,
+        expires: "never",
+      } as Awaited<ReturnType<typeof requestRecordingPermissionsAsync>>);
+      await supersededStart;
+
+      // Android permission activity backgrounds the app.
+      appStateMock.currentState = "background";
+      mobileCommanderVoiceChat.handleAppStateChange("background");
+      expect(mobileCommanderVoiceChat.getSnapshot().phase).toBe("starting");
+
+      permission.resolve({ granted: true, status: "granted", canAskAgain: true, expires: "never" });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // App returns to foreground after user taps Allow.
+      appStateMock.currentState = "active";
+      mobileCommanderVoiceChat.handleAppStateChange("active");
+      await starting;
+
+      expect(mobileCommanderVoiceChat.getSnapshot().phase).toBe("listening");
+      expect(recorder.record).toHaveBeenCalledWith({ forDuration: 45 });
+    } finally {
+      appStateMock.currentState = "active";
+      mobileCommanderVoiceChat.stop();
+      unregister();
+    }
+  });
+
+  it("detects Android speech after initial -160 dB samples and auto-sends on silence", async () => {
+    vi.useFakeTimers();
+    const samples = [
+      -160,
+      -160,
+      -48,
+      -48, // initial Android 0-amplitude + ambient noise
+      -30,
+      -28,
+      -27,
+      -29, // normal speaking level on Android MediaRecorder
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+      -52,
+    ];
+    let idx = 0;
+    const recorder = {
+      isRecording: true,
+      uri: "file:///speech.m4a",
+      prepareToRecordAsync: vi.fn(async () => {}),
+      record: vi.fn(),
+      stop: vi.fn(async () => ({ url: "file:///speech.m4a" })),
+      getStatus: vi.fn(() => ({
+        isRecording: true,
+        metering: samples[Math.min(idx++, samples.length - 1)]!,
+        url: "file:///speech.m4a",
+      })),
+      release: vi.fn(),
+    };
+    vi.mocked(AudioModule.AudioRecorder).mockImplementation(function () {
+      return recorder as unknown as AudioRecorder;
+    });
+    vi.mocked(requestRecordingPermissionsAsync).mockResolvedValueOnce({
+      granted: true,
+      status: "granted",
+      canAskAgain: true,
+      expires: "never",
+    } as Awaited<ReturnType<typeof requestRecordingPermissionsAsync>>);
+    const { File } = await import("expo-file-system");
+    vi.mocked(File).mockImplementation(function () {
+      return {
+        exists: true,
+        base64: async () => "AAAA",
+        delete: vi.fn(),
+      } as never;
+    });
+    vi.mocked(runSpeech)
+      .mockRejectedValueOnce(new Error("skip-listen-beep"))
+      .mockRejectedValueOnce(new Error("skip-ack-beep"))
+      .mockResolvedValueOnce({ text: "hello computer" } as never);
+    const sendMessage = vi.fn(async () => "message-voice-vad");
+    const unregister = mobileCommanderVoiceChat.registerHost("env-1:thread-vad", {
+      prepared: { environmentId: "env-1" } as never,
+      sendMessage,
+    });
+    try {
+      await mobileCommanderVoiceChat.startForThread("env-1:thread-vad");
+      expect(mobileCommanderVoiceChat.getSnapshot().phase).toBe("listening");
+      await vi.advanceTimersByTimeAsync(2_500);
+      await vi.waitFor(() => {
+        expect(sendMessage).toHaveBeenCalledWith("hello computer");
+      });
+      expect(mobileCommanderVoiceChat.getSnapshot().phase).toBe("thinking");
+    } finally {
+      vi.useRealTimers();
+      mobileCommanderVoiceChat.stop();
+      unregister();
     }
   });
 });

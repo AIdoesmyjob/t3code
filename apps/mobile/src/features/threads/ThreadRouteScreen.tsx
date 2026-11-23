@@ -1040,17 +1040,30 @@ function ThreadRouteContent(
     return result._tag === "Success" ? messageId : null;
   });
 
+  const commanderVoicePreparedRef = useRef(commanderVoicePrepared);
+  const hasCommanderVoicePrepared = commanderVoicePrepared !== null;
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- updates the active host connection without pausing Voice Chat on token refresh
+  useEffect(() => {
+    commanderVoicePreparedRef.current = commanderVoicePrepared;
+    if (commanderThreadKey !== null && commanderVoicePrepared !== null) {
+      mobileCommanderVoiceChat.updateHostPrepared(commanderThreadKey, commanderVoicePrepared);
+    }
+  }, [commanderThreadKey, commanderVoicePrepared]);
+
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns microphone and playback while the Computer route is focused
   useEffect(() => {
+    const prepared = commanderVoicePreparedRef.current;
     if (
       !isSelectedCommander ||
       !routeFocused ||
       commanderThreadKey === null ||
-      !commanderVoicePrepared
+      !hasCommanderVoicePrepared ||
+      prepared === null
     )
       return;
     const unregister = mobileCommanderVoiceChat.registerHost(commanderThreadKey, {
-      prepared: commanderVoicePrepared,
+      prepared,
       sendMessage: (text) => onMobileVoiceSend(text),
     });
     const start = (requestedKey: string) => {
@@ -1065,14 +1078,14 @@ function ThreadRouteContent(
     start(commanderThreadKey);
     const unsub = subscribeMobileCommanderDictation(start);
     const appState = AppState.addEventListener("change", (state) => {
-      if (state !== "active") mobileCommanderVoiceChat.pause();
+      mobileCommanderVoiceChat.handleAppStateChange(state);
     });
     return () => {
       appState.remove();
       unsub();
       unregister();
     };
-  }, [isSelectedCommander, routeFocused, commanderThreadKey, commanderVoicePrepared]);
+  }, [isSelectedCommander, routeFocused, commanderThreadKey, hasCommanderVoicePrepared]);
   const voiceActive =
     commanderThreadKey !== null &&
     commanderVoiceChat.activeThreadKey === commanderThreadKey &&

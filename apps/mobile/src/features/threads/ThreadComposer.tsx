@@ -131,6 +131,7 @@ import {
 } from "../commander/commander";
 import { voiceSpeechOutputConnectionAtom } from "../voice-input/voiceDestination";
 import { mobileCommanderSpeech } from "../commander/mobileCommanderSpeech";
+import { mobileCommanderVoiceChat } from "../commander/mobileCommanderVoiceChat";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 import { perfProbe } from "../development/perf-probe-hooks";
@@ -502,6 +503,8 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     props.isDraft,
     voiceInput,
   ]);
+  const canStartCommanderVoiceChat =
+    !props.isDraft && props.canOperateThread && mobileCommanderVoiceChatAvailable;
   const isSubmissionLocked =
     props.interactionLocked === true || queuedEdit?.saving === true || voiceInput.blocksSubmission;
   const voicePresentation = resolveVoiceComposerPresentation(
@@ -1100,9 +1103,13 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                 <ComposerDictationStartAction
                   size={usesLargeControls ? "large" : "regular"}
                   state={voiceInput.state}
-                  isAvailable={voiceInput.isAvailable}
+                  isAvailable={voiceInput.isAvailable || canStartCommanderVoiceChat}
                   disabled={isSubmissionLocked}
-                  onStart={voiceInput.start}
+                  onStart={
+                    voiceInput.isAvailable
+                      ? voiceInput.start
+                      : () => void mobileCommanderVoiceChat.toggleForThread(composerOwnerKey)
+                  }
                   onCancel={voiceInput.cancel}
                 />
                 {showStopAction ? (
