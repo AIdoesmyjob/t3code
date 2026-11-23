@@ -1044,9 +1044,6 @@ const WsPeerLinksPairLinkRpc = Rpc.make(WS_METHODS.peerLinksPairLink, {
   error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
 });
 
-  error: Schema.Union([PeerLinkError, EnvironmentAuthorizationError]),
-});
-
 const WsPeerLinksBrowserPairingRpc = Rpc.make(WS_METHODS.peerLinksBrowserPairing, {
   payload: PeerLinkBrowserPairingInput,
   success: PeerLinkBrowserPairingResult,
