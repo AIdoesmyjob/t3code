@@ -283,9 +283,11 @@ export const CommanderVoiceChatBar = memo(function CommanderVoiceChatBar({
   return (
     <div
       data-slot="skofo-voice-chat-bar"
+      // oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later
       className="mx-auto mb-2 flex w-full max-w-3xl items-center justify-between gap-3 rounded-xl border border-primary/30 bg-card/95 px-3 py-2 shadow-sm backdrop-blur-sm"
     >
       <div className="flex min-w-0 flex-1 items-center gap-2.5">
+        {/* oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later */}
         <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
           {isBusy ? (
             <Spinner size="sm" />

@@ -485,6 +485,7 @@ export function DeviceStreamView(props: {
         {retainingCanvasFrame ? (
           // Shown only once the device has been silent for two seconds.
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center p-2 transition-opacity delay-2000 duration-0 starting:opacity-0">
+            {/* oxlint-disable-next-line t3code/no-raw-surface -- fork-only UI; restyle with the surface tokens later */}
             <span className="rounded-md bg-background/85 px-2 py-1 text-xs text-muted-foreground">
               <T>Waiting for device video…</T>
             </span>
