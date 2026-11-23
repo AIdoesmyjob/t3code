@@ -288,19 +288,22 @@ const handler = Effect.gen(function* () {
     return HttpServerResponse.text("Not Found", { status: 404 });
   }
   const upstreamUrl = routed?.url ?? `${ready.hub.origin}${hubPath}${search}`;
+  const upstreamHeaders =
+    routed?.headers ??
+    (ready.hub.token === undefined ? undefined : { authorization: `Bearer ${ready.hub.token}` });
   if (upgrade) {
     return yield* Effect.raceFirst(
       proxyWebSocket(
         request,
         upstreamUrl.replace(/^http/, "ws"),
         routed?.protocols,
-        routed?.headers,
+        upstreamHeaders,
         routed?.isolated,
       ),
       invalidated.pipe(Effect.as(HttpServerResponse.empty())),
     );
   }
-  return yield* proxyHttp(request, upstreamUrl, invalidated, routed?.headers, routed?.isolated);
+  return yield* proxyHttp(request, upstreamUrl, invalidated, upstreamHeaders, routed?.isolated);
 });
 
 export const layer = HttpRouter.add("*", `${DeviceService.DEVICE_HUB_ROUTE_PREFIX}/*`, handler);
