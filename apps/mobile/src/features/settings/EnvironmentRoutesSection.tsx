@@ -3,7 +3,6 @@ import { Button } from "../../components/ui/Button";
 import * as Dialog from "../../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
 import {
-  canRemoveRoute,
   type ConnectionRoute,
   type ConnectionRouteKind,
   connectionRouteAddress,
@@ -226,7 +225,10 @@ export function EnvironmentRoutesSection({
               if (!cancelled) move(index, dropIndex(index, translation));
             }}
             onStep={(direction) => move(index, direction === "up" ? index - 1 : index + 1)}
-            onRemove={canRemoveRoute(routes, route) ? () => confirmRemove(route) : undefined}
+            // A learned route would be learned again, so it is only reordered.
+            onRemove={
+              routes.length > 1 && !isLearned(route) ? () => confirmRemove(route) : undefined
+            }
           />
         );
       })}
