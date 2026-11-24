@@ -13656,5 +13656,8 @@
   "2d99f80191b88ee4": "Android SDK är tillgängligt.",
   "410dded6e21c280d": "Undanlagringen är full",
   "1af8d12ac21cb183": "Du kan lägga undan högst {max} promptar. Återställ eller ta bort en för att göra plats; inmatningsfältet lämnades som det var.",
-  "91aadfc843c600de": "Verifiera Google-konto"
+  "91aadfc843c600de": "Verifiera Google-konto",
+  "4a18481bea4b4ad5": "Ny enhet inloggad på {environmentLabel}",
+  "4144ab6aa487528a": "{device} anslöt via {product}. Inte du? Granska den.",
+  "a10cfdb27152c757": "{count, plural, one {{count} enhet} other {{count} enheter}} anslöt via {product}. Inte du? Granska dem."
 }

@@ -13658,5 +13658,8 @@
   "2d99f80191b88ee4": "The Android SDK is available.",
   "410dded6e21c280d": "Stash is full",
   "1af8d12ac21cb183": "The stash holds {max} prompts. Restore or delete one to make room; the composer was left as-is.",
-  "91aadfc843c600de": "Verify Google account"
+  "91aadfc843c600de": "Verify Google account",
+  "4a18481bea4b4ad5": "New device signed in to {environmentLabel}",
+  "4144ab6aa487528a": "{device} connected through {product}. Not you? Review it.",
+  "a10cfdb27152c757": "{count, plural, one {{count} device} other {{count} devices}} connected through {product}. Not you? Review them."
 }

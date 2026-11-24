@@ -13665,5 +13665,8 @@
   "2d99f80191b88ee4": "可以使用 Android SDK。",
   "410dded6e21c280d": "暂存已满",
   "1af8d12ac21cb183": "暂存最多保存 {max} 条提示词。请恢复或删除一条以腾出空间；输入框保持不变。",
-  "91aadfc843c600de": "验证 Google 账户"
+  "91aadfc843c600de": "验证 Google 账户",
+  "4a18481bea4b4ad5": "有新设备登录了 {environmentLabel}",
+  "4144ab6aa487528a": "{device} 已通过 {product} 连接。不是你本人？请检查。",
+  "a10cfdb27152c757": "{count, plural, other {{count} 台设备}}已通过 {product} 连接。不是你本人？请检查。"
 }

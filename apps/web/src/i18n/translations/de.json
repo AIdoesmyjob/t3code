@@ -13651,5 +13651,8 @@
   "2d99f80191b88ee4": "Das Android SDK ist verfügbar.",
   "410dded6e21c280d": "Ablage ist voll",
   "1af8d12ac21cb183": "Die Ablage fasst {max} Prompts. Stelle einen wieder her oder lösche einen, um Platz zu schaffen; das Eingabefeld wurde unverändert gelassen.",
-  "91aadfc843c600de": "Google-Konto bestätigen"
+  "91aadfc843c600de": "Google-Konto bestätigen",
+  "4a18481bea4b4ad5": "Neues Gerät bei {environmentLabel} angemeldet",
+  "4144ab6aa487528a": "{device} hat sich über {product} verbunden. Warst du das nicht? Prüfe es.",
+  "a10cfdb27152c757": "{count, plural, one {{count} Gerät hat} other {{count} Geräte haben}} sich über {product} verbunden. Warst du das nicht? Prüfe sie."
 }

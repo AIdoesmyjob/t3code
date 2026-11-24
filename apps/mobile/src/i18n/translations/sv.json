@@ -5752,5 +5752,8 @@
   "efbeb3993ee2c3f5": "Köar för {pool}",
   "0398ca6c1d24b92d": "i kö, näst på tur",
   "0af6d5ffd5166214": "{count, plural, one {i kö, {count} före} other {i kö, {count} före}}",
-  "1a1beecff68a6e61": "Verifiera Google-konto"
+  "1a1beecff68a6e61": "Verifiera Google-konto",
+  "89bf40eb2503b6c5": "Ny enhet inloggad på {environment}",
+  "c94b5fe9ef372bc0": "{device} anslöt via {product}. Om det inte var du, ta bort den under Inställningar → Åtkomst i T3 Code på den datorn.",
+  "bec67d0ed485f885": "{count, plural, one {{count} enhet} other {{count} enheter}} anslöt via {product}. Om det inte var du, ta bort dem under Inställningar → Åtkomst i T3 Code på den datorn."
 }

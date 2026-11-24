@@ -5733,5 +5733,8 @@
   "efbeb3993ee2c3f5": "正在排队等待 {pool}",
   "0398ca6c1d24b92d": "排队中，下一个",
   "0af6d5ffd5166214": "{count, plural, other {排队中，前面还有 {count} 个}}",
-  "1a1beecff68a6e61": "验证 Google 账户"
+  "1a1beecff68a6e61": "验证 Google 账户",
+  "89bf40eb2503b6c5": "有新设备登录了 {environment}",
+  "c94b5fe9ef372bc0": "{device} 已通过 {product} 连接。如果不是你本人，请在那台电脑的 T3 Code 中前往 设置 → 访问权限 将其移除。",
+  "bec67d0ed485f885": "{count, plural, other {{count} 台设备}}已通过 {product} 连接。如果不是你本人，请在那台电脑的 T3 Code 中前往 设置 → 访问权限 将其移除。"
 }

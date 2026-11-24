@@ -5754,5 +5754,8 @@
   "efbeb3993ee2c3f5": "Queued for {pool}",
   "0398ca6c1d24b92d": "queued, next in line",
   "0af6d5ffd5166214": "{count, plural, one {queued, {count} ahead} other {queued, {count} ahead}}",
-  "1a1beecff68a6e61": "Verify Google account"
+  "1a1beecff68a6e61": "Verify Google account",
+  "89bf40eb2503b6c5": "New device signed in to {environment}",
+  "c94b5fe9ef372bc0": "{device} connected through {product}. If this was not you, remove it in Settings → Access in T3 Code on that computer.",
+  "bec67d0ed485f885": "{count, plural, one {{count} device} other {{count} devices}} connected through {product}. If this was not you, remove them in Settings → Access in T3 Code on that computer."
 }

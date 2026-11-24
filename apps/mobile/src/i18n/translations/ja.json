@@ -5723,5 +5723,8 @@
   "efbeb3993ee2c3f5": "{pool} を待機中",
   "0398ca6c1d24b92d": "待機中、次の番",
   "0af6d5ffd5166214": "{count, plural, other {待機中、前に {count} 件}}",
-  "1a1beecff68a6e61": "Google アカウントを確認"
+  "1a1beecff68a6e61": "Google アカウントを確認",
+  "89bf40eb2503b6c5": "{environment} に新しいデバイスがサインインしました",
+  "c94b5fe9ef372bc0": "{device} が {product} 経由で接続しました。心当たりがない場合は、そのコンピューターの T3 Code で 設定 → アクセス から削除してください。",
+  "bec67d0ed485f885": "{count, plural, other {{count} 台のデバイス}}が {product} 経由で接続しました。心当たりがない場合は、そのコンピューターの T3 Code で 設定 → アクセス から削除してください。"
 }

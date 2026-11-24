@@ -5730,5 +5730,8 @@
   "efbeb3993ee2c3f5": "{pool} 대기 중",
   "0398ca6c1d24b92d": "대기 중, 다음 차례",
   "0af6d5ffd5166214": "{count, plural, other {대기 중, 앞에 {count}개}}",
-  "1a1beecff68a6e61": "Google 계정 확인"
+  "1a1beecff68a6e61": "Google 계정 확인",
+  "89bf40eb2503b6c5": "{environment}에 새 기기가 로그인했습니다",
+  "c94b5fe9ef372bc0": "{device}이(가) {product}를 통해 연결되었습니다. 본인이 아니라면 해당 컴퓨터의 T3 Code에서 설정 → 액세스에서 제거하세요.",
+  "bec67d0ed485f885": "{count, plural, other {기기 {count}대}}가 {product}를 통해 연결되었습니다. 본인이 아니라면 해당 컴퓨터의 T3 Code에서 설정 → 액세스에서 제거하세요."
 }
