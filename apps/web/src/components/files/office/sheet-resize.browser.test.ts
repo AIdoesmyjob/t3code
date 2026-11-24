@@ -1,6 +1,5 @@
 import { createElement } from "react";
 import { expect, it, vi } from "vite-plus/test";
-import { page, userEvent } from "vite-plus/test/browser";
 import JSZip from "jszip";
 import "~/index.css";
 import { act, render } from "../../../../test/render";
