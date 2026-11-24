@@ -63,6 +63,7 @@ import {
 import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectRepositoriesSettings } from "./ProjectRepositoriesSettings";
+import { ProjectWorktreeLayoutSettings } from "./ProjectWorktreeLayoutSettings";
 import {
   defaultProjectIcon,
   hasDefaultProjectIcon,
@@ -718,6 +719,7 @@ function ProjectDetail({
             }
           />
         </SettingsSection>
+        <ProjectWorktreeLayoutSettings members={group.memberProjects} />
         {checkoutChoices}
         <ProjectActionsSettings />
         <ProjectRepositoriesSettings members={group.memberProjects} />
