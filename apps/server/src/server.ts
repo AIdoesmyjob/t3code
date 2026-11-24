@@ -962,8 +962,13 @@ const layerMakeRoutes = Layer.mergeAll(
   // delegate_task to a linked environment, from /mcp and the follower above.
   Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
   // Persistent Skofo Computer watch reactor + service shared by /mcp and /api/skofo/commander.
-  Layer.provide(CommanderWatchReactor.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
-  Layer.provide(CommanderService.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+  // Skofo Computer: one step, so this pipe stays within its 20-argument overloads.
+  Layer.provide(
+    CommanderWatchReactor.layer.pipe(
+      Layer.provideMerge(CommanderService.layer),
+      Layer.provide(ProjectionStoreV2.layer),
+    ),
+  ),
   // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
   Layer.provide(PeerLinkRequests.layer),
   // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
