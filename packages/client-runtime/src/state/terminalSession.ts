@@ -126,7 +126,7 @@ function terminalBufferStateFromSnapshot(
   current: TerminalBufferState = EMPTY_TERMINAL_BUFFER_STATE,
 ): TerminalBufferState {
   return {
-    output: resetOutput(current.output, snapshot.history, maxBufferBytes),
+    output: resetOutput(current.output, snapshot, maxBufferBytes),
     grid: nextGrid(current.grid, snapshot),
     status: snapshot.status,
     error: snapshot.error ?? null,
