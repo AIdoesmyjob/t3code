@@ -2870,6 +2870,7 @@ export const make = Effect.gen(function* () {
                                 operation: "approveWorkflowRun",
                                 method: "POST",
                                 path: `repos/${owner}/${name}/actions/runs/${run.id}/approve`,
+                                discardSuccessBody: true,
                               })
                               .pipe(Effect.asVoid)
                           : Effect.void,
