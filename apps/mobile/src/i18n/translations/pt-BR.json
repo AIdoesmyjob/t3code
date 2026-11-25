@@ -5737,5 +5737,9 @@
       "k": "_gt_value_1",
       "v": "v"
     }
-  ]
+  ],
+  "7150557773b3818b": "Na fila",
+  "efbeb3993ee2c3f5": "Na fila de {pool}",
+  "0398ca6c1d24b92d": "na fila, o próximo",
+  "0af6d5ffd5166214": "{count, plural, one {na fila, {count} à frente} other {na fila, {count} à frente}}"
 }

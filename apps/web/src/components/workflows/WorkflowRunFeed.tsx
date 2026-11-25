@@ -194,6 +194,15 @@ const nthTry = (count: number, resolve: MessageResolver) =>
     }),
   );
 
+const queuedText = (beat: WorkflowBeat, resolve: MessageResolver) =>
+  beat.ahead === undefined || beat.ahead === 0
+    ? resolve(msg("queued, next in line", { $context: "a workflow step waits for a free place" }))
+    : resolve(
+        msg("{count, plural, one {queued, {count} ahead} other {queued, {count} ahead}}", {
+          count: beat.ahead,
+        }),
+      );
+
 // The loading view and the timeline each draw a question's card, so a reason typed while the
 // steps load is kept here rather than in the card that is about to be replaced.
 const AnswerDrafts = createContext<{
@@ -430,7 +439,8 @@ export function WorkflowRunFeed({
           beat.status !== "running" &&
           beat.kind !== "ask" &&
           beat.kind !== "sleep" &&
-          beat.kind !== "wait",
+          beat.kind !== "wait" &&
+          beat.kind !== "queue",
       ) ??
       null)
     : null;
@@ -1026,7 +1036,11 @@ function WorkflowTimeline({
       const running = row.beats.filter((beat) => beat.status === "running").length;
       // Steps that only sleep or wait are under way without working.
       const working = row.beats.some(
-        (beat) => beat.status === "running" && beat.kind !== "sleep" && beat.kind !== "wait",
+        (beat) =>
+          beat.status === "running" &&
+          beat.kind !== "sleep" &&
+          beat.kind !== "wait" &&
+          beat.kind !== "queue",
       );
       const failed = row.beats.some((beat) => beat.status === "failed");
       const asks = row.beats.some(
@@ -1274,6 +1288,8 @@ function WorkflowBeatRow({
           : gt("about to wake");
       case "wait":
         return gt("waiting");
+      case "queue":
+        return queuedText(beat, m);
       case "run":
         return child === null ? gt("running") : workflowRunNow(child, m);
       case "step":
@@ -1294,6 +1310,7 @@ function WorkflowBeatRow({
             : gt("{who} said {choice}", { who: answer.answeredBy, choice: answer.choice });
       case "sleep":
       case "wait":
+      case "queue":
         return null;
       case "run":
         return child === null ? null : workflowRunNow(child, m);
@@ -1316,7 +1333,7 @@ function WorkflowBeatRow({
           : needsYou
             ? "input"
             : under
-              ? beat.kind === "sleep" || beat.kind === "wait"
+              ? beat.kind === "sleep" || beat.kind === "wait" || beat.kind === "queue"
                 ? "quiet"
                 : "working"
               : "done"
@@ -1339,7 +1356,11 @@ function WorkflowBeatRow({
       note={beat.kind === "agent" && (under || said === null) ? model : null}
       verb={verb}
       verbTone={
-        needsYou ? "input" : beat.kind === "sleep" || beat.kind === "wait" ? "quiet" : "working"
+        needsYou
+          ? "input"
+          : beat.kind === "sleep" || beat.kind === "wait" || beat.kind === "queue"
+            ? "quiet"
+            : "working"
       }
       aside={aside}
       {...(failed ? { asideTone: "failed" as const } : {})}
@@ -1621,6 +1642,17 @@ function WorkflowBeatCard({
             mark={<HourglassIcon className="size-3.5 text-muted-foreground" />}
             name={beat.name}
             sub={gt("{duration} so far", { duration: length })}
+          />
+        </FeedCard>
+      );
+    case "queue":
+      if (!under) return <Note label={beat.name}>{`${gt("queued")} · ${length}`}</Note>;
+      return (
+        <FeedCard tone="quiet" label={beat.name}>
+          <CardHead
+            mark={<HourglassIcon className="size-3.5 text-muted-foreground" />}
+            name={beat.name}
+            sub={`${queuedText(beat, m)} · ${length}`}
           />
         </FeedCard>
       );
