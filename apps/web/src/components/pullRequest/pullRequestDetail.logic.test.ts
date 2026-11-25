@@ -379,6 +379,14 @@ describe("pull request timeline rail", () => {
     const cut = pullRequestLinkSubject(`${pr}#issuecomment-5`, long);
     const excerpt = cut && "excerpt" in cut ? cut.excerpt : null;
     expect(excerpt).toMatch(/^(?:i ?)+…$/u);
+    const between = {
+      ...activity,
+      comments: [{ ...activity.comments[0]!, body: `${"a".repeat(278)} word` }],
+    };
+    const cutBetween = pullRequestLinkSubject(`${pr}#issuecomment-5`, between);
+    expect(cutBetween && "excerpt" in cutBetween ? cutBetween.excerpt : null).toBe(
+      `${"a".repeat(278)}…`,
+    );
   });
 
   it("assigns overlapping consecutive verdict windows to only one review", () => {
