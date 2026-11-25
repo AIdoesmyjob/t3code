@@ -2748,7 +2748,13 @@ describe("deriveMessagesTimelineRows", () => {
                 .map((entry) => entry.id)
             : [],
         ),
-      ).toEqual(["read-sidebar", "read-notes", "read-sidebar-again", "read-topbar"]);
+      ).toEqual([
+        "read-sidebar",
+        "read-notes",
+        "read-missing",
+        "read-sidebar-again",
+        "read-topbar",
+      ]);
     }
   });
 
