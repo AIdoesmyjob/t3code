@@ -2961,20 +2961,13 @@ function OpenCommandPaletteDialog(props: {
       return;
     }
 
-    if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
-
-    if (
-      event.key === "Backspace" &&
-      query === "" &&
-      isSubmenu &&
-      !event.repeat &&
-      !event.nativeEvent.isComposing &&
-      event.keyCode !== 229
-    ) {
+    if (event.key === "Backspace" && query === "" && isSubmenu) {
       event.preventDefault();
       popView();
       return;
     }
+
+    if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
 
     if (event.key === "Tab" && isBrowsing && !relativePathNeedsActiveProject) {
       if (event.nativeEvent.isComposing || event.keyCode === 229) return;
