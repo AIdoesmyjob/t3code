@@ -438,7 +438,7 @@ import {
   WorkflowRunGetInput,
   WorkflowRunResumeInput,
   WorkflowCounts,
-  WorkflowRunsSnapshot,
+  WorkflowRunsUpdate,
   WorkflowRunsSubscribeInput,
 } from "./workflow.ts";
 import {
@@ -2346,7 +2346,7 @@ const WsSubscribeServerLifecycleRpc = Rpc.make(WS_METHODS.subscribeServerLifecyc
 
 const WsWorkflowsSubscribeRpc = Rpc.make(WS_METHODS.workflowsSubscribe, {
   payload: WorkflowRunsSubscribeInput,
-  success: WorkflowRunsSnapshot,
+  success: WorkflowRunsUpdate,
   error: EnvironmentAuthorizationError,
   stream: true,
 });

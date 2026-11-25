@@ -1818,7 +1818,9 @@ it.effect("a watcher is sent the runs again when one changes", () =>
     yield* boot(
       Effect.gen(function* () {
         const workflows = yield* Workflows.Workflows;
-        const first = Option.getOrThrow(yield* Stream.runHead(workflows.watch));
+        const first = Option.getOrThrow(
+          yield* Stream.runHead(Workflows.wholeLists(workflows.watch)),
+        );
         assert.deepStrictEqual([first.runs, first.questions], [[], []]);
         // What exists is listed before anything has run, with what starts it.
         assert.deepInclude(first.workflows, {
@@ -1831,7 +1833,7 @@ it.effect("a watcher is sent the runs again when one changes", () =>
           { change: "c9", timeout: "1 hour" },
           { idempotencyKey: "c9" },
         );
-        const seen = yield* workflows.watch.pipe(
+        const seen = yield* Workflows.wholeLists(workflows.watch).pipe(
           Stream.filter((snapshot) => snapshot.runs.some((run) => run.status === "waiting")),
           Stream.runHead,
         );
@@ -2312,3 +2314,73 @@ it("error text cuts at 2,000 units without leaving half an emoji", () => {
     `outer: ${"a".repeat(1_992)}`,
   );
 });
+
+it.effect("one run moving sends a watcher an update about that run, not the whole list", () =>
+  Effect.gen(function* () {
+    const sorter = workflow(
+      "sorter",
+      { version: 1, payload: Schema.Struct({ tags: Schema.Array(Schema.String) }), returns: Schema.String },
+      () =>
+        Effect.map(
+          ask("sort", { title: "Sort?", choices: ["Yes", "No"] }),
+          Option.match({ onNone: () => "none", onSome: (answer) => answer.choice }),
+        ),
+    );
+    const { boot } = yield* harness();
+    yield* boot(
+      Effect.gen(function* () {
+        const workflows = yield* Workflows.Workflows;
+        // Half the other runs wait at a gate, half wait on a question to a person.
+        const park = (from: number, to: number) =>
+          Effect.forEach(
+            Array.from({ length: to - from }, (_, i) => from + i),
+            (i) =>
+              i % 2 === 0
+                ? workflows.start("gate", { gate: "south" }, { idempotencyKey: `visit/${i}` })
+                : workflows.start("sorter", { tags: [] }, { idempotencyKey: `asked/${i}` }),
+            { discard: true },
+          );
+        // The size of the first update a watcher gets after `mover` ends, let through a gate or
+        // by its question being answered.
+        const updateWhen = Effect.fnUntraced(function* (mover: string, by: "signal" | "answer") {
+          const { runId } =
+            by === "signal"
+              ? yield* workflows.start("gate", { gate: mover }, { idempotencyKey: mover })
+              : yield* workflows.start("sorter", { tags: [] }, { idempotencyKey: mover });
+          yield* workflows.waitFor(runId, status("waiting"));
+          const subscribed = yield* Deferred.make<void>();
+          const update = yield* workflows.watch.pipe(
+            Stream.tap(() => Deferred.succeed(subscribed, undefined)),
+            Stream.drop(1),
+            Stream.map((sent) => JSON.stringify(sent)),
+            Stream.filter((text) => text.includes(runId) && text.includes('"completed"')),
+            Stream.map((text) => text.length),
+            Stream.runHead,
+            Effect.forkScoped,
+          );
+          yield* Deferred.await(subscribed);
+          yield* by === "signal"
+            ? workflows.signal({ runId, wait: "through" }, "go on", { id: mover })
+            : Effect.asVoid(workflows.answer(runId, "sort", { choice: "No" }));
+          return Option.getOrThrow(yield* Fiber.join(update));
+        });
+
+        yield* park(0, 10);
+        const fewOthers = [
+          yield* updateWhen("north-1", "signal"),
+          yield* updateWhen("asked-1", "answer"),
+        ];
+        yield* park(10, 300);
+        const manyOthers = [
+          yield* updateWhen("north-2", "signal"),
+          yield* updateWhen("asked-2", "answer"),
+        ];
+        for (const [index, few] of fewOthers.entries()) {
+          const many = manyOthers[index] ?? 0;
+          assert.isBelow(many, few * 2, `${few} bytes beside 10 runs, ${many} beside 300`);
+        }
+      }).pipe(Effect.scoped),
+      [gate, sorter],
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
