@@ -38,6 +38,7 @@ export function MobileCommanderVoiceChatBar(props: {
     return null;
   }
 
+  const isHold = voiceChat.inputMode === "hold";
   const isBusy =
     voiceChat.phase === "starting" ||
     voiceChat.phase === "transcribing" ||
@@ -49,6 +50,7 @@ export function MobileCommanderVoiceChatBar(props: {
       case "starting":
         return gt("Connecting mic…");
       case "listening":
+        if (isHold) return gt("Release to send");
         return voiceChat.heardSpeech ? gt("Hearing you…") : gt("Listening");
       case "transcribing":
         return gt("Transcribing…");
@@ -70,7 +72,7 @@ export function MobileCommanderVoiceChatBar(props: {
       case "requesting-mic":
         return gt("Requesting microphone…");
       case "listening":
-        return gt("Listening. Speak now.");
+        return isHold ? null : gt("Listening. Speak now.");
       case "hearing":
         return gt("Hearing you. Pause to send.");
       case "transcribing":
@@ -80,19 +82,25 @@ export function MobileCommanderVoiceChatBar(props: {
       case "still-working":
         return gt("Still working…");
       case "no-reply":
-        return gt("Computer finished without a reply. Tap Talk to continue.");
+        return isHold
+          ? gt("Computer finished without a reply.")
+          : gt("Computer finished without a reply. Tap Talk to continue.");
       case "run-failed":
-        return gt("Computer’s turn ended early. Tap Talk to continue.");
+        return isHold
+          ? gt("Computer’s turn ended early.")
+          : gt("Computer’s turn ended early. Tap Talk to continue.");
       case "speaking":
-        return gt("Tap Interrupt to cut in.");
+        return isHold ? null : gt("Tap Interrupt to cut in.");
       case "paused":
-        return gt("Paused. Tap Talk to resume.");
+        return isHold ? null : gt("Paused. Tap Talk to resume.");
       case "paused-silence":
         return gt("Paused after silence. Tap Talk to resume.");
       case "missed":
         return gt("Did not catch that. Still listening.");
       case "send-failed":
-        return gt("Could not send right now. Tap Talk to retry.");
+        return isHold
+          ? gt("Could not send right now.")
+          : gt("Could not send right now. Tap Talk to retry.");
       default:
         return null;
     }
@@ -112,7 +120,9 @@ export function MobileCommanderVoiceChatBar(props: {
       case "transcribe-failed":
         return detail
           ? gt("Transcription failed: {detail}", { detail })
-          : gt("Transcription failed. Tap Talk to retry.");
+          : isHold
+            ? gt("Could not transcribe this recording.")
+            : gt("Transcription failed. Tap Talk to retry.");
       default:
         return null;
     }
@@ -177,7 +187,7 @@ export function MobileCommanderVoiceChatBar(props: {
               <Text className="text-xs font-t3-semibold text-foreground">{gt("Retry audio")}</Text>
             </Pressable>
           ) : null}
-          {voiceChat.phase === "listening" ? (
+          {isHold ? null : voiceChat.phase === "listening" ? (
             <>
               <Pressable
                 accessibilityRole="button"

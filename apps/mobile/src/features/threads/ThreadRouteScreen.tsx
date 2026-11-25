@@ -1148,14 +1148,15 @@ function ThreadRouteContent(
     lastSpoken,
   ]);
 
+  const handsFreeActive = voiceActive && commanderVoiceChat.inputMode === "hands-free";
   const commanderVoiceChatHeaderAction =
     isSelectedCommander && commanderVoicePrepared && commanderThreadKey !== null
       ? {
-          accessibilityLabel: voiceActive
+          accessibilityLabel: handsFreeActive
             ? gt("End Voice Chat with Computer")
             : gt("Start Voice Chat with Computer"),
-          icon: voiceActive ? ("xmark.circle.fill" as const) : ("headphones" as const),
-          selected: voiceActive,
+          icon: handsFreeActive ? ("xmark.circle.fill" as const) : ("headphones" as const),
+          selected: handsFreeActive,
           separateBackground: false,
           onPress: () => void mobileCommanderVoiceChat.toggleForThread(commanderThreadKey),
         }
