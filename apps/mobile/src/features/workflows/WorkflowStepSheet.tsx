@@ -15,6 +15,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { SheetHeader } from "../../components/ui/SheetHeader";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
+import { useEnvironmentSessionId } from "../../state/session";
 import { BeatCard, Card, Facts, useCanOpenThread, workflowRunFeedOf } from "./WorkflowStepCard";
 
 export type WorkflowStepParams = {
@@ -29,6 +30,7 @@ export function WorkflowStepSheet({ route }: StaticScreenProps<WorkflowStepParam
   const insets = useSafeAreaInsets();
   const gt = useGT();
   const environmentId = EnvironmentId.make(route.params.environmentId);
+  const sessionId = useEnvironmentSessionId(environmentId);
   const live = useEnvironmentQuery(serverEnvironment.workflowsLive({ environmentId, input: {} }));
   const detail = useEnvironmentQuery(
     serverEnvironment.workflowRun({ environmentId, input: { runId: route.params.runId } }),
@@ -108,6 +110,7 @@ export function WorkflowStepSheet({ route }: StaticScreenProps<WorkflowStepParam
           ) : (
             <BeatCard
               beat={beat}
+              sessionId={sessionId}
               onOpenThread={beat.thread !== null && canOpenThread(beat.thread) ? openThread : null}
               onOpenRun={openRun}
             />
