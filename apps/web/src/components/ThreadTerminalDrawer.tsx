@@ -22,6 +22,7 @@ import {
   AuthOrchestrationOperateScope,
   AuthTerminalOperateScope,
   TerminalProcessChangedError,
+  type TerminalWriteInput,
   type ContextMenuItem,
   type ProviderInstanceId,
   type ResolvedKeybindingsConfig,
@@ -988,7 +989,11 @@ function TerminalSessionViewport({
       };
 
       const canWriteInput = () => readEnvironmentScope(environmentId, AuthTerminalOperateScope);
-      const writeInputChunk = (data: string, kind?: "binary" | "reply", expectedPid?: number) =>
+      const writeInputChunk = (
+        data: string,
+        kind?: "binary" | "reply",
+        options?: Pick<TerminalWriteInput, "bracketedPaste" | "plainWrite" | "expectedPid">,
+      ) =>
         retainedTerminalWrite.current({
           environmentId,
           input: {
@@ -996,7 +1001,7 @@ function TerminalSessionViewport({
             terminalId,
             data,
             ...(kind === undefined ? {} : { [kind]: true }),
-            ...(expectedPid === undefined ? {} : { expectedPid }),
+            ...options,
           },
         });
       const sendTerminalInput = (
@@ -1021,7 +1026,7 @@ function TerminalSessionViewport({
         };
         return writeInput(
           data,
-          async (chunk, split) => {
+          async (chunk, framing) => {
             if (terminalRef.current !== terminal) return "not-dispatched";
             const currentSession = appAtomRegistry.get(terminalSessionAtom);
             if (
@@ -1031,9 +1036,12 @@ function TerminalSessionViewport({
               return "not-dispatched";
             }
             const expectedPid =
-              split && session.supportsConditionalWrites ? session.pid : undefined;
+              framing && session.supportsConditionalWrites ? session.pid : undefined;
             if (expectedPid === null) return "not-dispatched";
-            const result = await writeInputChunk(chunk, kind, expectedPid);
+            const result = await writeInputChunk(chunk, kind, {
+              ...(kind ? {} : framing),
+              ...(expectedPid === undefined ? {} : { expectedPid }),
+            });
             if (result._tag === "Success") return true;
             const error = squashAtomCommandFailure(result);
             if (isTerminalProcessChanged(error)) return "not-dispatched";
@@ -1043,8 +1051,17 @@ function TerminalSessionViewport({
             return false;
           },
           // The attachment's PID stays with the paste even after the viewport detaches.
-          async () => {
-            if (session.pid === null) return true;
+          async (bracketed) => {
+            if (kind || session.pid === null) return true;
+            const expectedPid = session.supportsConditionalWrites ? session.pid : undefined;
+            const pidGuard = expectedPid === undefined ? {} : { expectedPid };
+            if (!bracketed) {
+              // Only releases the server's hold, which also ends when that process exits.
+              const current = appAtomRegistry.get(terminalSessionAtom);
+              if (current.lifecycleVersion !== lifecycleVersion) return true;
+              await writeInputChunk("", undefined, { plainWrite: "abort", ...pidGuard });
+              return true;
+            }
             if (!canWriteInput()) return false;
             if (!session.supportsConditionalWrites) {
               const attached =
@@ -1069,11 +1086,10 @@ function TerminalSessionViewport({
               }
               if (current.status !== "running" || current.pid !== session.pid) return false;
             }
-            const result = await writeInputChunk(
-              "\x1b[201~",
-              undefined,
-              session.supportsConditionalWrites ? session.pid : undefined,
-            );
+            const result = await writeInputChunk("\x1b[201~", undefined, {
+              bracketedPaste: "abort",
+              ...pidGuard,
+            });
             if (result._tag === "Success") return true;
             const error = squashAtomCommandFailure(result);
             if (isTerminalProcessChanged(error)) return true;
