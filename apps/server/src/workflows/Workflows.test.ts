@@ -723,7 +723,7 @@ const harness = Effect.fnUntraced(function* (store?: typeof WorkflowStore.layer)
     ...family,
     ...control,
   ];
-  const engineOf = (registered: typeof all) =>
+  const engineOf = (registered: Parameters<typeof WorkflowEngine.layer>[0]) =>
     WorkflowEngine.layer(registered, store).pipe(
       Layer.provide(Layer.succeed(WorkflowAgents, agents.service)),
       Layer.provide(Layer.succeed(WorkflowForge, forge.service)),
@@ -735,7 +735,10 @@ const harness = Effect.fnUntraced(function* (store?: typeof WorkflowStore.layer)
   // `clock` to hold time still until it has seen what it waits for.
   const clock = yield* Latch.make(true);
   /** With `registered`, a server whose files define only those. */
-  const boot = <A, E>(use: Effect.Effect<A, E, Workflows.Workflows>, registered = all) =>
+  const boot = <A, E>(
+    use: Effect.Effect<A, E, Workflows.Workflows>,
+    registered: Parameters<typeof WorkflowEngine.layer>[0] = all,
+  ) =>
     Effect.raceFirst(
       Effect.scoped(Effect.provide(use, engineOf(registered))),
       Effect.forever(Effect.andThen(clock.await, TestClock.adjust("1 second"))),
