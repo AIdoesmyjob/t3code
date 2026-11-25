@@ -5751,5 +5751,6 @@
   "7150557773b3818b": "In der Warteschlange",
   "efbeb3993ee2c3f5": "Wartet auf {pool}",
   "0398ca6c1d24b92d": "wartet, als Nächstes dran",
-  "0af6d5ffd5166214": "{count, plural, one {wartet, {count} davor} other {wartet, {count} davor}}"
+  "0af6d5ffd5166214": "{count, plural, one {wartet, {count} davor} other {wartet, {count} davor}}",
+  "1a1beecff68a6e61": "Google-Konto bestätigen"
 }

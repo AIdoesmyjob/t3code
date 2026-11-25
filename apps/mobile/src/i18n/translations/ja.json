@@ -5722,5 +5722,6 @@
   "7150557773b3818b": "待機中",
   "efbeb3993ee2c3f5": "{pool} を待機中",
   "0398ca6c1d24b92d": "待機中、次の番",
-  "0af6d5ffd5166214": "{count, plural, other {待機中、前に {count} 件}}"
+  "0af6d5ffd5166214": "{count, plural, other {待機中、前に {count} 件}}",
+  "1a1beecff68a6e61": "Google アカウントを確認"
 }

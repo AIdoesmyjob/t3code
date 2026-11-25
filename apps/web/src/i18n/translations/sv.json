@@ -13656,5 +13656,6 @@
   "dbc3908dc1f730ab": "Android SDK är installerat, men ingen Android-enhet hittades. Anslut en telefon med USB-felsökning påslagen, eller skapa en virtuell enhet i Android Studio → Device Manager.",
   "2d99f80191b88ee4": "Android SDK är tillgängligt.",
   "410dded6e21c280d": "Undanlagringen är full",
-  "1af8d12ac21cb183": "Du kan lägga undan högst {max} promptar. Återställ eller ta bort en för att göra plats; inmatningsfältet lämnades som det var."
+  "1af8d12ac21cb183": "Du kan lägga undan högst {max} promptar. Återställ eller ta bort en för att göra plats; inmatningsfältet lämnades som det var.",
+  "91aadfc843c600de": "Verifiera Google-konto"
 }
