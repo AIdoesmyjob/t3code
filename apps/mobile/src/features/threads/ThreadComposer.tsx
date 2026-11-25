@@ -128,7 +128,7 @@ import {
 } from "../commander/commander";
 import { voiceSpeechOutputConnectionAtom } from "../voice-input/voiceDestination";
 import { mobileCommanderSpeech } from "../commander/mobileCommanderSpeech";
-import { mobileCommanderVoiceChat } from "../commander/mobileCommanderVoiceChat";
+import { MobileCommanderHoldToTalkButton } from "../commander/MobileCommanderHoldToTalkButton";
 import { resolveVoiceComposerPresentation } from "../voice-input/voiceInputPresentation";
 import type { ExistingThreadSettingsRouteParams } from "./ThreadSettingsSheet";
 import {
@@ -1081,18 +1081,22 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   {compactControl}
                   {modelControl}
                 </Animated.View>
-                <ComposerDictationStartAction
-                  size={usesLargeControls ? "large" : "regular"}
-                  state={voiceInput.state}
-                  isAvailable={voiceInput.isAvailable || canStartCommanderVoiceChat}
-                  disabled={isSubmissionLocked}
-                  onStart={
-                    voiceInput.isAvailable
-                      ? voiceInput.start
-                      : () => void mobileCommanderVoiceChat.toggleForThread(composerOwnerKey)
-                  }
-                  onCancel={voiceInput.cancel}
-                />
+                {canStartCommanderVoiceChat ? (
+                  <MobileCommanderHoldToTalkButton
+                    threadKey={composerOwnerKey}
+                    large={usesLargeControls}
+                    disabled={isSubmissionLocked}
+                  />
+                ) : (
+                  <ComposerDictationStartAction
+                    size={usesLargeControls ? "large" : "regular"}
+                    state={voiceInput.state}
+                    isAvailable={voiceInput.isAvailable}
+                    disabled={isSubmissionLocked}
+                    onStart={voiceInput.start}
+                    onCancel={voiceInput.cancel}
+                  />
+                )}
                 {showStopAction ? (
                   <ComposerActionButton
                     size={usesLargeControls ? "large" : "regular"}
