@@ -453,7 +453,7 @@ export function McpAppFrame(props: {
   // Only a server that binds the app to its document gets a bridge; without one the app cannot run.
   if (bridgeMissing) {
     return (
-      <p className="rounded-lg border border-border px-3 py-2 text-muted-foreground text-xs">
+      <p className="rounded-lg border border-border px-3 py-2 text-muted-foreground text-meta">
         <T>
           The <Var>{app.server}</Var> app needs a newer <Var>{APP_BASE_NAME}</Var> server on this
           environment. Update the server to use it.
@@ -486,7 +486,7 @@ export function McpAppFrame(props: {
         {fullscreen ? (
           <div
             ref={attachFullscreenChrome}
-            className="flex h-10 shrink-0 items-center justify-between border-border border-b px-3 text-body"
+            className="flex h-10 shrink-0 items-center justify-between border-divider border-b px-3 text-body"
           >
             <span className="truncate">{app.server}</span>
             <Button
