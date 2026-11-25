@@ -52,6 +52,7 @@ export type MobileVoiceChatErrorCode = "permission-denied" | "mic-error" | "tran
 
 export interface MobileCommanderVoiceChatState {
   readonly activeThreadKey: string | null;
+  readonly inputMode: "hands-free" | "hold";
   readonly phase: MobileVoiceChatPhase;
   readonly level: number;
   readonly heardSpeech: boolean;
@@ -91,6 +92,7 @@ function buildRecordingOptions() {
 class MobileCommanderVoiceChatController {
   private state: MobileCommanderVoiceChatState = {
     activeThreadKey: null,
+    inputMode: "hands-free",
     phase: "off",
     level: 0,
     heardSpeech: false,
@@ -101,7 +103,7 @@ class MobileCommanderVoiceChatController {
     errorDetail: null,
   };
   private listeners = new Set<() => void>();
-  private hosts = new Map<string, MobileCommanderVoiceChatHost>();
+  private hosts = new Map<string, { host: MobileCommanderVoiceChatHost }>();
   private generation = 0;
   private reply: CommanderVoiceReply | null = null;
   private thinkingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -132,9 +134,10 @@ class MobileCommanderVoiceChatController {
   }
 
   registerHost(threadKey: string, host: MobileCommanderVoiceChatHost): () => void {
-    this.hosts.set(threadKey, host);
+    const registration = { host };
+    this.hosts.set(threadKey, registration);
     return () => {
-      if (this.hosts.get(threadKey) !== host) return;
+      if (this.hosts.get(threadKey) !== registration) return;
       this.hosts.delete(threadKey);
       if (this.isActiveFor(threadKey)) this.pause();
       else mobileCommanderSpeech.stop();
@@ -142,9 +145,8 @@ class MobileCommanderVoiceChatController {
   }
 
   updateHostPrepared(threadKey: string, prepared: PreparedConnection) {
-    const existing = this.hosts.get(threadKey);
-    if (!existing) return;
-    this.hosts.set(threadKey, { ...existing, prepared });
+    const registration = this.hosts.get(threadKey);
+    if (registration) registration.host = { ...registration.host, prepared };
   }
 
   handleAppStateChange(state: string) {
@@ -256,6 +258,7 @@ class MobileCommanderVoiceChatController {
     if (this.state.phase !== "off" || this.state.activeThreadKey !== null) {
       this.emit({
         activeThreadKey: null,
+        inputMode: "hands-free",
         phase: "off",
         pendingMessageId: null,
         level: 0,
@@ -268,15 +271,27 @@ class MobileCommanderVoiceChatController {
   }
 
   async toggleForThread(threadKey: string): Promise<void> {
-    if (this.isActiveFor(threadKey)) {
+    if (this.isActiveFor(threadKey) && this.state.inputMode === "hands-free") {
       this.stop();
       return;
     }
     await this.startForThread(threadKey);
   }
 
-  async startForThread(threadKey: string): Promise<void> {
-    const host = this.hosts.get(threadKey);
+  finishHold(threadKey: string, send: boolean) {
+    if (this.state.activeThreadKey !== threadKey || this.state.inputMode !== "hold") return;
+    if (send && this.state.phase === "listening") {
+      this.sendNow();
+    } else if (this.state.phase === "starting" || this.state.phase === "listening") {
+      this.stop();
+    }
+  }
+
+  async startForThread(
+    threadKey: string,
+    inputMode: MobileCommanderVoiceChatState["inputMode"] = "hands-free",
+  ): Promise<void> {
+    const host = this.hosts.get(threadKey)?.host;
     if (!host) return;
 
     this.generation += 1;
@@ -294,6 +309,7 @@ class MobileCommanderVoiceChatController {
 
     this.emit({
       activeThreadKey: threadKey,
+      inputMode,
       phase: "starting",
       pendingMessageId: null,
       level: 0,
@@ -342,7 +358,9 @@ class MobileCommanderVoiceChatController {
         return;
       }
 
-      await mobileCommanderSpeech.playBeep(host.prepared, "listen");
+      if (inputMode === "hands-free") {
+        await mobileCommanderSpeech.playBeep(host.prepared, "listen");
+      }
       if (this.generation !== myGen) return;
       await this.beginListeningTurn(threadKey, myGen);
     } catch (err) {
@@ -362,7 +380,7 @@ class MobileCommanderVoiceChatController {
 
   private async beginListeningTurn(threadKey: string, sessionGen: number): Promise<void> {
     if (this.generation !== sessionGen) return;
-    const host = this.hosts.get(threadKey);
+    const host = this.hosts.get(threadKey)?.host;
     if (!host) {
       this.stop();
       return;
@@ -402,6 +420,7 @@ class MobileCommanderVoiceChatController {
         errorDetail: null,
       });
 
+      const isHold = this.state.inputMode === "hold";
       const startedAt = Date.now();
       let noiseFloorDb = -50;
       let speechMs = 0;
@@ -420,6 +439,11 @@ class MobileCommanderVoiceChatController {
           typeof status?.metering === "number" && Number.isFinite(status.metering)
             ? status.metering
             : null;
+
+        if (isHold) {
+          this.emit({ level: metering === null ? 0 : normalizeVoiceInputDecibels(metering) });
+          return;
+        }
 
         if (metering !== null) {
           // Android MediaRecorder.getMaxAmplitude() returns 0 (-160 dB) on the first poll or silence.
@@ -493,7 +517,7 @@ class MobileCommanderVoiceChatController {
 
   private async finishUtterance(threadKey: string, sessionGen: number): Promise<void> {
     if (this.generation !== sessionGen || this.state.phase !== "listening") return;
-    const host = this.hosts.get(threadKey);
+    const host = this.hosts.get(threadKey)?.host;
     const rec = this.recorder;
     if (!host || !rec) return;
 
@@ -546,8 +570,12 @@ class MobileCommanderVoiceChatController {
 
       const transcript = result.text.trim();
       if (!transcript) {
-        this.emit({ hintCode: "missed" });
-        await this.beginListeningTurn(threadKey, sessionGen);
+        if (this.state.inputMode === "hold") {
+          this.stop();
+        } else {
+          this.emit({ hintCode: "missed" });
+          await this.beginListeningTurn(threadKey, sessionGen);
+        }
         return;
       }
 
@@ -595,6 +623,10 @@ class MobileCommanderVoiceChatController {
   }
 
   pause() {
+    if (this.state.inputMode === "hold") {
+      this.stop();
+      return;
+    }
     if (this.state.phase === "off") {
       mobileCommanderSpeech.stop();
       return;
@@ -665,7 +697,7 @@ class MobileCommanderVoiceChatController {
       });
       return;
     }
-    const host = this.hosts.get(threadKey);
+    const host = this.hosts.get(threadKey)?.host;
     if (!host) return;
     void mobileCommanderSpeech
       .speak({
@@ -708,7 +740,11 @@ class MobileCommanderVoiceChatController {
   }
 
   private resumeListening(threadKey: string) {
-    const host = this.hosts.get(threadKey);
+    if (this.state.inputMode === "hold") {
+      this.stop();
+      return;
+    }
+    const host = this.hosts.get(threadKey)?.host;
     if (!host) return;
     const generation = this.generation;
     this.reply = null;
