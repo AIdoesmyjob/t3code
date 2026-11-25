@@ -900,7 +900,6 @@ function OpenCommandPaletteDialog(props: {
           ),
         )
       : null;
-    // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
     const now = new Date().toISOString();
     const openableThreads = threads.filter(
       (thread) => thread.settledOverride !== "settled" && !effectiveSnoozed(thread, { now }),
@@ -2521,7 +2520,6 @@ function OpenCommandPaletteDialog(props: {
       input: {
         projectId: newProjectId(),
         title: inferProjectTitleFromPath(destinationPath),
-        // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
         createdAt: new Date().toISOString(),
         remoteUrl: addProjectCloneFlow.remoteUrl,
         destinationPath,
