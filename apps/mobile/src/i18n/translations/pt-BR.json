@@ -5749,5 +5749,6 @@
   "1a1beecff68a6e61": "Verificar conta Google",
   "89bf40eb2503b6c5": "Novo dispositivo conectado a {environment}",
   "c94b5fe9ef372bc0": "{device} se conectou pelo {product}. Se não foi você, remova-o em Configurações → Acesso no T3 Code desse computador.",
-  "bec67d0ed485f885": "{count, plural, one {{count} dispositivo se conectou} other {{count} dispositivos se conectaram}} pelo {product}. Se não foi você, remova-os em Configurações → Acesso no T3 Code desse computador."
+  "bec67d0ed485f885": "{count, plural, one {{count} dispositivo se conectou} other {{count} dispositivos se conectaram}} pelo {product}. Se não foi você, remova-os em Configurações → Acesso no T3 Code desse computador.",
+  "46d614fa7b4bf1e5": "Execuções de workflow"
 }

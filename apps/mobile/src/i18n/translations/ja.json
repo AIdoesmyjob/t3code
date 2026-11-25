@@ -5726,5 +5726,6 @@
   "1a1beecff68a6e61": "Google アカウントを確認",
   "89bf40eb2503b6c5": "{environment} に新しいデバイスがサインインしました",
   "c94b5fe9ef372bc0": "{device} が {product} 経由で接続しました。心当たりがない場合は、そのコンピューターの T3 Code で 設定 → アクセス から削除してください。",
-  "bec67d0ed485f885": "{count, plural, other {{count} 台のデバイス}}が {product} 経由で接続しました。心当たりがない場合は、そのコンピューターの T3 Code で 設定 → アクセス から削除してください。"
+  "bec67d0ed485f885": "{count, plural, other {{count} 台のデバイス}}が {product} 経由で接続しました。心当たりがない場合は、そのコンピューターの T3 Code で 設定 → アクセス から削除してください。",
+  "46d614fa7b4bf1e5": "ワークフローの実行"
 }

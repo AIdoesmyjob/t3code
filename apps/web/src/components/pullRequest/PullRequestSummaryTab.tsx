@@ -110,6 +110,7 @@ import { PullRequestResolveThreadButton } from "./PullRequestResolveThreadButton
 import { PullRequestConversationGhost } from "./PullRequestGhosts";
 import { sectionCollapseAnchorScrollTop } from "./pullRequestSummaryScroll.logic";
 import { changeRequestTermKind } from "./changeRequestTerm";
+import { WorkflowRunsAbout } from "../workflows/WorkflowRunsAbout";
 
 /** Who wrote a comment and when, the time linking to it on the host. */
 export function WorkItemCommentIdentity({
@@ -1089,6 +1090,20 @@ export function PullRequestSummaryTab({
         }}
       >
         {readiness ? <section className="px-4 pt-0.75 pb-1">{readiness}</section> : null}
+        <WorkflowRunsAbout
+          environmentId={environmentId}
+          item={{
+            subject: detail.url,
+            pullRequest: {
+              projectId: reference.projectId,
+              repository: reference.repository,
+              number: reference.number,
+              host:
+                reference.host ??
+                (URL.canParse(detail.url) ? new URL(detail.url).hostname : undefined),
+            },
+          }}
+        />
 
         <PullRequestSection
           key={`description:${detail.url}`}

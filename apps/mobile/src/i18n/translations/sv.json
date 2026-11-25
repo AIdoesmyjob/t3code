@@ -5755,5 +5755,6 @@
   "1a1beecff68a6e61": "Verifiera Google-konto",
   "89bf40eb2503b6c5": "Ny enhet inloggad på {environment}",
   "c94b5fe9ef372bc0": "{device} anslöt via {product}. Om det inte var du, ta bort den under Inställningar → Åtkomst i T3 Code på den datorn.",
-  "bec67d0ed485f885": "{count, plural, one {{count} enhet} other {{count} enheter}} anslöt via {product}. Om det inte var du, ta bort dem under Inställningar → Åtkomst i T3 Code på den datorn."
+  "bec67d0ed485f885": "{count, plural, one {{count} enhet} other {{count} enheter}} anslöt via {product}. Om det inte var du, ta bort dem under Inställningar → Åtkomst i T3 Code på den datorn.",
+  "46d614fa7b4bf1e5": "Arbetsflödeskörningar"
 }

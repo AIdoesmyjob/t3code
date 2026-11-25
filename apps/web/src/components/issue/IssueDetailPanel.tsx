@@ -83,6 +83,7 @@ import {
 import { IssueCommentComposer } from "./IssueCommentComposer";
 import { IssueDetailGhost } from "./IssueDetailGhost";
 import { IssueThreadLinks } from "./IssueThreadLinks";
+import { WorkflowRunsAbout } from "../workflows/WorkflowRunsAbout";
 import { ReactionBar } from "../pullRequest/PullRequestReactions";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { IssueGlyph, issueTrackerPresentation, issueStatePresentation } from "./issuePresentation";
@@ -825,6 +826,13 @@ export function IssueDetailPanel({
               />
             </div>
           ) : null}
+          <WorkflowRunsAbout
+            environmentId={environmentId}
+            item={{
+              subject: detail.url,
+              issue: { ...reference, host: reference.host ?? detail.host },
+            }}
+          />
           <WorkItemFacts
             facts={[
               detail.labels.length > 0 || detail.capabilities.labels
