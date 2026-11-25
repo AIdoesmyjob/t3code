@@ -13652,5 +13652,7 @@
     },
     " needs a reason."
   ],
-  "71ed7c0da0b93c77": "Your next message restarts the agent. This conversation is kept."
+  "71ed7c0da0b93c77": "Your next message restarts the agent. This conversation is kept.",
+  "dbc3908dc1f730ab": "The Android SDK is installed, but no Android device was found. Connect a phone with USB debugging on, or create a virtual device in Android Studio → Device Manager.",
+  "2d99f80191b88ee4": "The Android SDK is available."
 }

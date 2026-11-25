@@ -13659,5 +13659,7 @@
     },
     "需要填写理由。"
   ],
-  "71ed7c0da0b93c77": "你的下一条消息将重启智能体，当前对话会保留。"
+  "71ed7c0da0b93c77": "你的下一条消息将重启智能体，当前对话会保留。",
+  "dbc3908dc1f730ab": "已安装 Android SDK，但未找到 Android 设备。请连接已开启 USB 调试的手机，或在 Android Studio → Device Manager 中创建虚拟设备。",
+  "2d99f80191b88ee4": "可以使用 Android SDK。"
 }

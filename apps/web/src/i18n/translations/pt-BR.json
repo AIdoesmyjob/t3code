@@ -13643,5 +13643,7 @@
     },
     " precisa de um motivo."
   ],
-  "71ed7c0da0b93c77": "Sua próxima mensagem reinicia o agente. Esta conversa é mantida."
+  "71ed7c0da0b93c77": "Sua próxima mensagem reinicia o agente. Esta conversa é mantida.",
+  "dbc3908dc1f730ab": "O Android SDK está instalado, mas nenhum dispositivo Android foi encontrado. Conecte um celular com a depuração USB ativada ou crie um dispositivo virtual em Android Studio → Device Manager.",
+  "2d99f80191b88ee4": "O Android SDK está disponível."
 }

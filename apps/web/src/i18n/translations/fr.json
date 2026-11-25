@@ -13643,5 +13643,7 @@
     },
     " nécessite une raison."
   ],
-  "71ed7c0da0b93c77": "Votre prochain message redémarre l’agent. Cette conversation est conservée."
+  "71ed7c0da0b93c77": "Votre prochain message redémarre l’agent. Cette conversation est conservée.",
+  "dbc3908dc1f730ab": "Le SDK Android est installé, mais aucun appareil Android n’a été trouvé. Connectez un téléphone avec le débogage USB activé, ou créez un appareil virtuel dans Android Studio → Device Manager.",
+  "2d99f80191b88ee4": "Le SDK Android est disponible."
 }
