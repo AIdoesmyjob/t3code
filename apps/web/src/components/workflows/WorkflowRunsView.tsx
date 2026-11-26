@@ -362,8 +362,12 @@ export function WorkflowRunsView({
               </Select>
             )}
             {kinds.length === 0 || kind !== EVERY_KIND ? null : (
-              <p className="px-1 text-xs text-muted-foreground">
-                {kinds.map((candidate) => `${kindLabel(candidate)} ${candidate.count}`).join(" · ")}
+              <p className="flex flex-wrap gap-x-3 px-1 text-meta text-muted-foreground">
+                {kinds.map((candidate) => (
+                  <span
+                    key={kindLabel(candidate)}
+                  >{`${kindLabel(candidate)} ${candidate.count}`}</span>
+                ))}
               </p>
             )}
             {section === null ? null : (

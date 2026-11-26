@@ -116,7 +116,7 @@ function windowMetersModel(
   model: string | null,
 ): boolean | null {
   if (model === null) return null;
-  // Antigravity usage no longer says which model a window meters (upstream #43026).
+  // Antigravity usage no longer says which model a window meters.
   if (driver === "antigravity") return null;
   if (driver === "claudeAgent" && window.id.startsWith("seven_day_")) {
     const scope = window.id.slice("seven_day_".length);

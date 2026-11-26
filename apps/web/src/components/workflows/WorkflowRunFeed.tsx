@@ -1559,19 +1559,11 @@ function WorkflowBeatCard({
           <p className="mt-3 text-body">
             {who !== null && answer.reason === null ? (
               <T>
-                <Var>{who}</Var> said{" "}
-                <span className="font-semibold">
-                  <Var>{answer.choice}</Var>
-                </span>
-                .
+                <Var>{who}</Var> said <Var>{answer.choice}</Var>.
               </T>
             ) : who !== null ? (
               <T>
-                <Var>{who}</Var> said{" "}
-                <span className="font-semibold">
-                  <Var>{answer.choice}</Var>
-                </span>
-                : <Var>{answer.reason}</Var>
+                <Var>{who}</Var> said <Var>{answer.choice}</Var>: <Var>{answer.reason}</Var>
               </T>
             ) : answer.reason === null ? (
               <T>
@@ -1592,7 +1584,7 @@ function WorkflowBeatCard({
             )}
           </p>
           {answer.answeredAt === null ? null : (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-meta text-muted-foreground">
               <T>
                 answered{" "}
                 <Var>
@@ -1647,13 +1639,24 @@ function WorkflowBeatCard({
         </FeedCard>
       );
     case "queue":
-      if (!under) return <Note label={beat.name}>{`${gt("queued")} · ${length}`}</Note>;
+      if (!under)
+        return (
+          <Note label={beat.name}>
+            <span>{gt("queued")}</span>
+            <span>{length}</span>
+          </Note>
+        );
       return (
         <FeedCard tone="quiet" label={beat.name}>
           <CardHead
             mark={<HourglassIcon className="size-3.5 text-muted-foreground" />}
             name={beat.name}
-            sub={`${queuedText(beat, m)} · ${length}`}
+            sub={
+              <span className="flex gap-2">
+                <span>{queuedText(beat, m)}</span>
+                <span>{length}</span>
+              </span>
+            }
           />
         </FeedCard>
       );
@@ -2050,7 +2053,7 @@ function WorkflowQuestionCard({
             onChange={(event) => setReason(event.currentTarget.value)}
           />
           {reasonFor === null || (reason?.trim() ?? "") !== "" ? null : (
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="mt-1 text-meta text-muted-foreground">
               <T>
                 <Var>{reasonFor}</Var> needs a reason.
               </T>
