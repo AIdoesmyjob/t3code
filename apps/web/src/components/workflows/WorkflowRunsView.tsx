@@ -351,7 +351,7 @@ export function WorkflowRunsView({
                   {kinds.map((candidate) => (
                     <SelectItem key={candidate.kind} value={candidate.kind}>
                       <span className="flex w-full items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate">{kindLabel(candidate)}</span>
+                        <span className="min-w-0 flex-1 truncate">{kindLabel(candidate)}</span>{" "}
                         <span className="text-muted-foreground tabular-nums">
                           {candidate.count}
                         </span>
@@ -363,11 +363,12 @@ export function WorkflowRunsView({
             )}
             {kinds.length === 0 || kind !== EVERY_KIND ? null : (
               <p className="flex flex-wrap gap-x-3 px-1 text-meta text-muted-foreground">
-                {kinds.map((candidate) => (
+                {kinds.flatMap((candidate, index) => [
+                  ...(index === 0 ? [] : [" "]),
                   <span
                     key={kindLabel(candidate)}
-                  >{`${kindLabel(candidate)} ${candidate.count}`}</span>
-                ))}
+                  >{`${kindLabel(candidate)} ${candidate.count}`}</span>,
+                ])}
               </p>
             )}
             {section === null ? null : (

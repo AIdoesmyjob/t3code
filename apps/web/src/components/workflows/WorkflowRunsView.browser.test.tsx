@@ -621,7 +621,7 @@ describe("WorkflowRunsView", () => {
 
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
     await expect
-      .element(screen.getByText("Feature wanted? 1 · Bug or intended? 1 · Other 1"))
+      .element(screen.getByText("Feature wanted? 1 Bug or intended? 1 Other 1"))
       .toBeVisible();
     await expect.element(runs.getByRole("button", { name: /Sticky header/ })).toBeVisible();
 
@@ -661,7 +661,7 @@ describe("WorkflowRunsView", () => {
     await using screen = await render(page());
 
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
-    await expect.element(screen.getByText("Bug or intended? 1 · Other 2")).toBeVisible();
+    await expect.element(screen.getByText("Bug or intended? 1 Other 2")).toBeVisible();
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
     await expect.element(screen.getByRole("option", { name: /feture/ })).not.toBeInTheDocument();
     await screen.getByRole("option", { name: "Other 2" }).click();
