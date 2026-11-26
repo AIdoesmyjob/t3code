@@ -157,25 +157,16 @@ describe("foldLimitRows", () => {
   const ids = (rows: ReadonlyArray<{ readonly window: { readonly id: string } }>) =>
     rows.map((entry) => entry.window.id);
 
-  it("shows the rows of the thread's model, else the nearest per period, and never hides a low one", () => {
+  it("shows the nearest Antigravity window per period, whatever the thread's model", () => {
     const rows = [
       row("3p-5h", "session", 0),
       row("gemini-5h", "session", 17),
       row("3p-weekly", "weekly", 0),
       row("gemini-weekly", "weekly", 6),
     ];
-    expect(ids(foldLimitRows(rows, "gemini-4-neon").shown)).toEqual(["gemini-5h", "gemini-weekly"]);
-    expect(ids(foldLimitRows(rows, "claude-opus-5-5").hidden)).toEqual([
-      "gemini-5h",
-      "gemini-weekly",
-    ]);
-    expect(ids(foldLimitRows(rows, null).shown)).toEqual(["gemini-5h", "gemini-weekly"]);
-    const spent = [...rows.slice(0, 3), row("gemini-weekly", "weekly", 100)];
-    expect(ids(foldLimitRows(spent, "claude-opus-5-5").shown)).toEqual([
-      "3p-5h",
-      "3p-weekly",
-      "gemini-weekly",
-    ]);
+    for (const model of ["gemini-4-neon", "claude-opus-5-5", null]) {
+      expect(ids(foldLimitRows(rows, model).shown)).toEqual(["gemini-5h", "gemini-weekly"]);
+    }
   });
 
   it("folds a Claude weekly limit scoped to another model", () => {
