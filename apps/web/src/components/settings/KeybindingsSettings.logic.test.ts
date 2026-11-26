@@ -463,6 +463,18 @@ describe("KeybindingsSettings.logic", () => {
     expect(rows.map((row) => row.when).toSorted()).toEqual(visible);
   });
 
+  it("treats a true condition like no condition when reporting conflicts", () => {
+    const rows = buildKeybindingRows(
+      compileResolvedKeybindingsConfig([
+        { command: "chat.new", key: "mod+k", when: "true" },
+        { command: "chat.newLocal", key: "mod+k", when: "terminalFocus" },
+      ]),
+      "Linux x86_64",
+    );
+
+    expect(rows.map((row) => row.conflicts)).toEqual([["Chat: New Local"], ["Chat: New"]]);
+  });
+
   it("keeps mod and ctrl shortcuts apart when their when contexts differ", () => {
     const rows = buildKeybindingRows(
       compileResolvedKeybindingsConfig([
