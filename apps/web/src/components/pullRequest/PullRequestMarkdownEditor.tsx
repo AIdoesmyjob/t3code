@@ -79,7 +79,6 @@ export function PullRequestMarkdownEditor({
         }
         if (event.key !== "Escape" || saving) return;
         event.preventDefault();
-        event.stopPropagation();
         onCancel();
       }}
     >
