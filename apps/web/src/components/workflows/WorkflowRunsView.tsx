@@ -349,9 +349,13 @@ export function WorkflowRunsView({
                     <T>All kinds</T>
                   </SelectItem>
                   {kinds.map((candidate) => (
-                    <SelectItem key={candidate.kind} value={candidate.kind}>
+                    <SelectItem
+                      key={candidate.kind}
+                      value={candidate.kind}
+                      aria-label={`${kindLabel(candidate)} ${candidate.count}`}
+                    >
                       <span className="flex w-full items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate">{kindLabel(candidate)}</span>{" "}
+                        <span className="min-w-0 flex-1 truncate">{kindLabel(candidate)}</span>
                         <span className="text-muted-foreground tabular-nums">
                           {candidate.count}
                         </span>

@@ -626,7 +626,7 @@ describe("WorkflowRunsView", () => {
     await expect.element(runs.getByRole("button", { name: /Sticky header/ })).toBeVisible();
 
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
-    await screen.getByRole("option", { name: "Feature wanted? 1" }).click();
+    await browserPage.getByRole("option", { name: "Feature wanted? 1" }).click();
     await expect.element(runs.getByRole("button", { name: /Dark mode/ })).toBeVisible();
     await expect
       .element(runs.getByRole("button", { name: /Sticky header/ }))
@@ -663,8 +663,10 @@ describe("WorkflowRunsView", () => {
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
     await expect.element(screen.getByText("Bug or intended? 1 Other 2")).toBeVisible();
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
-    await expect.element(screen.getByRole("option", { name: /feture/ })).not.toBeInTheDocument();
-    await screen.getByRole("option", { name: "Other 2" }).click();
+    await expect
+      .element(browserPage.getByRole("option", { name: /feture/ }))
+      .not.toBeInTheDocument();
+    await browserPage.getByRole("option", { name: "Other 2" }).click();
     await expect.element(runs.getByRole("button", { name: /Typo fix/ })).toBeVisible();
     await expect.element(runs.getByRole("button", { name: /Release 1\.4/ })).toBeVisible();
     await expect
@@ -682,7 +684,7 @@ describe("WorkflowRunsView", () => {
     // With no kind picked, the first run that waits is shown: one of another kind.
     await expect.element(screen.getByRole("heading", { name: "Sticky header" })).toBeVisible();
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
-    await screen.getByRole("option", { name: "Feature wanted? 1" }).click();
+    await browserPage.getByRole("option", { name: "Feature wanted? 1" }).click();
     await expect.element(screen.getByRole("heading", { name: "Dark mode" })).toBeVisible();
 
     await screen.getByRole("button", { name: "Ship", exact: true }).click();
@@ -711,7 +713,7 @@ describe("WorkflowRunsView", () => {
     await using screen = await render(page("sticky", { select }));
 
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
-    await screen.getByRole("option", { name: "Feature wanted? 1" }).click();
+    await browserPage.getByRole("option", { name: "Feature wanted? 1" }).click();
     await vi.waitFor(() => expect(select).toHaveBeenCalledWith("dark"));
     // Until the address follows, the open run is still in the list, so nothing shown is unlisted.
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
