@@ -116,10 +116,8 @@ function windowMetersModel(
   model: string | null,
 ): boolean | null {
   if (model === null) return null;
-  if (driver === "antigravity") {
-    const base = model.slice(model.lastIndexOf("/") + 1);
-    return /^(gemini|claude|gpt)/.test(base) ? antigravityWindowLimitsModel(window, model) : null;
-  }
+  // Antigravity usage no longer says which model a window meters (upstream #43026).
+  if (driver === "antigravity") return null;
   if (driver === "claudeAgent" && window.id.startsWith("seven_day_")) {
     const scope = window.id.slice("seven_day_".length);
     return `_${model.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_`.includes(`_${scope}_`);
