@@ -574,29 +574,36 @@ describe("readWorkflowQuestion", () => {
     });
   });
 
-  it("reads what each choice does, which need a reason, and the links that open on the web", () => {
-    expect(
-      readWorkflowQuestion(
-        question("r", {
-          title: "Build this?",
-          choices: ["Yes", "No"],
-          choiceDetails: [{ value: "No", description: "It is closed", requireReason: true }],
-          links: [
-            { label: "The request", url: "https://example.com/1" },
-            { label: "Script", url: "javascript:alert(1)" },
-            { label: " ", url: "https://example.com/2" },
-          ],
-        }),
-      ),
-    ).toEqual({
-      title: "Build this?",
-      choices: [
-        { value: "Yes", description: null, requireReason: false },
-        { value: "No", description: "It is closed", requireReason: true },
-      ],
-      body: null,
-      links: [{ label: "The request", url: "https://example.com/1" }],
-    });
+  it("reads what each choice does, which need a reason, and the links that open on the web even where URL.parse is missing", () => {
+    const parse = URL.parse;
+    Reflect.deleteProperty(URL, "parse");
+    try {
+      expect(
+        readWorkflowQuestion(
+          question("r", {
+            title: "Build this?",
+            choices: ["Yes", "No"],
+            choiceDetails: [{ value: "No", description: "It is closed", requireReason: true }],
+            links: [
+              { label: "The request", url: "https://example.com/1" },
+              { label: "Script", url: "javascript:alert(1)" },
+              { label: "Broken", url: "not a url" },
+              { label: " ", url: "https://example.com/2" },
+            ],
+          }),
+        ),
+      ).toEqual({
+        title: "Build this?",
+        choices: [
+          { value: "Yes", description: null, requireReason: false },
+          { value: "No", description: "It is closed", requireReason: true },
+        ],
+        body: null,
+        links: [{ label: "The request", url: "https://example.com/1" }],
+      });
+    } finally {
+      URL.parse = parse;
+    }
   });
 });
 
