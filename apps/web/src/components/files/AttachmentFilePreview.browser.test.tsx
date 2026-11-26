@@ -1163,7 +1163,8 @@ describe("large text preview recovery", () => {
         screen.container.textContent?.includes("Showing the first 1,024 columns") ?? false;
       expect(hasBanner()).toBe(truncated);
       const status = () => screen.container.querySelector('[role="status"]')?.textContent ?? "";
-      await vi.waitFor(() => expect(status()).toContain("1 row · 1,024 columns"), 10_000);
+      // The redesign's status line counts rows only.
+      await vi.waitFor(() => expect(status()).toContain("1 row"), 10_000);
       expect(hasBanner()).toBe(truncated);
     },
   );
