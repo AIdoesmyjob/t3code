@@ -13647,5 +13647,7 @@
   ],
   "71ed7c0da0b93c77": "Deine nächste Nachricht startet den Agenten neu. Diese Unterhaltung bleibt erhalten.",
   "dbc3908dc1f730ab": "Das Android SDK ist installiert, aber es wurde kein Android-Gerät gefunden. Schließe ein Smartphone mit aktiviertem USB-Debugging an oder erstelle ein virtuelles Gerät unter Android Studio → Device Manager.",
-  "2d99f80191b88ee4": "Das Android SDK ist verfügbar."
+  "2d99f80191b88ee4": "Das Android SDK ist verfügbar.",
+  "410dded6e21c280d": "Ablage ist voll",
+  "1af8d12ac21cb183": "Die Ablage fasst {max} Prompts. Stelle einen wieder her oder lösche einen, um Platz zu schaffen; das Eingabefeld wurde unverändert gelassen."
 }
