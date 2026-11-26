@@ -690,6 +690,9 @@ it.effect("a run waiting on you is listed however many runs started after it", (
       const listed = new Set((yield* store.runs(undefined)).map((run) => run.run_id));
       assert.isTrue(listed.has("old"));
       assert.isTrue(listed.has("paused"));
+    }),
+  ),
+);
 
 const started = (
   store: WorkflowStore.WorkflowStore["Service"],

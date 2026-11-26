@@ -2656,6 +2656,10 @@ it.effect("a step of a paused run waits for the resume, even when the engine rep
         yield* workflows.resume(runId);
         assert.equal((yield* workflows.waitFor(runId, status("completed"))).status, "completed");
         assert.equal((yield* Ref.get(counts)).take, 1);
+      }),
+    );
+  }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+);
 
 it("tags refuses a list with a gap in it", () => {
   // The same list `tags([, "pr"])` makes: a first entry that was never set.
@@ -2684,7 +2688,9 @@ it.effect("questions carry their kind and runs their tags, and both can be filte
         for (const run of [feature, intended, plain]) {
           yield* workflows.waitFor(run.runId, status("waiting"));
         }
-        const snapshot = Option.getOrThrow(yield* Stream.runHead(workflows.watch));
+        const snapshot = Option.getOrThrow(
+          yield* Stream.runHead(Workflows.wholeLists(workflows.watch)),
+        );
         // The page reads the labels and their order from what the workflow declares.
         assert.deepStrictEqual(
           snapshot.workflows.find((workflow) => workflow.name === "sorter")?.asks,
@@ -2732,7 +2738,9 @@ it.effect("questions carry their kind and runs their tags, and both can be filte
         // A kind the workflow does not declare is asked all the same, and kept as it was written.
         const typo = yield* sort("d", [], "feture");
         yield* workflows.waitFor(typo.runId, status("waiting"));
-        const after = Option.getOrThrow(yield* Stream.runHead(workflows.watch));
+        const after = Option.getOrThrow(
+          yield* Stream.runHead(Workflows.wholeLists(workflows.watch)),
+        );
         assert.equal(
           after.questions.find((question) => question.runId === typo.runId)?.kind,
           "feture",
