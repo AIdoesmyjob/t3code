@@ -42,6 +42,7 @@ import {
   DEFAULT_APPROVAL_OPTIONS,
   resolveApprovalPrimaryDecision,
 } from "./ComposerPendingApprovalActions";
+import { ApprovalText } from "./ApprovalText";
 import { PushHooksApprovalDetails } from "./PushHooksApprovalDetails";
 import { TimelineApprovalCtx, TimelineRowCtx } from "./timelineRowContext";
 import { WorkLogRow, WorkLogTarget, WorkLogVerb } from "./WorkLog";
@@ -363,20 +364,25 @@ export function TimelineApprovalCard({
               </div>
             ) : null}
           </>
-        ) : (
+        ) : pushHooks ? (
           <div
-            aria-label={m(presentation.detailLabel)}
+            className="min-w-0 p-2.5 text-meta leading-5 text-foreground select-text! wrap-anywhere"
+            data-approval-detail="complete"
+          >
+            {m(PUSH_HOOKS_APPROVAL_QUESTION)}
+          </div>
+        ) : (
+          // Shows characters a screen would not draw, and both ends of text too long to show whole.
+          <ApprovalText
+            text={detail || m(presentation.label)}
+            label={m(presentation.detailLabel)}
             className={cn(
               "max-h-40 min-w-0 overflow-auto whitespace-pre-wrap p-2.5 text-meta leading-5 select-text! wrap-anywhere [scrollbar-width:thin] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
               approval.requestKind === "command"
                 ? "font-mono text-foreground"
-                : "text-muted-foreground",
+                : "font-sans text-muted-foreground",
             )}
-            data-approval-detail="complete"
-            tabIndex={0}
-          >
-            {pushHooks ? m(PUSH_HOOKS_APPROVAL_QUESTION) : detail || m(presentation.label)}
-          </div>
+          />
         )}
         {pushHooks ? <PushHooksApprovalDetails pushHooks={pushHooks} /> : null}
       </div>
