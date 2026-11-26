@@ -297,7 +297,11 @@ ${serverVersion ? `${gt("Version {version}", { version: serverVersion })}\n` : "
             aria-expanded={routesOpen}
             onClick={() => setRoutesOpen((open) => !open)}
           >
-            {routeCount === 1 ? gt("Routes") : `${routeCount} routes`}
+            {routeCount === 1
+              ? gt("Routes")
+              : gt("{count, plural, one {{count} route} other {{count} routes}}", {
+                  count: routeCount,
+                })}
             <ChevronRightIcon
               aria-hidden
               className={cn(
