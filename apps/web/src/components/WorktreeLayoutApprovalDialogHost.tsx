@@ -67,7 +67,7 @@ export function WorktreeLayoutApprovalDialogHost() {
         </AlertDialogHeader>
         {/* New buttons for each request: a press begun on one request cannot answer the next. */}
         <AlertDialogFooter key={request?.id}>
-          <AlertDialogClose render={<Button variant="outline" />}>
+          <AlertDialogClose render={<Button variant="secondary" />}>
             <T>Cancel</T>
           </AlertDialogClose>
           <Button

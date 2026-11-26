@@ -81,7 +81,7 @@ function CheckoutWorktreeLayout({
           title={gt("Could not load the worktree layout commands")}
           description={query.error}
           control={
-            <Button size="xs" variant="outline" onClick={query.refresh}>
+            <Button size="xs" variant="secondary" onClick={query.refresh}>
               <T>Retry</T>
             </Button>
           }
@@ -155,7 +155,7 @@ function CheckoutWorktreeLayout({
           control={
             <Button
               size="xs"
-              variant={command.approved ? "ghost" : "outline"}
+              variant={command.approved ? "ghost" : "secondary"}
               disabled={
                 !canApprove ||
                 !isConnected ||
