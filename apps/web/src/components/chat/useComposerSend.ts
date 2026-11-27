@@ -1958,8 +1958,8 @@ export function useComposerSend(input: ComposerSendInput) {
     const workspaceDefault =
       draftId && !sendInFlightRef.current ? readPendingWorkspaceDefault(draftId) : null;
     if (workspaceDefault === null) return sendWithEnvironmentRefresh(...args);
-    const { draftReady, sameRoute } = await waitBeforeSend(workspaceDefault);
-    if (!draftReady || !sameRoute) return;
+    const { result, draftReady, sameRoute } = await waitBeforeSend(workspaceDefault);
+    if (result === false || !draftReady || !sameRoute) return;
     return sendWithEnvironmentRefreshLatest(...args);
   };
 
