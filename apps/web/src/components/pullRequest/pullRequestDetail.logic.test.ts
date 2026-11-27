@@ -358,6 +358,20 @@ describe("pull request timeline rail", () => {
       kind: "comment",
       excerpt: "Looks good, see run()",
     });
+    for (const [body, excerpt] of [
+      ["Keep `[!NOTE]` in the file.", "Keep [!NOTE] in the file."],
+      ["> [!NOTE]\n> Real alert.", "Real alert."],
+      ["Keep [!WARNING] in prose.", "Keep [!WARNING] in prose."],
+    ] as const) {
+      expect(
+        pullRequestLinkSubject(`${pr}#issuecomment-5`, {
+          comments: [{ ...activity.comments[0]!, body }],
+          reviewThreads: [],
+          commits: [],
+        }),
+        body,
+      ).toMatchObject({ kind: "comment", excerpt });
+    }
     // A review with no text of its own is shown through the comment it posted.
     expect(pullRequestLinkSubject(`${pr}#pullrequestreview-9`, activity)).toMatchObject({
       kind: "comment",
