@@ -162,7 +162,7 @@ export default function EpubViewer(props: {
     <div className="flex min-h-0 flex-1 flex-col">
       {props.book.chapters.length > 1 || props.book.contents.length > 1 ? (
         <div
-          className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3 text-xs"
+          className="flex h-10 shrink-0 items-center gap-2 border-b border-divider px-3 text-meta"
           dir={props.book.rtl ? "rtl" : "ltr"}
         >
           <FileSurfaceAction
@@ -211,13 +211,15 @@ export default function EpubViewer(props: {
           </FileSurfaceAction>
         </div>
       ) : null}
-      <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-1 border-b border-border/60 px-3 py-1 text-xs text-muted-foreground">
-        <span className="min-w-0 flex-1 tabular-nums" role="status">
-          {gt("Chapter {page} of {count}", {
-            page: String(index + 1),
-            count: String(props.book.chapters.length),
-          })}
-          {props.sizeBytes ? ` · ${formatAttachmentSize(props.sizeBytes, messages)}` : ""}
+      <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-1 border-b border-divider px-3 py-1 text-meta text-muted-foreground">
+        <span className="flex min-w-0 flex-1 gap-2 tabular-nums" role="status">
+          <span>
+            {gt("Chapter {page} of {count}", {
+              page: String(index + 1),
+              count: String(props.book.chapters.length),
+            })}
+          </span>
+          {props.sizeBytes ? <span>{formatAttachmentSize(props.sizeBytes, messages)}</span> : null}
         </span>
         <FileSurfaceAction
           label={gt("Decrease reading size")}
@@ -256,10 +258,10 @@ export default function EpubViewer(props: {
           role="alert"
           className="flex flex-1 flex-col items-center justify-center gap-1 px-6 text-center"
         >
-          <p className="text-sm font-medium">
+          <p className="text-label">
             <T>No preview for this file</T>
           </p>
-          <p className="max-w-sm text-xs text-muted-foreground">
+          <p className="max-w-sm text-meta text-muted-foreground">
             {previewFailureText(result, messages)}
           </p>
         </div>
