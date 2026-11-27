@@ -880,6 +880,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
           : { idleCompaction: input.message.idleCompaction }),
         ...(input.retryOfRunId === undefined ? {} : { retryOfRunId: input.retryOfRunId }),
         attachments,
+        ...(input.titleSeed === undefined ? {} : { titleSeed: input.titleSeed }),
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
         ...(input.sourceProposedPlan === undefined
           ? {}
