@@ -121,6 +121,7 @@ const browserTestProject = {
       "@betteroffice/xlsx",
       "@betteroffice/xlsx/headless",
       "fast-xml-parser",
+      "parse5",
       "entities",
       "dompurify",
       "heic-to/csp",
