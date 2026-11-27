@@ -1135,6 +1135,7 @@ export function PullRequestDetailPanel({
     }
     const prepared = await prepareDraftCheckout(
       opened.draftId,
+      projectRef,
       prepareThread.run({
         reference: handoffSummary.url,
         mode,
