@@ -13669,5 +13669,7 @@
   "91aadfc843c600de": "验证 Google 账户",
   "4a18481bea4b4ad5": "有新设备登录了 {environmentLabel}",
   "4144ab6aa487528a": "{device} 已通过 {product} 连接。不是你本人？请检查。",
-  "a10cfdb27152c757": "{count, plural, other {{count} 台设备}}已通过 {product} 连接。不是你本人？请检查。"
+  "a10cfdb27152c757": "{count, plural, other {{count} 台设备}}已通过 {product} 连接。不是你本人？请检查。",
+  "5807c08e225c6b3d": "下载",
+  "0d50b5bfe7151ece": "无法下载文件"
 }

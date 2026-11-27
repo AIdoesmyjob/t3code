@@ -1,4 +1,5 @@
 import { useNativeFileDrag } from "../../useNativeFileDrag";
+import { useFileMetadata } from "../../hooks/useFileMetadata";
 import { useAssetUrlState } from "../../assets/assetUrls";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
 import {
@@ -55,6 +56,7 @@ interface MarkdownFileLinkProps {
   onOpenMedia?: (() => void) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
+  onDownload?: (() => void) | undefined;
 }
 
 const MARKDOWN_FILE_LINK_CLASS_NAME = "chat-markdown-file-link";
@@ -80,11 +82,13 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenMedia,
   onReveal,
   revealLabel,
+  onDownload,
   resolveCopyPaths,
   resolveDragPath,
 }: MarkdownFileLinkProps) {
   const gt = useGT();
   const nativeDrag = useNativeFileDrag(environmentId, resolveDragPath);
+  const isDirectory = useFileMetadata(environmentId, iconPath)?.kind === "directory";
   const handleOpenInEditor = () => {
     if (!onOpen) {
       return;
@@ -269,6 +273,11 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
             ? ([{ id: "open-in-browser", label: gt("Open in integrated browser") }] as const)
             : []),
           ...(onReveal && revealLabel ? ([{ id: "reveal", label: revealLabel }] as const) : []),
+          ...(onDownload && !isDirectory
+            ? ([
+                { id: "download", label: gt("Download", { $context: "verb, saves a file" }) },
+              ] as const)
+            : []),
           ...copyItems.map(({ id, label }) => ({ id, label })),
         ] as const,
         position,
@@ -289,6 +298,10 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
       }
       if (clicked === "reveal") {
         handleRevealInFileManager();
+        return;
+      }
+      if (clicked === "download") {
+        onDownload?.();
         return;
       }
       if (clicked === "copy-relative" || clicked === "copy-full") {
@@ -452,7 +465,8 @@ function areMarkdownFileLinkPropsEqual(
     previous.onReveal === next.onReveal &&
     previous.resolveCopyPaths === next.resolveCopyPaths &&
     previous.resolveDragPath === next.resolveDragPath &&
-    previous.revealLabel === next.revealLabel
+    previous.revealLabel === next.revealLabel &&
+    previous.onDownload === next.onDownload
   );
 }
 

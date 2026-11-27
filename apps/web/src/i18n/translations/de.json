@@ -13655,5 +13655,7 @@
   "91aadfc843c600de": "Google-Konto bestätigen",
   "4a18481bea4b4ad5": "Neues Gerät bei {environmentLabel} angemeldet",
   "4144ab6aa487528a": "{device} hat sich über {product} verbunden. Warst du das nicht? Prüfe es.",
-  "a10cfdb27152c757": "{count, plural, one {{count} Gerät hat} other {{count} Geräte haben}} sich über {product} verbunden. Warst du das nicht? Prüfe sie."
+  "a10cfdb27152c757": "{count, plural, one {{count} Gerät hat} other {{count} Geräte haben}} sich über {product} verbunden. Warst du das nicht? Prüfe sie.",
+  "5807c08e225c6b3d": "Herunterladen",
+  "0d50b5bfe7151ece": "Datei konnte nicht heruntergeladen werden"
 }

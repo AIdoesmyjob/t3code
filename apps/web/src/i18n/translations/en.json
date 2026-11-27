@@ -13662,5 +13662,7 @@
   "91aadfc843c600de": "Verify Google account",
   "4a18481bea4b4ad5": "New device signed in to {environmentLabel}",
   "4144ab6aa487528a": "{device} connected through {product}. Not you? Review it.",
-  "a10cfdb27152c757": "{count, plural, one {{count} device} other {{count} devices}} connected through {product}. Not you? Review them."
+  "a10cfdb27152c757": "{count, plural, one {{count} device} other {{count} devices}} connected through {product}. Not you? Review them.",
+  "5807c08e225c6b3d": "Download",
+  "0d50b5bfe7151ece": "Could not download file"
 }

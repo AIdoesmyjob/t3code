@@ -13648,5 +13648,7 @@
   "91aadfc843c600de": "Verificar cuenta de Google",
   "4a18481bea4b4ad5": "Nuevo dispositivo conectado a {environmentLabel}",
   "4144ab6aa487528a": "{device} se conectó a través de {product}. ¿No fuiste tú? Revísalo.",
-  "a10cfdb27152c757": "{count, plural, one {{count} dispositivo se conectó} other {{count} dispositivos se conectaron}} a través de {product}. ¿No fuiste tú? Revísalos."
+  "a10cfdb27152c757": "{count, plural, one {{count} dispositivo se conectó} other {{count} dispositivos se conectaron}} a través de {product}. ¿No fuiste tú? Revísalos.",
+  "5807c08e225c6b3d": "Descargar",
+  "0d50b5bfe7151ece": "No se pudo descargar el archivo"
 }

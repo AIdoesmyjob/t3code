@@ -13594,5 +13594,7 @@
   "91aadfc843c600de": "Google 계정 확인",
   "4a18481bea4b4ad5": "{environmentLabel}에 새 기기가 로그인했습니다",
   "4144ab6aa487528a": "{device}이(가) {product}를 통해 연결되었습니다. 본인이 아니라면 확인하세요.",
-  "a10cfdb27152c757": "{count, plural, other {기기 {count}대}}가 {product}를 통해 연결되었습니다. 본인이 아니라면 확인하세요."
+  "a10cfdb27152c757": "{count, plural, other {기기 {count}대}}가 {product}를 통해 연결되었습니다. 본인이 아니라면 확인하세요.",
+  "5807c08e225c6b3d": "다운로드",
+  "0d50b5bfe7151ece": "파일을 다운로드할 수 없습니다"
 }
