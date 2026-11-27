@@ -658,7 +658,7 @@ describe("WorkflowRunsView", () => {
     await screen.getByRole("button", { name: "All", exact: true }).click();
     await expect.element(screen.getByRole("button", { name: "Show 2 skipped" })).toBeVisible();
     await screen.getByRole("combobox", { name: "Workflow" }).click();
-    await screen.getByRole("option", { name: "release" }).click();
+    await browserPage.getByRole("option", { name: "release" }).click();
     await expect
       .element(screen.getByRole("navigation", { name: "Workflow runs" }))
       .not.toMatchTextContent(/skipped/);
@@ -682,7 +682,7 @@ describe("WorkflowRunsView", () => {
     await expect.element(screen.getByRole("article", { name: "Nightly report" })).toBeVisible();
     await screen.getByRole("button", { name: "All", exact: true }).click();
     await screen.getByRole("combobox", { name: "Workflow" }).click();
-    await screen.getByRole("option", { name: "release" }).click();
+    await browserPage.getByRole("option", { name: "release" }).click();
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
     await expect.element(runs.getByRole("button", { name: /Release 1\.3/ })).toBeVisible();
     await expect
