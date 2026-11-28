@@ -2967,8 +2967,9 @@ export function ChatComposer(props: ChatComposerProps) {
     </RuntimeModeLimitsTargetContext>
   );
   const replyTo = composerDraft?.replyTo ?? null;
+  // A send waits for compressing images, so they count as attached.
   const holdsNoAttachedContext =
-    composerImages.length + composerFiles.length === 0 &&
+    composerImages.length + composerFiles.length + allPreparingComposerImages.length === 0 &&
     composerSendState.sendableTerminalContexts.length === 0 &&
     composerPreviewAnnotations.length === 0 &&
     composerReviewComments.length === 0 &&
@@ -2977,6 +2978,7 @@ export function ChatComposer(props: ChatComposerProps) {
   const codexFeedbackOffered = selectedProvider === "codex" && multipleModelSelections === null;
   const commandRunsLocally = composerRunsDraftLocally({
     text: prompt,
+    commandText: composerSendState.trimmedPrompt,
     holdsOnlyText: holdsNoAttachedContext && replyTo === null,
     sideChat: props.sideChatAvailable === true || (props.sideChatDisabledReason ?? null) !== null,
     usageLimits: props.onUsageLimitsCommand !== undefined,
@@ -2985,7 +2987,9 @@ export function ChatComposer(props: ChatComposerProps) {
   });
   // `/feedback` runs with a pending reply too, which then stays in the bar.
   const feedbackRunsLocally =
-    codexFeedbackOffered && holdsNoAttachedContext && parseCodexFeedbackCommand(prompt) !== null;
+    codexFeedbackOffered &&
+    holdsNoAttachedContext &&
+    parseCodexFeedbackCommand(composerSendState.trimmedPrompt) !== null;
   const draftRunsLocally = commandRunsLocally || feedbackRunsLocally;
   const replyBannerItems: readonly ComposerBannerStackItem[] = replyTo
     ? [
