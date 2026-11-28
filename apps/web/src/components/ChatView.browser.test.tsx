@@ -1643,8 +1643,12 @@ async function renderRunningThread(name: string) {
   const running = { ...thread.runs[0]!, status: "running" as const, completedAt: null };
   await act(() => emitThreadEvent(thread.id, { type: "run.updated", payload: running }));
   await expect.element(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
+  // The redesign keeps a new-thread composer mounted beside the thread's own.
+  const editor = page.getByRole("textbox", { name: `Message ${thread.title}`, exact: true });
   return {
-    editor: page.getByTestId("composer-editor"),
+    editor,
+    // The thread's own composer, for its buttons.
+    composer: () => page.elementLocator(editor.element().closest("form")!),
     [Symbol.asyncDispose]: async () => {
       await app[Symbol.asyncDispose]();
       environment[Symbol.dispose]();
@@ -1664,7 +1668,9 @@ it("/clear after an unresolved context reference shows plain send during a runni
   await insertText("/clear ");
 
   // Enter strips the reference and runs `/clear` locally, so it must not offer to steer.
-  await expect.element(page.getByRole("button", { name: "Submit message" })).toBeVisible();
+  await expect
+    .element(view.composer().getByRole("button", { name: "Submit message" }))
+    .toBeVisible();
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByText("Your next message starts a fresh session")).toBeVisible();
 });
@@ -1685,6 +1691,8 @@ it("/clear with a still-compressing image offers to steer or queue during a runn
     .dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
 
   // Enter waits for the image and sends `/clear` with it to the agent, not as a local command.
-  await expect.element(page.getByRole("button", { name: /^(Steer|Queue) message$/ })).toBeVisible();
+  await expect
+    .element(view.composer().getByRole("button", { name: /^(Steer|Queue) message$/ }))
+    .toBeVisible();
   compressed.resolve();
 });
