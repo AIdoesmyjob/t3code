@@ -101,7 +101,7 @@ describe("ThemeImportDialog", () => {
     await expect.element(page.getByRole("button", { name: "Install Nightfall" })).toBeVisible();
   });
 
-  // The count uses the host locale, not the UI language.
+  // With no app language saved, the count uses the host locale.
   const compact = (count: number) =>
     new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(
       count,
