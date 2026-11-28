@@ -984,7 +984,15 @@ layer("GitHubPullRequestApi.layer", (it) => {
               output(
                 encodeJson({
                   data: {
-                    nodes: [{ __typename: "Commit", oid: "regular", additions: 18, deletions: 7 }],
+                    nodes: [
+                      {
+                        __typename: "Commit",
+                        oid: "regular",
+                        additions: 18,
+                        deletions: 7,
+                        changedFilesIfAvailable: 12,
+                      },
+                    ],
                   },
                 }),
               ),
@@ -1001,7 +1009,11 @@ layer("GitHubPullRequestApi.layer", (it) => {
           "deletions",
         );
         if (kind === "mixed") {
-          expect(activity.commits[0]).toMatchObject({ additions: 18, deletions: 7 });
+          expect(activity.commits[0]).toMatchObject({
+            additions: 18,
+            deletions: 7,
+            changedFiles: 12,
+          });
         } else if (kind === "unavailable") {
           expect(activity.commits[0]).not.toHaveProperty("additions");
         }
@@ -1056,7 +1068,15 @@ layer("GitHubPullRequestApi.layer", (it) => {
               output(
                 encodeJson({
                   data: {
-                    nodes: [{ __typename: "Commit", oid: "regular", additions: 3, deletions: 1 }],
+                    nodes: [
+                      {
+                        __typename: "Commit",
+                        oid: "regular",
+                        additions: 3,
+                        deletions: 1,
+                        changedFilesIfAvailable: null,
+                      },
+                    ],
                   },
                 }),
               ),
@@ -1076,6 +1096,7 @@ layer("GitHubPullRequestApi.layer", (it) => {
       const activity = yield* cli.getPullRequestActivity(pullRequestInput);
 
       expect(activity.commits[0]).toMatchObject({ additions: 3, deletions: 1 });
+      expect(activity.commits[0]).not.toHaveProperty("changedFiles");
       expect(activity.truncated).toBe(false);
       expect(mockedExecute).toHaveBeenCalledTimes(3);
     }),
@@ -2764,6 +2785,102 @@ layer("GitHubPullRequestApi.layer", (it) => {
       expect(error._tag).toBe("GitHubApiResponseError");
       expect(variablesOf("mergePullRequest(")).toEqual([]);
       expect(variablesOf("closePullRequest(")).toEqual([]);
+    }),
+  );
+
+  it.effect("arms and cancels auto-merge for a stack through the pinned layer", () =>
+    Effect.gen(function* () {
+      route(
+        [
+          "stacks?pull_request=7",
+          [
+            {
+              number: 3,
+              url: "https://api.github.com/repos/acme/web/stacks/3",
+              base: { ref: "main" },
+              pull_requests: [
+                { number: 6, head: { ref: "one", sha: "aaa" }, state: "open", draft: false },
+                { number: 7, head: { ref: "two", sha: "bbb" }, state: "open", draft: false },
+              ],
+            },
+          ],
+        ],
+        ["PullRequestNodeId", { data: { repository: { pullRequest: { id: "PR_7" } } } }],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      const target = { cwd: "/w", repository: "acme/web", host: "github.com", number: 7 };
+      yield* cli.runPullRequestAction({
+        ...target,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+        stackNumber: 3,
+        expectedStackHeads: [
+          { number: 6, headSha: "aaa" },
+          { number: 7, headSha: "bbb" },
+        ],
+      });
+      yield* cli.runPullRequestAction({ ...target, action: "disable-auto-merge", stackNumber: 3 });
+      expect(variablesOf("enablePullRequestAutoMerge(")).toEqual([
+        {
+          input: {
+            pullRequestId: "PR_7",
+            mergeMethod: "SQUASH",
+            expectedHeadOid: "bbb",
+            includeStack: true,
+          },
+        },
+      ]);
+      expect(variablesOf("DisableStackAutoMerge")).toEqual([{ pullRequestId: "PR_7" }]);
+      expect(restCallsTo("merge-async")).toEqual([]);
+    }),
+  );
+
+  it.effect("merges a stack that is already mergeable instead of arming auto-merge", () =>
+    Effect.gen(function* () {
+      route(
+        [
+          "stacks?pull_request=7",
+          [
+            {
+              number: 3,
+              url: "https://api.github.com/repos/acme/web/stacks/3",
+              base: { ref: "main" },
+              pull_requests: [
+                { number: 7, head: { ref: "two", sha: "bbb" }, state: "open", draft: false },
+              ],
+            },
+          ],
+        ],
+        ["PullRequestNodeId", { data: { repository: { pullRequest: { id: "PR_7" } } } }],
+        [
+          "enablePullRequestAutoMerge(",
+          {
+            data: { enablePullRequestAutoMerge: null },
+            errors: [
+              {
+                type: "UNPROCESSABLE",
+                message:
+                  "Auto-merge is not needed because all requested pull requests are already mergeable",
+              },
+            ],
+          },
+        ],
+        ["merge-async", { status: "merged", details: {} }],
+      );
+      const cli = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+      yield* cli.runPullRequestAction({
+        cwd: "/w",
+        repository: "acme/web",
+        host: "github.com",
+        number: 7,
+        action: "enable-auto-merge",
+        mergeMethod: "squash",
+        stackNumber: 3,
+        expectedStackHeads: [{ number: 7, headSha: "bbb" }],
+      });
+      expect(restCallsTo("merge-async")).toMatchObject([
+        { method: "PUT", body: { merge_method: "squash", sha: "bbb" } },
+      ]);
     }),
   );
 

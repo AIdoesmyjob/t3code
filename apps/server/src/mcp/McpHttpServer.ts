@@ -301,6 +301,9 @@ const linkedEnvironmentsOff = HttpServerResponse.jsonUnsafe(
   { status: 403, headers: { "cache-control": "no-store" } },
 );
 
+// Unanswered by then, the request goes on with forge tools listed, as when the lookup fails.
+const FORGE_LOOKUP_WAIT = Duration.seconds(1);
+
 const makeMcpAuthMiddleware = Effect.gen(function* () {
   const registry = yield* McpSessionRegistry.McpSessionRegistry;
   const clients = yield* Effect.serviceOption(McpClientAuthenticator);
@@ -344,6 +347,7 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
       ),
     );
   };
+  const lookupScope = yield* Effect.scope;
   // Every request reads it, and a remote added mid-thread shows the tools within a minute.
   const forgeOfThread = yield* Cache.make({
     capacity: 1_000,
@@ -393,10 +397,17 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     const { linkedEnvironments, agentFeedback, workflows } = yield* settingsFlags;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
     const origin = Option.getOrUndefined(Option.map(requestUrl(request), (url) => url.origin));
+    // A hung forge CLI must not hold the request past the client's connect timeout, and an
+    // abandoned wait must not interrupt the lookup, or every retry starts it over.
     const forge =
       limited.thread === undefined
         ? undefined
-        : yield* Cache.get(forgeOfThread, limited.thread.threadId);
+        : yield* Cache.get(forgeOfThread, limited.thread.threadId).pipe(
+            Effect.forkIn(lookupScope),
+            Effect.flatMap(Fiber.join),
+            Effect.timeoutOption(FORGE_LOOKUP_WAIT),
+            Effect.map(Option.getOrUndefined),
+          );
     const toolExposure = parseMcpToolExposureMode(request.headers[MCP_TOOL_EXPOSURE_HEADER]);
     return {
       ...limited,
@@ -1643,7 +1654,6 @@ const layerToolExposure = Layer.effect(
     return McpToolExposure.make(
       () =>
         server.tools
-          // The Skofo Commander tools stay out of search (fork).
           .filter(({ tool }) => !tool.name.startsWith(SKOFO_COMMANDER_TOOL_PREFIX))
           .map(({ tool, annotations }) => ({
             name: tool.name,

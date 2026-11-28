@@ -66,6 +66,7 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   ORCHESTRATION_PROTOCOL_QUERY_PARAM,
   CLIENT_CAPABILITIES_QUERY_PARAM,
+  HTTP_USAGE_LIMIT_SOURCES_CAPABILITY,
   SETTINGS_SECRET_REFERENCES_CAPABILITY,
   ORCHESTRATION_PROTOCOL_VERSION,
   OrchestrationV2DispatchCommandError,
@@ -199,6 +200,7 @@ import * as ProviderAuthService from "./provider/ProviderAuthService.ts";
 import * as ProviderInstallation from "./provider/providerInstallation.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
 import * as NpmRelease from "./cloud/npmRelease.ts";
+import * as RelayTracing from "./cloud/relayTracing.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
@@ -820,7 +822,10 @@ function hasCompatibleOrchestrationProtocol(url: URL): boolean {
 
 function readSettingsClient(url: URL) {
   const capabilities = url.searchParams.get(CLIENT_CAPABILITIES_QUERY_PARAM)?.split(",") ?? [];
-  return { secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY) };
+  return {
+    secretReferences: capabilities.includes(SETTINGS_SECRET_REFERENCES_CAPABILITY),
+    httpUsageLimitSources: capabilities.includes(HTTP_USAGE_LIMIT_SOURCES_CAPABILITY),
+  };
 }
 
 function shouldUseBoundedThreadSnapshot(input: {
@@ -1457,7 +1462,7 @@ export const layerWsRpc = (
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
-  settingsClient: { readonly secretReferences: boolean },
+  settingsClient: ServerSettings.SettingsClient,
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -1587,6 +1592,7 @@ export const layerWsRpc = (
       const storageCleanup = yield* StorageCleanup.StorageCleanup;
       const databaseStorage = yield* DatabaseStorage.DatabaseStorage;
       const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const hostEnvironment = yield* HostProcess.Environment;
       const secretResolver = yield* SecretResolver.SecretResolver;
       const peerLinks = yield* PeerLinks.PeerLinks;
       const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
@@ -1945,6 +1951,10 @@ export const layerWsRpc = (
                 }
               : {}),
             otlpLogsEnabled: config.otlpLogsUrl !== undefined,
+            relayTracingAllowed: RelayTracing.allowedFor(
+              hostEnvironment,
+              serverSettings.managedPolicy,
+            ),
           },
           settings,
           ...(serverSettings.managedPolicy === undefined
@@ -2603,6 +2613,16 @@ export const layerWsRpc = (
               yield* providerRegistry.refreshModelCatalog;
               return { providers: [] };
             }
+            if (input.limitsOnly === true) {
+              yield* Effect.all(
+                [
+                  input.instanceId === undefined ? usageLimitSources.refresh : Effect.void,
+                  providerRegistry.refreshUsageLimits(input.instanceId),
+                ],
+                { concurrency: "unbounded", discard: true },
+              );
+              return { providers: [] };
+            }
             if (input.refreshModels) {
               yield* providerRegistry.invalidateModelCaches({
                 instanceId: input.instanceId,
@@ -2693,6 +2713,14 @@ export const layerWsRpc = (
                 }),
             };
           }),
+        [WS_METHODS.serverGetProviderRuntimeModeLimits]: Effect.fnUntraced(function* (input) {
+          return {
+            limits: yield* providerRegistry.runtimeModeLimits({
+              instanceId: input.instanceId,
+              scanCwd: yield* projectService.workspaceScanDirectory(input.cwd),
+            }),
+          };
+        }),
         [WS_METHODS.mcpAppsCallTool]: (input) => mcpAppRequests.callTool(input),
         [WS_METHODS.mcpAppsToolInfo]: (input) => mcpAppRequests.toolInfo(input),
         [WS_METHODS.mcpAppsUpdateModelContext]: (input) => mcpAppRequests.updateModelContext(input),
@@ -3669,6 +3697,16 @@ export const layerWsRpc = (
                       })),
                     )
                   : Stream.empty;
+              const hostPressureUpdates =
+                input.hostPressure === true
+                  ? hostResources.pressure.pipe(
+                      Stream.map((payload) => ({
+                        version: 1 as const,
+                        type: "hostPressureUpdated" as const,
+                        payload,
+                      })),
+                    )
+                  : Stream.empty;
               const settingsUpdates = settingsChanges.pipe(
                 Stream.map((settings) =>
                   ServerSettings.redactServerSettingsForClient(settings, settingsClient),
@@ -3686,7 +3724,10 @@ export const layerWsRpc = (
                   providerStatuses,
                   Stream.merge(
                     settingsUpdates,
-                    Stream.merge(environmentThemeUpdates, usageLimitSourceUpdates),
+                    Stream.merge(
+                      environmentThemeUpdates,
+                      Stream.merge(usageLimitSourceUpdates, hostPressureUpdates),
+                    ),
                   ),
                 ),
               );

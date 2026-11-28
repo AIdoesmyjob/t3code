@@ -660,7 +660,21 @@ describe("resolveShortcutCommand", () => {
     );
   });
 
-  it("navigates history with mod+[ and mod+] outside the terminal", () => {
+  it("maximizes the right panel with mod+alt+e by default", () => {
+    // macOS reports Option+E as the dead key "´", so the physical key decides.
+    const mac = event({ key: "´", code: "KeyE", metaKey: true, altKey: true });
+    const linux = event({ key: "e", code: "KeyE", ctrlKey: true, altKey: true });
+    assert.strictEqual(
+      resolveShortcutCommand(mac, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "MacIntel" }),
+      "rightPanel.toggleMaximized",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(linux, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "Linux" }),
+      "rightPanel.toggleMaximized",
+    );
+  });
+
+  it("uses terminal cycling shortcuts without changing bracket history shortcuts", () => {
     const back = event({ key: "[", code: "BracketLeft", metaKey: true });
     const forward = event({ key: "]", code: "BracketRight", ctrlKey: true });
     assert.strictEqual(
@@ -671,12 +685,58 @@ describe("resolveShortcutCommand", () => {
       resolveShortcutCommand(forward, DEFAULT_RESOLVED_KEYBINDINGS, { platform: "Linux" }),
       "navigation.forward",
     );
-    assert.isNull(
-      resolveShortcutCommand(back, DEFAULT_RESOLVED_KEYBINDINGS, {
-        platform: "MacIntel",
-        context: { terminalFocus: true },
-      }),
-    );
+    for (const platform of ["MacIntel", "Win32", "Linux"]) {
+      const mac = platform === "MacIntel";
+      for (const [key, shiftedKey, code, direction] of [
+        ["[", "{", "BracketLeft", "previous"],
+        ["]", "}", "BracketRight", "next"],
+      ] as const) {
+        const shortcut = event({
+          key: mac ? shiftedKey : key,
+          code,
+          metaKey: mac,
+          ctrlKey: !mac,
+          altKey: !mac,
+          shiftKey: mac,
+        });
+        assert.strictEqual(
+          resolveShortcutCommand(shortcut, DEFAULT_RESOLVED_KEYBINDINGS, {
+            platform,
+            context: { terminalFocus: true },
+          }),
+          `terminal.${direction}`,
+        );
+        if (mac) {
+          assert.strictEqual(
+            resolveShortcutCommand(shortcut, DEFAULT_RESOLVED_KEYBINDINGS, {
+              platform,
+              context: { terminalFocus: false },
+            }),
+            `thread.${direction}`,
+          );
+        }
+      }
+      if (mac) {
+        for (const key of ["[", "]"]) {
+          const command = resolveShortcutCommand(
+            event({ key, metaKey: true }),
+            DEFAULT_RESOLVED_KEYBINDINGS,
+            {
+              platform,
+              context: { terminalFocus: true },
+            },
+          );
+          assert.notStrictEqual(command, "terminal.previous");
+          assert.notStrictEqual(command, "terminal.next");
+        }
+      }
+      assert.isNull(
+        resolveShortcutCommand(event({ key: "[", ctrlKey: true }), DEFAULT_RESOLVED_KEYBINDINGS, {
+          platform,
+          context: { terminalFocus: true },
+        }),
+      );
+    }
   });
 
   it("matches punctuation shortcuts by physical key across keyboard layouts", () => {

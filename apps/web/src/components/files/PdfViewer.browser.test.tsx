@@ -1,6 +1,8 @@
 import { expect, it, vi } from "vite-plus/test";
+import { userEvent } from "vite-plus/test/browser";
 
-import { render } from "../../../test/render";
+import { Sheet, SheetPopup } from "~/components/ui/sheet";
+import { act, render } from "../../../test/render";
 import "~/index.css";
 
 // Vite serves the worker module through its transform with an inline source map (6.8 MB for
@@ -333,4 +335,73 @@ it("follows a link to another page and exposes a web link", async () => {
   } finally {
     URL.revokeObjectURL(url);
   }
+});
+
+it("Escape in Find in PDF clears it without closing the panel sheet", async () => {
+  const url = URL.createObjectURL(testPdf());
+  const onCloseSheet = vi.fn();
+  try {
+    await using screen = await render(
+      <Sheet
+        open
+        onOpenChange={(open) => {
+          if (!open) onCloseSheet();
+        }}
+      >
+        <SheetPopup transitionDurationMs={0} side="right" showCloseButton={false} keepMounted>
+          <PdfViewer src={url} title="Planning PDF" />
+        </SheetPopup>
+      </Sheet>,
+    );
+    const find = screen.getByRole("searchbox", { name: "Find in PDF" });
+    await find.fill("quarterly");
+    for (const composition of [
+      { key: "Escape", isComposing: true, keyCode: 27 },
+      { key: "Escape", isComposing: false, keyCode: 229 },
+    ]) {
+      // Safari ends the composition just before the Escape keydown.
+      await act(() => {
+        find.element().dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+        find
+          .element()
+          .dispatchEvent(new KeyboardEvent("keydown", { ...composition, bubbles: true }));
+      });
+      await expect.element(find).toHaveValue("quarterly");
+    }
+    expect(find.element().getAttribute("type")).toBe("text");
+
+    await userEvent.keyboard("{Escape}");
+    await expect.element(find).toHaveValue("");
+    // Holding Escape repeats the keydown, which must not also close the sheet.
+    await act(() => {
+      find
+        .element()
+        .dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Escape", repeat: true, bubbles: true }),
+        );
+    });
+    expect(onCloseSheet).not.toHaveBeenCalled();
+
+    await userEvent.keyboard("{Escape}");
+    await vi.waitFor(() => expect(onCloseSheet).toHaveBeenCalledOnce());
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+});
+
+it("retries an incorrect password and renders the encrypted PDF", async () => {
+  const { default: src } = await import("../../../test/fixtures/file-passwords/locked.pdf?url");
+  const container = document.createElement("div");
+  container.style.cssText = "display:flex;width:500px;height:400px";
+  await using screen = await render(<PdfViewer src={src} title="Locked PDF" />, { container });
+  const password = screen.getByLabelText("File password");
+  await expect.element(password).toBeVisible();
+  await expect.element(password).not.toHaveFocus();
+  await password.fill("wrong");
+  await screen.getByRole("button", { name: "Unlock" }).click();
+  await expect.element(screen.getByText("Incorrect password. Try again.")).toBeVisible();
+  await expect.element(password).toHaveFocus();
+  await password.fill("open me");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(screen.getByText("Unlocked PDF")).toBeVisible();
 });

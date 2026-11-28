@@ -8,6 +8,7 @@ import {
   ExternalLinkIcon,
   ImageIcon,
   MinusIcon,
+  PencilIcon,
   PlusIcon,
   VideoIcon,
   Image as ImageGlyphIcon,
@@ -33,6 +34,11 @@ import {
 } from "./SnapShotAttachmentDetails";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { ZoomableImage, type ZoomableImageHandle, type ZoomableImageView } from "./ZoomableImage";
+import {
+  type EditedImage,
+  ImageAnnotationOverlay,
+  type ImageAnnotationStatus,
+} from "./ImageAnnotationOverlay";
 import { readLocalApi } from "../../localApi";
 import { toastManager } from "../ui/toast";
 import { composerFloatingLayerProps } from "./composerEventScope";
@@ -43,6 +49,7 @@ import { expandedImageKey } from "./ExpandedImagePreview";
 import { registerThreadOverlay } from "./threadOverlayRetention";
 import { mediaReferenceFileName } from "@t3tools/client-runtime/media-reference";
 import { mediaMimeType, mediaMimeTypeFromExtension } from "@t3tools/shared/mediaPreview";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 interface ExpandedImageDialogProps {
   preview: ExpandedImagePreview;
@@ -174,6 +181,16 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   } | null>(null);
   const [view, setView] = useState<ZoomableImageView | null>(null);
   const zoomableImageRef = useRef<ZoomableImageHandle>(null);
+  // Drawing happens in place over the current image, so the preview around it never moves.
+  const [editing, setEditing] = useState(false);
+  const [editStatus, setEditStatus] = useState<ImageAnnotationStatus>({
+    dirty: false,
+    saving: false,
+  });
+  // A saved edit replaces the draft's bytes; show them here without reopening the preview.
+  const [editedImages, setEditedImages] = useState<Readonly<Record<number, EditedImage>>>({});
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const [drawToolbar, setDrawToolbar] = useState<HTMLDivElement | null>(null);
   const [returnFocus] = useState(() => {
     const target = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     return { target, focusVisible: target?.matches(":focus-visible") ?? false };
@@ -190,7 +207,27 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
   const imageCount = preview.images.length;
   const index =
     imageCount > 0 ? (((preview.index + imageOffset) % imageCount) + imageCount) % imageCount : 0;
-  const item = preview.images[index];
+  const previewItem = preview.images[index];
+  const editedImage = editedImages[index];
+  const item =
+    previewItem && editedImage
+      ? {
+          ...previewItem,
+          src: editedImage.src,
+          name: editedImage.file.name,
+          mimeType: editedImage.file.type,
+          ...(previewItem.edit
+            ? {
+                edit: {
+                  ...previewItem.edit,
+                  file: editedImage.file,
+                  name: editedImage.file.name,
+                  mimeType: editedImage.file.type,
+                },
+              }
+            : {}),
+        }
+      : previewItem;
   const source: MediaActionSource = item?.actionsSource ?? {
     kind: item?.type === "video" ? "video" : "image",
     name: item?.name ?? gt("Media"),
@@ -208,17 +245,37 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     : source;
   const runByteAction = useMediaByteAction(actionsSource);
 
+  const exitEdit = () => {
+    // The pencil is back in the toolbar only after this render.
+    flushSync(() => {
+      setEditing(false);
+      setEditStatus({ dirty: false, saving: false });
+    });
+    editButtonRef.current?.focus({ preventScroll: true });
+  };
+  const cancelEdit = () => {
+    if (!editStatus.saving) exitEdit();
+  };
+
   const navigateImage = (direction: -1 | 1) => {
+    if (editing) {
+      if (editStatus.dirty) return;
+      exitEdit();
+    }
     setImageOffset((current) => current + direction);
   };
   const selectImage = (target: number) => {
+    if (editing) {
+      if (editStatus.dirty) return;
+      exitEdit();
+    }
     setImageOffset(target - preview.index);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.defaultPrevented || isContextMenuOpen() || event.target instanceof HTMLVideoElement)
       return;
-    if (zoomableImageRef.current?.pan(event.key)) {
+    if (!editing && zoomableImageRef.current?.pan(event.key)) {
       event.preventDefault();
       event.stopPropagation();
       return;
@@ -238,6 +295,7 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
 
   if (!item) return null;
   const isVideo = item.type === "video";
+  const editTarget = editing && !isVideo ? item.edit : undefined;
   const openOriginalLink =
     item.originalUrl && resolveExternalWebLinkHost(item.originalUrl) !== null ? (
       <OpenMediaLink originalUrl={item.originalUrl} />
@@ -298,6 +356,12 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
           eventDetails.cancel();
           return;
         }
+        // While drawing, Escape cancels the drawing and nothing else closes the preview.
+        if (editing) {
+          eventDetails.cancel();
+          if (eventDetails.reason === "escape-key") cancelEdit();
+          return;
+        }
         close();
       }}
     >
@@ -319,13 +383,15 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
             return;
           event.preventDefault();
           event.stopPropagation();
-          close();
+          // While drawing, Escape cancels the drawing and nothing else closes the preview.
+          if (editing) cancelEdit();
+          else close();
         }}
         onKeyDown={onKeyDown}
         initialFocus={closeButtonRef}
         finalFocus={() => returnFocus.target}
         onClick={(event) => {
-          if (event.target === event.currentTarget) close();
+          if (event.target === event.currentTarget && !editing) close();
         }}
       >
         <DialogTitle className="sr-only">
@@ -338,143 +404,175 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
             className="flex h-10 w-0 min-w-full items-center gap-2 rounded-card surface-popover px-1.5"
           >
             {/* Back sits first, away from where the window's own close button is. */}
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    type="button"
-                    ref={closeButtonRef}
-                    size="icon-sm"
-                    variant="secondary"
-                    onClick={close}
-                    aria-label={
-                      isVideo ? gt("Back, close video preview") : gt("Back, close image preview")
-                    }
-                  />
-                }
-              >
-                <ArrowLeftIcon aria-hidden="true" />
-              </TooltipTrigger>
-              <TooltipPopup side="bottom">{gt("Back")}</TooltipPopup>
-            </Tooltip>
-            <ImageIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
-            <span
-              className="min-w-0 truncate text-label text-foreground"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              {item.name}
-              <span className="sr-only">
-                {imageCount > 1 ? ` (${index + 1}/${imageCount})` : ""}
-              </span>
-            </span>
-            {meta || item.sizeBytes !== undefined ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      tabIndex={0}
-                      className="shrink-0 text-meta text-dim-foreground tabular-nums max-sm:hidden"
-                    />
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  type="button"
+                  ref={closeButtonRef}
+                  size="icon-sm"
+                  variant="secondary"
+                  onClick={editing ? cancelEdit : close}
+                  aria-label={
+                    editing
+                      ? gt("Cancel drawing")
+                      : isVideo
+                        ? gt("Close video preview")
+                        : gt("Close image preview")
                   }
+                />
+              }
+              label={gt("Back")}
+              side="bottom"
+            >
+              <ArrowLeftIcon aria-hidden="true" />
+            </SharedTooltipTrigger>
+            {editTarget ? (
+              // While drawing, the drawing tools take the place of everything after Back.
+              <div ref={setDrawToolbar} className="flex min-w-0 flex-1 items-center gap-1" />
+            ) : (
+              <>
+                <ImageIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
+                <span
+                  className="min-w-0 truncate text-label text-foreground"
+                  aria-live="polite"
+                  aria-atomic="true"
                 >
-                  {meta ?? formatAttachmentSize(item.sizeBytes!, messages)}
-                </TooltipTrigger>
-                <TooltipPopup>
-                  {meta ? <span className="block">{meta}</span> : null}
-                  {item.sizeBytes !== undefined ? (
-                    <span className="block">{formatAttachmentSize(item.sizeBytes, messages)}</span>
-                  ) : null}
-                </TooltipPopup>
-              </Tooltip>
-            ) : null}
-            <span className="flex-1" />
-            {accessibilityDetails && item.source ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
+                  {item.name}
+                  <span className="sr-only">
+                    {imageCount > 1 ? ` (${index + 1}/${imageCount})` : ""}
+                  </span>
+                </span>
+                {meta || item.sizeBytes !== undefined ? (
+                  <SharedTooltipTrigger
+                    render={
+                      <span
+                        tabIndex={0}
+                        className="shrink-0 text-meta text-dim-foreground tabular-nums max-sm:hidden"
+                      />
+                    }
+                    label={
+                      <>
+                        {meta ? <span className="block">{meta}</span> : null}
+                        {item.sizeBytes !== undefined ? (
+                          <span className="block">
+                            {formatAttachmentSize(item.sizeBytes, messages)}
+                          </span>
+                        ) : null}
+                      </>
+                    }
+                  >
+                    {meta ?? formatAttachmentSize(item.sizeBytes!, messages)}
+                  </SharedTooltipTrigger>
+                ) : null}
+                <span className="flex-1" />
+                {accessibilityDetails && item.source ? (
+                  <SharedTooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        size="icon-sm"
+                        variant={showingAccessibilityDetails ? "secondary" : "ghost"}
+                        aria-label={contentsLabel}
+                        aria-pressed={showingAccessibilityDetails}
+                        disabled={editing}
+                        onClick={() =>
+                          setAccessibilityDetailsSrc(showingAccessibilityDetails ? null : item.src)
+                        }
+                      />
+                    }
+                    label={contentsLabel}
+                    side="bottom"
+                  >
+                    {showingAccessibilityDetails ? (
+                      <ImageGlyphIcon aria-hidden="true" />
+                    ) : (
+                      <TextGlyphIcon aria-hidden="true" />
+                    )}
+                  </SharedTooltipTrigger>
+                ) : item.source ? (
+                  <SnapShotContentsButton source={item.source} side="bottom" />
+                ) : null}
+                {item.edit && !isVideo ? (
+                  <SharedTooltipTrigger
+                    render={
+                      <Button
+                        type="button"
+                        ref={editButtonRef}
+                        size="icon-sm"
+                        variant={editing ? "secondary" : "ghost"}
+                        aria-label={gt("Draw on image")}
+                        aria-pressed={editing}
+                        disabled={showingAccessibilityDetails || editStatus.saving}
+                        onClick={() => (editing ? cancelEdit() : setEditing(true))}
+                      />
+                    }
+                    label={gt("Draw on image")}
+                    side="bottom"
+                  >
+                    <PencilIcon aria-hidden="true" />
+                  </SharedTooltipTrigger>
+                ) : null}
+                {item.onCopySnapshot ? (
+                  <SnapShotCopyButton onCopy={item.onCopySnapshot} side="bottom" />
+                ) : null}
+                {zoomable ? (
+                  <div className="flex h-7 shrink-0 items-center rounded-control surface-well px-0.5 max-sm:hidden">
+                    {/* aria-disabled keeps focus in the dialog when a click reaches a zoom limit, so arrow keys still navigate. */}
                     <Button
                       type="button"
-                      size="icon-sm"
-                      variant={showingAccessibilityDetails ? "secondary" : "ghost"}
-                      aria-label={contentsLabel}
-                      aria-pressed={showingAccessibilityDetails}
-                      onClick={() =>
-                        setAccessibilityDetailsSrc(showingAccessibilityDetails ? null : item.src)
-                      }
-                    />
-                  }
+                      size="xs"
+                      variant="ghost-muted"
+                      aria-label={gt("Zoom out")}
+                      aria-disabled={!view?.canZoomOut}
+                      onClick={() => zoomableImageRef.current?.zoomOut()}
+                    >
+                      <MinusIcon aria-hidden="true" />
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost-muted"
+                      aria-label={gt("Zoom {percent}, reset to fit", { percent: zoomPercent })}
+                      aria-disabled={!view?.canZoomOut}
+                      onClick={() => zoomableImageRef.current?.resetZoom()}
+                    >
+                      <span className="min-w-8 text-center tabular-nums">{zoomPercent}</span>
+                    </Button>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="ghost-muted"
+                      aria-label={gt("Zoom in")}
+                      aria-disabled={!view?.canZoomIn}
+                      onClick={() => zoomableImageRef.current?.zoomIn()}
+                    >
+                      <PlusIcon aria-hidden="true" />
+                    </Button>
+                  </div>
+                ) : null}
+                {item.type !== "video" ? (
+                  <MediaBarButton
+                    label={gt("Copy image")}
+                    disabled={!canCopyImage}
+                    onClick={() => void runByteAction("copy-image")}
+                  >
+                    <CopyIcon aria-hidden="true" />
+                  </MediaBarButton>
+                ) : null}
+                <MediaBarButton
+                  label={isVideo ? gt("Save video") : gt("Save image")}
+                  disabled={unavailable}
+                  onClick={() => void runByteAction("save")}
                 >
-                  {showingAccessibilityDetails ? (
-                    <ImageGlyphIcon aria-hidden="true" />
-                  ) : (
-                    <TextGlyphIcon aria-hidden="true" />
-                  )}
-                </TooltipTrigger>
-                <TooltipPopup side="bottom">{contentsLabel}</TooltipPopup>
-              </Tooltip>
-            ) : item.source ? (
-              <SnapShotContentsButton source={item.source} side="bottom" />
-            ) : null}
-            {item.onCopySnapshot ? (
-              <SnapShotCopyButton onCopy={item.onCopySnapshot} side="bottom" />
-            ) : null}
-            {zoomable ? (
-              <div className="flex h-7 shrink-0 items-center rounded-control surface-well px-0.5 max-sm:hidden">
-                {/* aria-disabled keeps focus in the dialog when a click reaches a zoom limit, so arrow keys still navigate. */}
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost-muted"
-                  aria-label={gt("Zoom out")}
-                  aria-disabled={!view?.canZoomOut}
-                  onClick={() => zoomableImageRef.current?.zoomOut()}
-                >
-                  <MinusIcon aria-hidden="true" />
-                </Button>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost-muted"
-                  aria-label={gt("Zoom {percent}, reset to fit", { percent: zoomPercent })}
-                  aria-disabled={!view?.canZoomOut}
-                  onClick={() => zoomableImageRef.current?.resetZoom()}
-                >
-                  <span className="min-w-8 text-center tabular-nums">{zoomPercent}</span>
-                </Button>
-                <Button
-                  type="button"
-                  size="xs"
-                  variant="ghost-muted"
-                  aria-label={gt("Zoom in")}
-                  aria-disabled={!view?.canZoomIn}
-                  onClick={() => zoomableImageRef.current?.zoomIn()}
-                >
-                  <PlusIcon aria-hidden="true" />
-                </Button>
-              </div>
-            ) : null}
-            {item.type !== "video" ? (
-              <MediaBarButton
-                label={gt("Copy image")}
-                disabled={!canCopyImage}
-                onClick={() => void runByteAction("copy-image")}
-              >
-                <CopyIcon aria-hidden="true" />
-              </MediaBarButton>
-            ) : null}
-            <MediaBarButton
-              label={isVideo ? gt("Save video") : gt("Save image")}
-              disabled={unavailable}
-              onClick={() => void runByteAction("save")}
-            >
-              <DownloadIcon aria-hidden="true" />
-            </MediaBarButton>
-            {openExternally ? (
-              <MediaBarButton label={openExternally.label} onClick={openExternally.run}>
-                <ExternalLinkIcon aria-hidden="true" />
-              </MediaBarButton>
-            ) : null}
+                  <DownloadIcon aria-hidden="true" />
+                </MediaBarButton>
+                {openExternally ? (
+                  <MediaBarButton label={openExternally.label} onClick={openExternally.run}>
+                    <ExternalLinkIcon aria-hidden="true" />
+                  </MediaBarButton>
+                ) : null}
+              </>
+            )}
           </div>
           <MediaActions source={actionsSource} showTooltip={false}>
             <div className="max-w-[var(--media-width)]">
@@ -508,6 +606,20 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
                     if (item.src !== null) setNaturalSize({ src: item.src, ...size });
                   }}
                   onViewChange={setView}
+                  overlay={
+                    editTarget ? (
+                      <ImageAnnotationOverlay
+                        target={editTarget}
+                        toolbar={drawToolbar}
+                        onStatusChange={setEditStatus}
+                        onSaved={(edited) => {
+                          setEditedImages((current) => ({ ...current, [index]: edited }));
+                          exitEdit();
+                        }}
+                        onExit={exitEdit}
+                      />
+                    ) : undefined
+                  }
                 />
               )}
             </div>

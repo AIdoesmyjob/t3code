@@ -8,6 +8,10 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   NodeId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  ProviderUploadFeedbackError,
   RunId,
   RuntimeRequestId,
   ThreadId,
@@ -16,6 +20,8 @@ import {
   type AgentSessionImportInput,
   type IssueDetail,
   type IssueRef,
+  type OrchestrationV2ProviderThread,
+  type ProviderUploadFeedbackInput,
   type ThreadIssueLink,
 } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
@@ -27,6 +33,7 @@ import type * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { expect, it, vi } from "vite-plus/test";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 
@@ -115,7 +122,7 @@ function holdRpc<Input>(method: string, end: Effect.Effect<never, Error>) {
   return { calls, release, [Symbol.dispose]: () => answer[Symbol.dispose]() };
 }
 
-// The socket is the only fake layer; see test/appScenarios.renders.tsx.
+// The socket is the only fake layer.
 vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (importOriginal) => {
   const [actual, { fakeDriver }, Layer] = await Promise.all([
     importOriginal<{ readonly ConnectionDriver: Context.Key<unknown, FakeDriver> }>(),
@@ -176,7 +183,7 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
     url: "https://linear.app/example/issue/WEB-123/add-keyboard-support",
     source: "manual",
     linkedAt: "2026-01-01T00:00:00.000Z",
-    displayKey: issueRef.key,
+    displayKey: "#123",
     title: "Add keyboard support",
   };
   const completed = {
@@ -189,7 +196,22 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
   const grouped = threadWithHistory("issue-grouped", 1);
   using _environment = installFakeEnvironment([
     first,
-    { ...linked, issues: [issue] },
+    {
+      ...linked,
+      issues: [issue],
+      pullRequests: [
+        {
+          host: "github.com",
+          repository: "pingdotgg/t3code",
+          number: 124,
+          url: "https://github.com/pingdotgg/t3code/pull/124",
+          source: "manual",
+          linkedAt: "2026-01-01T00:00:00.000Z",
+          snapshot: null,
+          stack: null,
+        },
+      ],
+    },
     { ...grouped, issues: [completed, issue] },
   ]);
   const liveTitle = "Add keyboard shortcuts to the sidebar";
@@ -219,7 +241,7 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
         assignees: false,
         reactions: false,
         templates: false,
-        linkedPullRequests: false,
+        linkedPullRequests: !isCompleted,
         events: false,
         search: false,
       },
@@ -232,11 +254,25 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
       },
       states: [],
       viewer: null,
-      body: "",
+      body: isCompleted
+        ? ""
+        : Array.from({ length: 40 }, (_, index) => `Reproduction step ${index + 1}`).join("\n\n"),
       comments: [],
       commentsCursor: null,
       events: [],
-      linkedPullRequests: [],
+      linkedPullRequests: isCompleted
+        ? []
+        : [
+            {
+              repository: "pingdotgg/t3code",
+              number: 124,
+              url: "https://github.com/pingdotgg/t3code/pull/124",
+              title: "Fix keyboard shortcuts",
+              state: "open",
+              isDraft: false,
+              closesIssue: false,
+            },
+          ],
     } satisfies IssueDetail);
   });
   __setClientSettingsForTests({
@@ -256,10 +292,17 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
     name: `Issue ${issue.displayKey}: ${issue.title}, Open`,
   });
   await expect.element(badge).toBeVisible();
-  expect(badge.element().querySelector("svg")).toHaveClass(/text-success-foreground/);
+  expect(badge.element().querySelector("span")).toHaveClass(/text-success-foreground/);
+  expect(badge.element()).toHaveTextContent("123");
+  expect(badge.element()).not.toHaveTextContent("#");
+  const prBadge = page.getByRole("link", { name: "PR #124, status pending" });
+  await expect.element(prBadge).toHaveTextContent("124");
+  for (const control of [badge, prBadge]) {
+    expect(control.element().querySelector("span")).toHaveClass("contents", "tabular-nums");
+  }
   const groupedBadge = page.getByRole("button", { name: "2 linked issues" });
   await vi.waitFor(() =>
-    expect(groupedBadge.element().querySelector("svg")).toHaveClass(/text-success-foreground/),
+    expect(groupedBadge.element().querySelector("span")).toHaveClass(/text-success-foreground/),
   );
   await userEvent.hover(badge);
   const issueName = `Issue ${issue.displayKey}: ${liveTitle}`;
@@ -280,6 +323,20 @@ it("opens a linked Linear issue from an inactive thread's sidebar badge", async 
   await userEvent.click(issueRow);
   expect(router.history.location.pathname).toBe(`/${ENVIRONMENT_ID}/${linked.id}`);
   await expect.element(page.getByRole("heading", { name: liveTitle })).toBeVisible();
+  const linkedPr = page.getByRole("button", { name: /Fix keyboard shortcuts/ });
+  const issueScroller = () =>
+    linkedPr.element().closest<HTMLElement>("[data-pull-request-summary-scroll]")!;
+  const prRow = await linkedPr.findElement();
+  // The description opens collapsed; read all of it so the issue scrolls.
+  await userEvent.click(page.getByRole("button", { name: "Read more" }));
+  await expect.element(page.getByText("Reproduction step 40", { exact: true })).toBeVisible();
+  prRow.scrollIntoView({ block: "center" });
+  const issueScrollTop = issueScroller().scrollTop;
+  expect(issueScrollTop).toBeGreaterThan(0);
+  await userEvent.click(linkedPr);
+  await expect.element(linkedPr).not.toBeInTheDocument();
+  await userEvent.click(page.getByRole("button", { name: issue.key, exact: true }));
+  await vi.waitFor(() => expect(issueScroller().scrollTop).toBe(issueScrollTop));
   await act(() => useRightPanelStore.getState().close(scopeThreadRef(ENVIRONMENT_ID, linked.id)));
   await expect
     .element(
@@ -472,6 +529,8 @@ it("imports Pi conversations through the environment RPC and can retry a changed
     container: appContainer(),
     router: false,
   });
+  // Agent history is read only after "Find my projects".
+  await page.getByRole("button", { name: "Find my projects", exact: true }).click();
   await expect
     .element(page.getByRole("button", { name: "Review all 1", exact: true }))
     .toBeVisible();
@@ -494,7 +553,19 @@ it("imports Pi conversations through the environment RPC and can retry a changed
   changed = false;
   await router.navigate({ to: "/welcome" });
   await expect.element(page.getByRole("heading", { name: "Welcome to T3 Code" })).toBeVisible();
-  await page.getByText("Import projects and their threads", { exact: true }).click();
+  const findProjects = page.getByRole("button", { name: "Find my projects", exact: true });
+  const reviewAll = page.getByRole("button", { name: "Review all 1", exact: true });
+  const importRow = page.getByText("Import projects and their threads", { exact: true });
+  await vi.waitFor(() => {
+    if (!findProjects.query() && !reviewAll.query() && !importRow.query())
+      throw new Error("waiting");
+  });
+  if (findProjects.query()) await findProjects.click();
+  await vi.waitFor(() => {
+    if (!reviewAll.query() && !importRow.query()) throw new Error("waiting");
+  });
+  if (reviewAll.query()) await reviewAll.click();
+  await importRow.click();
   await page.getByRole("button", { name: "Import threads and start", exact: true }).click();
   await expect
     .element(page.getByText("Imported 2 threads. 1 thread could not be imported.", { exact: true }))
@@ -1152,6 +1223,49 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   expect(sidePaneOpen()).toBe(true);
 });
 
+it("Cmd+W closes the selected right-panel tabs together", async () => {
+  await page.viewport(1280, 800);
+  const thread = threadWithHistory("thread-close-selected-tabs", 1);
+  using _environment = installFakeEnvironment([thread]);
+  using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  appAtomRegistry.reset();
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const threadRef = scopeThreadRef(ENVIRONMENT_ID, thread.id);
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+  await expect
+    .element(page.getByRole("button", { name: new RegExp(`^Thread actions for `) }))
+    .toHaveAttribute("aria-pressed", "true");
+  await act(() => {
+    const panels = useRightPanelStore.getState();
+    panels.open(threadRef, "diff");
+    panels.openFile(threadRef, "notes.md");
+    panels.openFile(threadRef, "routes.ts");
+  });
+
+  const tab = (name: string) => page.getByRole("button", { name, exact: true });
+  await expect.element(tab("notes.md")).toBeVisible();
+  await userEvent.click(tab("notes.md"), { modifiers: ["Shift"] });
+  await expect.element(tab("notes.md")).toHaveAttribute("aria-pressed", "true");
+  await userEvent.keyboard("{Meta>}w{/Meta}");
+  await expect.element(tab("notes.md")).not.toBeInTheDocument();
+  await expect.element(tab("routes.ts")).not.toBeInTheDocument();
+  await expect.element(tab("Diff")).toHaveAttribute("aria-pressed", "true");
+
+  await userEvent.keyboard("{Meta>}w{/Meta}");
+  await expect.element(tab("Diff")).not.toBeInTheDocument();
+});
+
 it("selecting a side-chat tab focuses that side chat's composer", async () => {
   const parent = threadWithHistory("focus-parent", 1);
   // The shell loaded by the file's first test stays; a family read serves side chats added later.
@@ -1244,6 +1358,81 @@ it("a subagent tab shows its read-only bar under no header of its own", async ()
   await expect
     .element(screen.getByRole("textbox", { name: `Message ${parent.title}`, exact: true }))
     .toBeVisible();
+});
+
+it("/feedback with a pending reply runs as feedback and keeps the reply when the upload fails", async () => {
+  // The redesign folds the composer at phone widths, which hides its editor.
+  await page.viewport(1400, 900);
+  const history = threadWithHistory("feedback-reply", 1);
+  const at = DateTime.makeUnsafe("2026-03-17T19:12:28.000Z");
+  // Without an active provider thread, `/feedback` asks for a first message instead.
+  const providerThread: OrchestrationV2ProviderThread = {
+    id: ProviderThreadId.make("provider-thread-feedback"),
+    driver: ProviderDriverKind.make("codex"),
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerSessionId: null,
+    appThreadId: history.id,
+    ownerNodeId: null,
+    nativeThreadRef: null,
+    nativeConversationHeadRef: null,
+    status: "idle",
+    firstRunOrdinal: 1,
+    lastRunOrdinal: 1,
+    handoffIds: [],
+    forkedFrom: null,
+    pendingBackgroundTasks: [],
+    contextUsage: null,
+    nativeMetadata: null,
+    goal: null,
+    createdAt: at,
+    updatedAt: at,
+  };
+  const thread = { ...history, providerThreads: [providerThread] };
+  // The upload queues behind the thread's visit command, which must be answered.
+  using _environment = installFakeEnvironment([thread], { acceptCommands: true });
+  const uploads: ProviderUploadFeedbackInput[] = [];
+  using _upload = answerRpc(
+    WS_METHODS.providerUploadFeedback,
+    (input: ProviderUploadFeedbackInput) => {
+      uploads.push(input);
+      return Effect.fail(new ProviderUploadFeedbackError({ threadId: input.threadId }));
+    },
+  );
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
+  await page.getByRole("button", { name: "Reply to this response" }).first().click();
+  const replyBar = page.getByText("Replying to", { exact: true });
+  await expect.element(replyBar).toBeVisible();
+  const running = { ...thread.runs[0]!, status: "running" as const, completedAt: null };
+  await act(() => emitThreadEvent(thread.id, { type: "run.updated", payload: running }));
+  await expect.element(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
+
+  const editor = page.getByTestId("composer-editor");
+  await userEvent.click(editor);
+  await insertText("/feedback slow");
+  // Pressing it runs feedback, so it does not offer to steer the running turn.
+  await expect.element(page.getByRole("button", { name: "Submit message" })).toBeVisible();
+  await userEvent.keyboard("{Enter}");
+
+  await vi.waitFor(() => expect(uploads).toEqual([{ threadId: thread.id, reason: "slow" }]));
+  await expect
+    .element(page.getByText("Could not send feedback to OpenAI", { exact: false }).first())
+    .toBeVisible();
+  // The redesign shows the error notice first and keeps the reply behind the "+1" notices button.
+  await page.getByRole("button", { name: "1 other notice" }).click();
+  await expect.element(replyBar).toBeVisible();
+  expect(editor.element().textContent).toBe("");
 });
 
 it("/side sends the draft's attachments and context, and keeps them when it does not start", async () => {
@@ -1343,4 +1532,167 @@ it("/side sends the draft's attachments and context, and keeps them when it does
       "/side what is this?",
     ]),
   );
+});
+
+it("opening Settings without a page event closes the composer model picker and permissions menu", async () => {
+  using _environment = installFakeEnvironment([]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const draftId = DraftId.make("draft-29219");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+      threadId: ThreadId.make("thread-29219"),
+    });
+
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+  const trigger = document.querySelector<HTMLElement>("[data-chat-provider-model-picker]");
+  if (!trigger) throw new Error("composer model picker trigger missing");
+  await userEvent.click(trigger);
+  const search = page.getByPlaceholder("Search models...");
+  await expect.element(search).toBeVisible();
+
+  // The desktop menu's open-settings accelerator navigates with no key or pointer event in the page.
+  await act(() => router.navigate({ to: "/settings" }));
+  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expect.element(search).not.toBeInTheDocument();
+
+  await act(() => router.navigate({ to: "/draft/$draftId", params: { draftId } }));
+  await page.getByRole("button", { name: /^Permissions: / }).click();
+  // The modal Settings dialog aria-hides everything outside it, so match text, not role.
+  const permissions = page.getByText("Allow commands and edits without prompts.").last();
+  await expect.element(permissions).toBeVisible();
+  await act(() => router.navigate({ to: "/settings" }));
+  await expect.element(page.getByRole("dialog", { name: "Settings" })).toBeVisible();
+  await expect.element(permissions).not.toBeInTheDocument();
+});
+
+it("a new thread on a branch with changes opens them from thread details", async () => {
+  using _environment = installFakeEnvironment([]);
+  using _status = answerRpc(WS_METHODS.subscribeVcsStatus, () =>
+    Stream.concat(
+      Stream.make({
+        _tag: "snapshot" as const,
+        local: {
+          isRepo: true,
+          hasPrimaryRemote: false,
+          isDefaultRef: false,
+          refName: "feature",
+          hasWorkingTreeChanges: false,
+          workingTree: { files: [], insertions: 0, deletions: 0 },
+          branchChanges: { baseRef: "main", insertions: 150, deletions: 97 },
+        },
+        remote: null,
+      }),
+      Stream.never,
+    ),
+  );
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const draftId = DraftId.make("draft-43905");
+  useComposerDraftStore
+    .getState()
+    .setProjectDraftThreadId(scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID), draftId, {
+      threadId: ThreadId.make("thread-43905"),
+      // Its own checkout, so the status subscription is this test's and not an earlier one's.
+      worktreePath: "/workspace/render-43905",
+    });
+
+  const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
+  await router.load();
+  await using _app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    router: false,
+  });
+  const changesRow = page.getByRole("button", { name: /^Changes\s*vs main\s*\+150/ });
+  // The row already shows the branch's totals, so it has to open them.
+  await expect.element(changesRow).toBeEnabled();
+
+  await changesRow.click();
+  // The panel reads the draft's checkout; without one it asks for a thread instead.
+  await expect.element(page.getByText("Loading changes...")).toBeVisible();
+});
+
+async function renderRunningThread(name: string) {
+  const thread = threadWithHistory(name, 1);
+  const environment = installFakeEnvironment([thread], { acceptCommands: true });
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  const app = await render(<AppRoot router={router} />, {
+    // AppRoot brings its own router.
+    container: appContainer(),
+    router: false,
+  });
+  await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
+  const running = { ...thread.runs[0]!, status: "running" as const, completedAt: null };
+  await act(() => emitThreadEvent(thread.id, { type: "run.updated", payload: running }));
+  await expect.element(page.getByRole("button", { name: "Stop generation" })).toBeVisible();
+  // The redesign keeps a new-thread composer mounted beside the thread's own.
+  const editor = page.getByRole("textbox", { name: `Message ${thread.title}`, exact: true });
+  return {
+    editor,
+    // The thread's own composer, for its buttons.
+    composer: () => page.elementLocator(editor.element().closest("form")!),
+    [Symbol.asyncDispose]: async () => {
+      await app[Symbol.asyncDispose]();
+      environment[Symbol.dispose]();
+    },
+  };
+}
+
+it("/clear after an unresolved context reference shows plain send during a running turn", async () => {
+  await using _viewport = await appViewport();
+  await using view = await renderRunningThread("clear-dangling-reference");
+  await userEvent.click(view.editor);
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", "[Reply](t3-context://v1/response/response_gone) ");
+  view.editor
+    .element()
+    .dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+  await insertText("/clear ");
+
+  // Enter strips the reference and runs `/clear` locally, so it must not offer to steer.
+  await expect
+    .element(view.composer().getByRole("button", { name: "Submit message" }))
+    .toBeVisible();
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByText("Your next message starts a fresh session")).toBeVisible();
+});
+
+it("/clear with a still-compressing image offers to steer or queue during a running turn", async () => {
+  await using _viewport = await appViewport();
+  await using view = await renderRunningThread("clear-compressing-image");
+  const compressed = Promise.withResolvers<void>();
+  compression.gate = compressed.promise;
+  using _compression = { [Symbol.dispose]: () => (compression.gate = null) };
+  using _uploads = acceptAttachmentUploads();
+  await userEvent.click(view.editor);
+  await insertText("/clear ");
+  const clipboardData = new DataTransfer();
+  clipboardData.items.add(new File([PNG], "shot.png", { type: "image/png" }));
+  view.editor
+    .element()
+    .dispatchEvent(new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }));
+
+  // Enter waits for the image and sends `/clear` with it to the agent, not as a local command.
+  await expect
+    .element(view.composer().getByRole("button", { name: /^(Steer|Queue) message$/ }))
+    .toBeVisible();
+  compressed.resolve();
 });

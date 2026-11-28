@@ -70,6 +70,8 @@ vi.mock("../state/session", () => ({
   environmentSession: { sessionStateAtom: "session" },
   readEnvironmentScope: (environmentId: string, scope: string) =>
     state.scopes.get(environmentId)?.has(scope) === true,
+  readEnvironmentScopeDenied: (environmentId: string, scope: string) =>
+    state.scopes.get(environmentId)?.has(scope) !== true,
 }));
 vi.mock("../state/use-atom-command", () => ({
   useAtomCommand:
@@ -180,6 +182,10 @@ vi.mock("../lib/composerDraftUploads", () => ({
 }));
 vi.mock("../localApi", () => ({
   readLocalApi: () => ({ dialogs: { confirm: state.confirm } }),
+}));
+vi.mock("../lib/workspaceFocus", () => ({
+  readWorkspaceFocusTarget: () => null,
+  requestWorkspaceFocus: () => {},
 }));
 vi.mock("../threadRoutes", () => ({
   resolveThreadRouteRef: () => null,

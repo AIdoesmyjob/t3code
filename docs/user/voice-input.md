@@ -18,9 +18,9 @@ In **Settings → Voice → Transcription**, filter by language, download a mode
 
 ## Dictate and shortcuts
 
-- Press the microphone button or `mod+shift+d` to start/stop (`Esc` discards; max recording length: **5 minutes**).
+- Press the microphone button or `mod+shift+d` to start (`Esc` discards; max recording length: **5 minutes**). While recording, the microphone shows live bars and Send becomes Stop; press the shortcut again, the bars, or Stop to finish.
 - Configure tap vs. hold behavior in **Settings → Voice → Dictation shortcut** (**Auto**, **Hold**, or **Toggle**), or remap the chord in [Keybindings](./keybindings.md).
-- Pressing **Send** (or Save/Comment/Submit) while recording finishes transcription and submits automatically.
+- Using your send shortcut (or Save/Comment/Submit in other editors) while recording finishes transcription and submits automatically.
 
 ## Improve recognition and cleanup
 

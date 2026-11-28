@@ -359,11 +359,7 @@ export function WorkflowRunsView({
                     <T>All kinds</T>
                   </SelectItem>
                   {kinds.map((candidate) => (
-                    <SelectItem
-                      key={candidate.kind}
-                      value={candidate.kind}
-                      aria-label={`${kindLabel(candidate)} ${candidate.count}`}
-                    >
+                    <SelectItem key={candidate.kind} value={candidate.kind}>
                       <span className="flex w-full items-center gap-2">
                         <span className="min-w-0 flex-1 truncate">{kindLabel(candidate)}</span>
                         <span className="text-muted-foreground tabular-nums">
@@ -376,14 +372,13 @@ export function WorkflowRunsView({
               </Select>
             )}
             {kinds.length === 0 || kind !== EVERY_KIND ? null : (
-              <p className="flex flex-wrap gap-x-3 px-1 text-meta text-muted-foreground">
-                {kinds.flatMap((candidate, index) => [
-                  ...(index === 0 ? [] : [" "]),
-                  <span
-                    key={kindLabel(candidate)}
-                  >{`${kindLabel(candidate)} ${candidate.count}`}</span>,
-                ])}
-              </p>
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 px-1 text-meta text-muted-foreground">
+                {kinds.map((candidate) => (
+                  <span key={candidate.kind}>
+                    {kindLabel(candidate)} {candidate.count}
+                  </span>
+                ))}
+              </div>
             )}
             {section === null ? null : (
               <p className="px-1 text-meta text-muted-foreground">
@@ -484,7 +479,7 @@ function WorkflowRunListItem({
   const about = run.subject;
   const m = useMessages();
   return (
-    <li>
+    <li className={cn("rounded-row", current ? "surface-selected" : undefined)}>
       <ContentButton
         aria-current={current ? "true" : undefined}
         className="group/run block w-full cursor-pointer text-left"
@@ -493,7 +488,7 @@ function WorkflowRunListItem({
         <span
           className={cn(
             "flex w-full flex-col gap-0.5 rounded-row px-2.5 py-2 group-focus-visible/run:ring-2 group-focus-visible/run:ring-ring/70 group-focus-visible/run:ring-inset",
-            current ? "surface-selected" : "group-hover/run:surface-ghost-hover",
+            current ? undefined : "group-hover/run:surface-ghost-hover",
           )}
         >
           <span className="flex min-w-0 items-center gap-1.5 text-meta text-muted-foreground">
@@ -511,7 +506,7 @@ function WorkflowRunListItem({
         </span>
       </ContentButton>
       {about === undefined ? null : (
-        <div className="flex min-w-0 px-2 pb-1.5">
+        <div className="flex min-w-0 px-2.5 pb-2">
           <WorkflowReferenceChip
             reference={about}
             small

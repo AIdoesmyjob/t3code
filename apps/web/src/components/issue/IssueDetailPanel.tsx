@@ -3,6 +3,7 @@ import { issueEventSentence, issueWriteAccess } from "@t3tools/client-runtime/is
 import { createIssueCommentPager } from "@t3tools/client-runtime/state/issues";
 import {
   issueAssigneeHeld,
+  issueAssigneeSearchView,
   issueAssigneesAfterPicks,
   issueLabelsAfterPicks,
   issuePicksAfterFailedWrite,
@@ -35,7 +36,7 @@ import {
   UserPlusIcon,
 } from "lucide-react";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
-import { useContext, useState, type ReactNode } from "react";
+import { useContext, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -44,6 +45,7 @@ import { readLocalApi } from "~/localApi";
 import { issueEnvironment, refreshIssueLists } from "~/state/issues";
 import { useProjects } from "~/state/entities";
 import { useEnvironmentQuery } from "~/state/query";
+import { useDebouncedValue } from "~/state/queries";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 
@@ -52,6 +54,7 @@ import { Badge } from "../ui/badge";
 import { Button, InlineButton } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { LRUCache } from "~/lib/lruCache";
 import { cn } from "~/lib/utils";
 import { PULL_REQUEST_ROW_CLASS } from "../pullRequest/PullRequestListRow";
 import {
@@ -64,11 +67,13 @@ import {
   WorkItemCommentCard,
   WorkItemCommentIdentity,
 } from "../pullRequest/PullRequestSummaryTab";
+import { holdScrollTop } from "../pullRequest/holdLinkedNodeInView";
 import { toastManager } from "../ui/toast";
 import { PullRequestCandidatePicker } from "../pullRequest/PullRequestCandidatePicker";
 import { PullRequestCommentBody } from "../pullRequest/PullRequestCommentBody";
 import { WorkItemDetailCrumbs } from "../pullRequest/PullRequestDetailCrumbs";
 import { PullRequestEditButton } from "../pullRequest/PullRequestEditButton";
+import { PullRequestMarkdownPanelContext } from "../pullRequest/PullRequestMarkdown";
 import { PullRequestMarkdownEditor } from "../pullRequest/PullRequestMarkdownEditor";
 import { PullRequestReviewEntry } from "../pullRequest/PullRequestQuietEntries";
 import { WorkItemTitleEditor } from "../pullRequest/PullRequestTitleEditor";
@@ -148,7 +153,7 @@ function IssueLabelPicker({
   );
   const update = useAtomCommand(issueEnvironment.update, { reportFailure: false });
   const applied = new Set(detail.labels.map((label) => label.name));
-  const needle = query.toLowerCase();
+  const needle = query.trim().toLowerCase();
   const candidates = (candidatesQuery.data?.labels ?? []).filter(
     (label) =>
       needle.length === 0 ||
@@ -269,14 +274,23 @@ function IssueAssigneePicker({
   const candidatesQuery = useEnvironmentQuery(
     open ? issueEnvironment.candidates({ environmentId, input: reference }) : null,
   );
-  const update = useAtomCommand(issueEnvironment.update, { reportFailure: false });
-  const needle = query.toLowerCase();
-  const candidates = (candidatesQuery.data?.assignees ?? []).filter(
-    (candidate) =>
-      needle.length === 0 ||
-      candidate.login.toLowerCase().includes(needle) ||
-      (candidate.name ?? "").toLowerCase().includes(needle),
+  const debouncedQuery = useDebouncedValue(query.trim(), 250);
+  const searchable = candidatesQuery.data?.assigneeSearch === true;
+  const hostQuery = searchable && debouncedQuery.length > 0 ? debouncedQuery : null;
+  const search = useEnvironmentQuery(
+    open && hostQuery !== null
+      ? issueEnvironment.candidates({ environmentId, input: { ...reference, query: hostQuery } })
+      : null,
   );
+  const view = issueAssigneeSearchView({
+    loaded: candidatesQuery.data?.assignees ?? [],
+    searchable,
+    query,
+    debouncedQuery,
+    search,
+  });
+  const update = useAtomCommand(issueEnvironment.update, { reportFailure: false });
+  const candidates = view.candidates;
   const onOpenChange = (nextOpen: boolean) => {
     setOpen(nextOpen);
     if (nextOpen) {
@@ -321,8 +335,8 @@ function IssueAssigneePicker({
       query={query}
       onQueryChange={setQuery}
       searchLabel={gt("Search people")}
-      isPending={candidatesQuery.isPending && candidatesQuery.data === null}
-      error={candidatesQuery.data === null ? candidatesQuery.error : null}
+      isPending={(candidatesQuery.isPending && candidatesQuery.data === null) || view.pending}
+      error={candidatesQuery.data === null ? candidatesQuery.error : view.error}
       candidates={candidates}
       emptyLabel={gt("Nobody can be assigned here.")}
       noMatchLabel={gt("Nobody matches that.")}
@@ -436,6 +450,8 @@ function IssueEventText({
   );
 }
 
+const issueScrollPositions = new LRUCache<number>(128, 64 * 1024);
+
 export function IssueDetailPanel({
   environmentId,
   reference,
@@ -481,6 +497,31 @@ export function IssueDetailPanel({
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [changingState, setChangingState] = useState(false);
+  const listPanelRef = useContext(PullRequestMarkdownPanelContext);
+  const panelRef = threadRef ?? listPanelRef;
+  const scrollKey =
+    detail === null
+      ? null
+      : JSON.stringify([
+          panelRef.environmentId,
+          panelRef.threadId,
+          environmentId,
+          reference.projectId,
+          detail.url,
+        ]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const restoringScroll = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- restores the issue scroller before paint, including when detail loads after a remount
+  useLayoutEffect(() => {
+    const scroller = scrollRef.current;
+    if (scrollKey === null || scroller === null) return;
+    const scrollTop = issueScrollPositions.get(scrollKey) ?? 0;
+    if (scrollTop === 0) return;
+    restoringScroll.current = true;
+    return holdScrollTop(scroller, scrollTop, () => {
+      restoringScroll.current = false;
+    });
+  }, [scrollKey]);
 
   if (detail === null) {
     if (detailQuery.error !== null && !detailQuery.isPending) {
@@ -636,9 +677,13 @@ export function IssueDetailPanel({
         <MenuItem
           disabled={detailQuery.isPending}
           onClick={() =>
-            void pager.refresh(registry, () =>
-              executeAtomQuery(registry, detailAtom, { refresh: true, reportFailure: false }),
-            )
+            void pager.refresh(registry, () => {
+              issueEnvironment.oweDetailRefresh(registry, detailAtom);
+              return executeAtomQuery(registry, detailAtom, {
+                refresh: true,
+                reportFailure: false,
+              });
+            })
           }
         >
           <RefreshIcon size="sm" refreshing={detailQuery.isPending} />
@@ -724,7 +769,11 @@ export function IssueDetailPanel({
             }}
           />
           <div className="flex min-h-5 min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-meta text-muted-foreground">
-            <PullRequestActorLabel actor={detail.author} profileUrl={profileUrl(detail.author)} />
+            <PullRequestActorLabel
+              actor={detail.author}
+              profileUrl={profileUrl(detail.author)}
+              threadRef={threadRef}
+            />
             <span className="shrink-0">
               <T>
                 opened <Var>{formatRelativeTimeLabel(detail.createdAt, undefined, messages)}</Var>
@@ -747,6 +796,16 @@ export function IssueDetailPanel({
       </div>
 
       <div
+        ref={scrollRef}
+        onScroll={(event) => {
+          if (scrollKey !== null && !restoringScroll.current) {
+            issueScrollPositions.set(
+              scrollKey,
+              event.currentTarget.scrollTop,
+              8 + scrollKey.length * 2,
+            );
+          }
+        }}
         className={cn(
           "min-h-0 flex-1 overflow-y-auto",
           // Room for the floating comment button, so the last comment can scroll clear of it.
@@ -762,6 +821,16 @@ export function IssueDetailPanel({
             </Alert>
           </div>
         ) : null}
+
+        <div className="px-4">
+          <WorkflowRunsAbout
+            environmentId={environmentId}
+            item={{
+              subject: detail.url,
+              issue: { ...reference, host: reference.host ?? detail.host },
+            }}
+          />
+        </div>
 
         <PullRequestSection
           key={`description:${detail.url}`}
@@ -826,13 +895,6 @@ export function IssueDetailPanel({
               />
             </div>
           ) : null}
-          <WorkflowRunsAbout
-            environmentId={environmentId}
-            item={{
-              subject: detail.url,
-              issue: { ...reference, host: reference.host ?? detail.host },
-            }}
-          />
           <WorkItemFacts
             facts={[
               detail.labels.length > 0 || detail.capabilities.labels
@@ -870,7 +932,13 @@ export function IssueDetailPanel({
                     people: true,
                     values: detail.assignees.map((actor) => ({
                       key: actor.login,
-                      node: <PullRequestActorLabel actor={actor} profileUrl={profileUrl(actor)} />,
+                      node: (
+                        <PullRequestActorLabel
+                          actor={actor}
+                          profileUrl={profileUrl(actor)}
+                          threadRef={threadRef}
+                        />
+                      ),
                     })),
                     control: canAssign ? (
                       <IssueAssigneePicker
@@ -952,7 +1020,15 @@ export function IssueDetailPanel({
                       profileUrl={profileUrl(item.comment.author)}
                       createdAt={item.comment.createdAt}
                       url={item.comment.url}
+                      threadRef={threadRef}
                     />
+                  }
+                  actions={
+                    item.comment.internal ? (
+                      <Badge size="sm" variant="warning">
+                        {gt("Internal note")}
+                      </Badge>
+                    ) : undefined
                   }
                   reactions={
                     item.comment.reactions !== undefined ? (
@@ -1007,6 +1083,7 @@ export function IssueDetailPanel({
             environmentId={environmentId}
             reference={reference}
             blocked={canComment ? null : (blocked ?? gt("You cannot comment here."))}
+            audiences={detail.commentAudiences === true}
           />
         </div>
       ) : null}

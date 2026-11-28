@@ -60,6 +60,8 @@ import {
   pullRequestLinkSubject,
   writePullRequestDetailSnapshot,
   readableFailure,
+  samePullRequestReadExceptStamps,
+  seenPullRequestHead,
 } from "./pullRequestDetail.logic";
 import type { ReviewCommentContext } from "~/reviewCommentContext";
 
@@ -362,6 +364,10 @@ describe("pull request timeline rail", () => {
       ["Keep `[!NOTE]` in the file.", "Keep [!NOTE] in the file."],
       ["> [!NOTE]\n> Real alert.", "Real alert."],
       ["Keep [!WARNING] in prose.", "Keep [!WARNING] in prose."],
+      [
+        "Checked the cache first[^1] and it was stale.\n\n[^1]: Redis TTL is 60s.",
+        "Checked the cache first and it was stale.",
+      ],
     ] as const) {
       expect(
         pullRequestLinkSubject(`${pr}#issuecomment-5`, {
@@ -1659,18 +1665,34 @@ describe("pull request panel context beside a thread", () => {
     expect(pullRequestPanelContext(thread, surface(2))).toBe("page");
   });
 
-  it("falls back to the legacy fields only for a thread with no link list", () => {
+  it("falls back to the legacy fields only for a thread with no link list and matches the repository case-insensitively", () => {
     const legacy = {
       projectId: "proj-a",
       repository: "pingdotgg/t3code",
       number: 3,
       url: "https://github.com/pingdotgg/t3code/pull/3",
     };
+    const mixedCaseLegacy = {
+      ...legacy,
+      repository: "PingDotGG/T3Code",
+    };
     expect(
       pullRequestPanelContext({ projectId: "proj-a", linkedPullRequest: legacy }, surface(3)),
     ).toBe("thread");
     expect(
       pullRequestPanelContext({ projectId: "proj-a", branchPullRequest: legacy }, surface(3)),
+    ).toBe("thread");
+    expect(
+      pullRequestPanelContext(
+        { projectId: "proj-a", linkedPullRequest: legacy },
+        surface(3, { repository: "PingDotGG/T3Code" }),
+      ),
+    ).toBe("thread");
+    expect(
+      pullRequestPanelContext(
+        { projectId: "proj-a", branchPullRequest: mixedCaseLegacy },
+        surface(3),
+      ),
     ).toBe("thread");
     expect(pullRequestPanelContext({ projectId: "proj-a", pullRequests: [] }, surface(3))).toBe(
       "page",
@@ -2063,6 +2085,19 @@ describe("single-PR merge compatibility during stack discovery", () => {
   );
 });
 
+describe("seenPullRequestHead", () => {
+  it("takes the first settled head and keeps it until another pull request is shown", () => {
+    // A stored answer paints before the read settles, and is not what the reader ends up seeing.
+    const loading = seenPullRequestHead(null, "pr-1", undefined);
+    expect(loading).toEqual({ key: "pr-1", sha: undefined });
+    const seen = seenPullRequestHead(loading, "pr-1", "a");
+    expect(seen).toEqual({ key: "pr-1", sha: "a" });
+    expect(seenPullRequestHead(seen, "pr-1", "b")).toBe(seen);
+    expect(seenPullRequestHead(seen, "pr-1", undefined)).toBe(seen);
+    expect(seenPullRequestHead(seen, "pr-2", "c")).toEqual({ key: "pr-2", sha: "c" });
+  });
+});
+
 describe("readableFailure", () => {
   it("replaces a host tool's bare failure with the hint, for every host", () => {
     for (const message of [
@@ -2075,5 +2110,35 @@ describe("readableFailure", () => {
     expect(readableFailure(new Error("Branch is protected."), "Try again.")).toBe(
       "Branch is protected.",
     );
+  });
+});
+
+describe("samePullRequestReadExceptStamps", () => {
+  const read = {
+    title: "Fix it",
+    observedAt: 1,
+    checks: [{ name: "ci", state: "success", readAt: 1 }],
+    comments: [{ id: "1", body: "ok" }],
+  };
+
+  it("treats a refresh that only restamps the read as the same", () => {
+    expect(
+      samePullRequestReadExceptStamps(read, {
+        ...read,
+        observedAt: 2,
+        checks: [{ ...read.checks[0], readAt: 2 }],
+      }),
+    ).toBe(true);
+  });
+
+  it("sees any other change", () => {
+    expect(samePullRequestReadExceptStamps(read, { ...read, title: "Fix it again" })).toBe(false);
+    expect(
+      samePullRequestReadExceptStamps(read, {
+        ...read,
+        comments: [...read.comments, { id: "2", body: "more" }],
+      }),
+    ).toBe(false);
+    expect(samePullRequestReadExceptStamps(read, { ...read, draft: true })).toBe(false);
   });
 });

@@ -2,6 +2,7 @@ import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { useAtomValue } from "@effect/atom-react";
+import type { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { Atom } from "effect/reactivity";
 import {
   USAGE_CONTRACT_VERSION,
@@ -87,6 +88,7 @@ import {
 } from "../WorkspaceBreadcrumb";
 import { PageEmptyState } from "../PageEmptyState";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
+import { UsageAccessQuestion, type UsageAccessPrompt } from "./UsageAccessDialog";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -214,6 +216,7 @@ export function UsagePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
+  const modalActionsRef = useRef<DialogPrimitive.Root.Actions | null>(null);
   const [priceDialog, setPriceDialog] = useState<{ readonly model?: string } | null>(null);
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
@@ -240,6 +243,15 @@ export function UsagePage() {
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
+
+  const accessPrompts: UsageAccessPrompt[] = selectedEnvironments.flatMap((environment) =>
+    environment.accessRequests.map((request) => ({
+      environmentId: environment.environmentId,
+      environmentLabel: environment.label,
+      instanceId: request.instanceId,
+      driver: request.driver,
+    })),
+  );
 
   const canReadDiagnostics = selectedEnvironments.some(
     (environment) => environment.canReadDiagnostics,
@@ -271,7 +283,7 @@ export function UsagePage() {
           if (presentation.connection.phase === "connected" && presentation.serverConfig !== null) {
             return refreshUsageLimits(
               environmentId,
-              () => refreshProviders({ environmentId, input: {} }),
+              () => refreshProviders({ environmentId, input: { limitsOnly: true } }),
               automatic,
             );
           }
@@ -292,6 +304,12 @@ export function UsagePage() {
       return;
 
     const command = resolveUsageShortcut(event, keybindings);
+    if (command === "usage.open") {
+      event.preventDefault();
+      event.stopPropagation();
+      modalActionsRef.current?.close();
+      return;
+    }
     const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
     const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
     if (!metricOption && !periodOption) return;
@@ -302,7 +320,7 @@ export function UsagePage() {
     if (periodOption && !showingLimits) selectWindow(periodOption.days);
   });
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- window capture keydown listener for usage metric and period shortcuts
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- window capture keydown listener for usage metric, period, and close shortcuts
   useEffect(() => {
     globalThis.window.addEventListener("keydown", onUsageKeyDown, true);
     return () => globalThis.window.removeEventListener("keydown", onUsageKeyDown, true);
@@ -520,7 +538,7 @@ export function UsagePage() {
   );
 
   return (
-    <AppRouteModal label={gt("Usage")} variant="app-panel">
+    <AppRouteModal label={gt("Usage")} variant="app-panel" actionsRef={modalActionsRef}>
       <div data-app-modal-pane="" className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 ps-5 pe-2">
           {topbarContent}
@@ -532,7 +550,9 @@ export function UsagePage() {
             width="wide"
             className="@container/usage-page max-w-[1040px] gap-5 pt-5.5"
           >
-            {selectedEnvironments.length === 0 ? (
+            {accessPrompts.length > 0 ? (
+              <UsageAccessQuestion prompts={accessPrompts} />
+            ) : selectedEnvironments.length === 0 ? (
               <PageEmptyState
                 fill
                 icon={<ServerIcon />}
@@ -773,13 +793,10 @@ function UsageOverview({
               <Tooltip>
                 <TooltipTrigger render={<span tabIndex={0} />}>
                   <span className={figureClass(loadingPartial)}>
-                    {gt(
-                      "{count, plural, one {{formatted} sessions} other {{formatted} sessions}}",
-                      {
-                        count: merged.sessions,
-                        formatted: formatCount(merged.sessions, locale),
-                      },
-                    )}
+                    {gt("{count, plural, one {{formatted} session} other {{formatted} sessions}}", {
+                      count: merged.sessions,
+                      formatted: formatCount(merged.sessions, locale),
+                    })}
                   </span>
                 </TooltipTrigger>
                 <TooltipPopup>

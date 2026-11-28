@@ -36,12 +36,15 @@ import { type CommandHandler, registerCommands } from "./dispatcher";
 
 import {
   closeLayoutTabByUser,
+  closeLayoutTabsByUser,
   focusAdjacentLayoutTab,
   openLayoutNewTab,
   toggleFocusedLayoutFill,
+  toggleFocusedSidePaneFill,
 } from "../layout/layoutActions";
+import { readSelectedLayoutTabIds } from "../layout/paneTabSelection";
 import { useLayoutStore } from "../layout/layoutStore";
-import { selectFocusedTab } from "../layout/layoutModel";
+import { selectFocusedPane, selectFocusedTab } from "../layout/layoutModel";
 import { isModalDialogOpen } from "../lib/modalDialog";
 
 const CHAT_ROUTE_ID = "/_chat";
@@ -180,9 +183,21 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       "layout.splitRight": layoutCommand(() => openLayoutNewTab("new-column")),
       "layout.splitDown": layoutCommand(() => openLayoutNewTab("split-down")),
       "layout.fill": layoutCommand(toggleFocusedLayoutFill),
+      "rightPanel.toggleMaximized": (event) => {
+        if (!layoutShowing() || (!event.repeat && !toggleFocusedSidePaneFill())) return false;
+        claim(event);
+      },
       "tab.close": (event) => {
         if (router.state.location.search.pane !== 1 || event.repeat) return false;
-        const focused = selectFocusedTab(useLayoutStore.getState().layout);
+        const layout = useLayoutStore.getState().layout;
+        const focusedPane = selectFocusedPane(layout);
+        const selected = focusedPane ? readSelectedLayoutTabIds(focusedPane.id) : [];
+        if (selected.length >= 2) {
+          claim(event);
+          closeLayoutTabsByUser(selected);
+          return;
+        }
+        const focused = selectFocusedTab(layout);
         if (!focused) return false;
         claim(event);
         closeLayoutTabByUser(focused.id);
@@ -249,7 +264,13 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
       "preview.zoomIn": zoomCommand("zoom-in"),
       "preview.zoomOut": zoomCommand("zoom-out"),
       "preview.resetZoom": zoomCommand("reset-zoom"),
-      "preview.find": previewCommand("find"),
+      // Unclaimed, the browser's own find runs when no thread handles panel find.
+      "preview.find": (event) => {
+        const environmentId = readRouteEnvironmentId();
+        if (!environmentId || !canOperatePreview(environmentId)) return false;
+        claim(event);
+        dispatchPreviewAction("find");
+      },
     },
     {
       when: () =>

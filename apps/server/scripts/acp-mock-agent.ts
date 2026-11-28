@@ -18,9 +18,9 @@ import { beginAcpMockPrompt } from "./acpMockCancellationState.ts";
 
 const requestLogPath = process.env.T3_ACP_REQUEST_LOG_PATH;
 const antigravityProfile = process.env.T3_ACP_ANTIGRAVITY === "1";
-const antigravityThinking = process.env.T3_ACP_ANTIGRAVITY_THINKING === "1";
 const antigravityThoughtLevel = process.env.T3_ACP_ANTIGRAVITY_THOUGHT_LEVEL === "1";
 const antigravityResumeThoughtLevel = process.env.T3_ACP_RESUME_THOUGHT_LEVEL;
+const antigravityThinking = process.env.T3_ACP_ANTIGRAVITY_THINKING === "1";
 // GitHub Copilot CLI advertises URL-shaped session mode ids.
 const copilotModesProfile = process.env.T3_ACP_COPILOT_MODES === "1";
 const copilotModeId = (name: string) =>
@@ -192,21 +192,6 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
         currentValue: currentModeId,
         options: availableModes.map((mode) => ({ value: mode.id, name: mode.name })),
       },
-      ...(antigravityThinking
-        ? [
-            {
-              configId: "thinking",
-              name: "Thinking",
-              category: "thought_level",
-              type: "select" as const,
-              currentValue: currentReasoning,
-              options: [
-                { value: "low", name: "Low" },
-                { value: "high", name: "High" },
-              ],
-            },
-          ]
-        : []),
       ...(antigravityThoughtLevel
         ? [
             {
@@ -228,6 +213,21 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
                       { value: "high", name: "High" },
                       { value: "xhigh", name: "Extra" },
                     ],
+            },
+          ]
+        : []),
+      ...(antigravityThinking
+        ? [
+            {
+              configId: "thinking",
+              name: "Thinking",
+              category: "thought_level",
+              type: "select" as const,
+              currentValue: currentReasoning,
+              options: [
+                { value: "low", name: "Low" },
+                { value: "high", name: "High" },
+              ],
             },
           ]
         : []),
@@ -1418,6 +1418,15 @@ const program = Effect.gen(function* () {
             status: "completed",
             rawInput: { query: "TODO" },
             rawOutput: "src/a.ts: TODO",
+          },
+          {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "structured-search-grep-output",
+            title: "Grep",
+            kind: "search",
+            status: "completed",
+            rawInput: { pattern: "needle", path: "src" },
+            rawOutput: "src/a.ts:3:const needle = 1;\nsrc/b.ts:9:needle();",
           },
           {
             sessionUpdate: "tool_call_update",

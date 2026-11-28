@@ -80,7 +80,6 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import { promptLinkFor } from "../promptLinks/copyPromptLink";
 import { PierreEntryIcon } from "./PierreEntryIcon";
 import { formatBytes } from "../../lib/formatBytes";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   asKnownContextRecord,
   resolveUserMessageContext,
@@ -99,6 +98,7 @@ import { formatChatTimestampTooltip, formatDayAwareTimestamp } from "../../times
 import { WorkflowOpeningBlock } from "./WorkflowOpeningBlock";
 import { useTallEnoughToFold } from "./useTallEnoughToFold";
 import type { MessageResolver } from "~/i18n/messages";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 // Drawn inside the media so dark screenshots keep an edge on the dark background.
 const MEDIA_EDGE_CLASS_NAME =
@@ -233,25 +233,23 @@ function UserFileCard({
           >
             {identity}
           </UserFilePreview>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  size="icon-xs"
-                  variant="ghost-muted"
-                  aria-label={gt("Download {label}", { label })}
-                  onClick={() => ctx.onFileDownload(file)}
-                />
-              }
-            >
-              <DownloadIcon />
-            </TooltipTrigger>
-            <TooltipPopup side="top">
+          <SharedTooltipTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant="ghost-muted"
+                aria-label={gt("Download {label}", { label })}
+                onClick={() => ctx.onFileDownload(file)}
+              />
+            }
+            label={
               <T>
                 Download <Var>{label}</Var>
               </T>
-            </TooltipPopup>
-          </Tooltip>
+            }
+          >
+            <DownloadIcon />
+          </SharedTooltipTrigger>
         </>
       )}
     </div>
@@ -382,21 +380,14 @@ function UserMessageSwitchNote({ row }: { row: Extract<TimelineRow, { kind: "mes
   ) : null;
 }
 
-function AutomationMessageToggle({
-  queued,
-  ...props
-}: useRender.ComponentProps<"button"> & { queued?: boolean }) {
+function AutomationMessageToggle(props: useRender.ComponentProps<"button">) {
   return useRender({
     defaultTagName: "button",
     props: mergeProps<"button">(
       {
         type: "button",
-        className: cn(
-          "flex w-full min-w-0 cursor-pointer items-center text-left text-body focus-visible:outline-2 focus-visible:outline-ring",
-          queued
-            ? "h-7 gap-1 rounded-control"
-            : "gap-1.5 rounded-pane px-3.5 py-2.5 hover:surface-ghost-hover",
-        ),
+        className:
+          "flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-pane px-3.5 py-2.5 text-left text-body hover:surface-ghost-hover focus-visible:outline-2 focus-visible:outline-ring",
       },
       props,
     ),
@@ -528,7 +519,7 @@ export function useScheduledTaskTitle(
   return tasksQuery.data?.tasks.find((task) => task.id === scheduledTaskId)?.title;
 }
 
-export function FoldedMessageHeader(props: {
+function FoldedMessageHeader(props: {
   icon: LucideIcon;
   label: string;
   /** A generic label (not a thread title) never truncates, whatever its length in the UI language. */
@@ -536,22 +527,15 @@ export function FoldedMessageHeader(props: {
   summary: string;
   expanded: boolean;
   onToggle: () => void;
-  queued?: boolean;
 }) {
   const Icon = props.icon;
   return (
     <AutomationMessageToggle
-      queued={props.queued === true}
       aria-expanded={props.expanded}
       data-scroll-anchor-ignore
       onClick={props.onToggle}
     >
-      <Icon
-        className={cn(
-          "shrink-0 stroke-2 text-muted-foreground",
-          props.queued ? "size-3.5 max-sm:size-4" : "size-4",
-        )}
-      />
+      <Icon className="size-4 shrink-0 stroke-2 text-muted-foreground" />
       <span
         className={cn(
           "shrink-0 text-muted-foreground",
@@ -565,7 +549,6 @@ export function FoldedMessageHeader(props: {
       <ChevronDownIcon
         className={cn(
           "size-3.5 shrink-0 text-muted-foreground transition-transform",
-          props.queued && "max-sm:size-4",
           props.expanded && "rotate-180",
         )}
       />
@@ -1005,23 +988,27 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
           <T>Open thread</T>
         </InlineButton>
       ) : null}
-      <Tooltip>
-        <TooltipTrigger render={<p className="text-dim-foreground text-meta tabular-nums" />}>
-          {formatDayAwareTimestamp(
-            row.message.createdAt,
-            ctx.timestampFormat,
-            undefined,
-            undefined,
-            m,
-          )}
-        </TooltipTrigger>
-        <TooltipPopup>
-          {formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat, m)}
-          {userMessageMeta && !steerLabelAbove ? (
-            <span className="block">{userMessageIntentDescription(userMessageMeta.intent, m)}</span>
-          ) : null}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={<p className="text-dim-foreground text-meta tabular-nums" />}
+        label={
+          <>
+            {formatChatTimestampTooltip(row.message.createdAt, ctx.timestampFormat, m)}
+            {userMessageMeta && !steerLabelAbove ? (
+              <span className="block">
+                {userMessageIntentDescription(userMessageMeta.intent, m)}
+              </span>
+            ) : null}
+          </>
+        }
+      >
+        {formatDayAwareTimestamp(
+          row.message.createdAt,
+          ctx.timestampFormat,
+          undefined,
+          undefined,
+          m,
+        )}
+      </SharedTooltipTrigger>
       <div className={cn("flex items-center gap-0.5", floatActions && "flex-wrap justify-end")}>
         {typeof revertTurnCount === "number" && (
           <RevertUserMessageButton turnCount={revertTurnCount} messageId={row.message.id} />
@@ -1201,25 +1188,23 @@ function UserTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" 
                             <EyeIcon className="size-4 shrink-0" />
                           </span>
                         </InlineButton>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                size="icon-xs"
-                                variant="ghost-muted"
-                                aria-label={gt("Download {label}", { label })}
-                                onClick={() => ctx.onFileDownload(file)}
-                              />
-                            }
-                          >
-                            <DownloadIcon />
-                          </TooltipTrigger>
-                          <TooltipPopup side="top">
+                        <SharedTooltipTrigger
+                          render={
+                            <Button
+                              size="icon-xs"
+                              variant="ghost-muted"
+                              aria-label={gt("Download {label}", { label })}
+                              onClick={() => ctx.onFileDownload(file)}
+                            />
+                          }
+                          label={
                             <T>
                               Download <Var>{label}</Var>
                             </T>
-                          </TooltipPopup>
-                        </Tooltip>
+                          }
+                        >
+                          <DownloadIcon />
+                        </SharedTooltipTrigger>
                       </div>
                     );
                   }
@@ -1311,25 +1296,25 @@ function RevertUserMessageButton({
   const gt = useGT();
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={activity.isRevertingCheckpoint || activity.isWorking}
-            onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
-            aria-label={gt("Edit from here")}
-          />
-        }
-      >
-        <PencilIcon className="size-3" />
-      </TooltipTrigger>
-      <TooltipPopup side="top">
-        <T>Edit from here</T>
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          disabled={activity.isRevertingCheckpoint || activity.isWorking}
+          onClick={() => ctx.onRevertToTurnCount(turnCount, messageId)}
+          aria-label={gt("Edit from here")}
+        />
+      }
+      label={
+        <>
+          <T>Edit from here</T>
+        </>
+      }
+    >
+      <PencilIcon className="size-3" />
+    </SharedTooltipTrigger>
   );
 }
 
@@ -1470,29 +1455,27 @@ function UserMessageMeta({
   const gt = useGT();
   const m = useMessages();
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <p
-            className="flex items-center gap-1 pe-1 text-caption text-dim-foreground tabular-nums"
-            data-user-message-intent={intent}
-          />
-        }
-      >
-        <Redo2Icon aria-hidden className="size-3" />
-        {m(label)}
-        {unread ? (
-          <span className="ms-1">{gt("waiting to be read", { $context: "a steer message" })}</span>
-        ) : null}
-      </TooltipTrigger>
-      <TooltipPopup side="top">
-        {unread
+    <SharedTooltipTrigger
+      render={
+        <p
+          className="flex items-center gap-1 pe-1 text-caption text-dim-foreground tabular-nums"
+          data-user-message-intent={intent}
+        />
+      }
+      label={
+        unread
           ? gt(
               "Waiting for the agent to read this. It reads steers between steps, after a running command finishes.",
             )
-          : userMessageIntentDescription(intent, m)}
-      </TooltipPopup>
-    </Tooltip>
+          : userMessageIntentDescription(intent, m)
+      }
+    >
+      <Redo2Icon aria-hidden className="size-3" />
+      {m(label)}
+      {unread ? (
+        <span className="ms-1">{gt("waiting to be read", { $context: "a steer message" })}</span>
+      ) : null}
+    </SharedTooltipTrigger>
   );
 }
 

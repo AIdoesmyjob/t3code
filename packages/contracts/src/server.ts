@@ -27,6 +27,7 @@ import { EditorId, FileManagerRevealKind, RemoteOpenTarget } from "./editor.ts";
 import { ManagedPolicySummary } from "./managedPolicy.ts";
 import { ModelCapabilities, ProviderOptionDescriptor } from "./model.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
+import { HostPressure } from "./resourceTelemetry.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { ServerProviderUsageLimits, UsageLimitSourceSnapshots } from "./providerUsageLimits.ts";
 import { LayoutSettings, ServerSettings } from "./settings.ts";
@@ -164,6 +165,34 @@ export function isProviderWorkspaceSnapshotPending(
 ): boolean {
   return snapshot.slashCommandsPending === true || snapshot.modelsPending === true;
 }
+
+/** Whose settings keep a provider from running a mode; "settings" when the source is not known. */
+export const ProviderRuntimeModeLimitReason = Schema.Literals([
+  "managed-settings",
+  "user-settings",
+  "project-settings",
+  "settings",
+]);
+export type ProviderRuntimeModeLimitReason = typeof ProviderRuntimeModeLimitReason.Type;
+
+/**
+ * A mode a provider offers that cannot run in one folder. The mode stays selectable by every
+ * caller; clients show it as unavailable with the reason.
+ */
+export const ProviderRuntimeModeLimit = Schema.Struct({
+  mode: RuntimeMode,
+  reason: ProviderRuntimeModeLimitReason,
+});
+export type ProviderRuntimeModeLimit = typeof ProviderRuntimeModeLimit.Type;
+
+export const ProviderRuntimeModeLimitsInput = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  cwd: TrimmedNonEmptyString,
+});
+export const ProviderRuntimeModeLimitsResult = Schema.Struct({
+  limits: ForwardCompatibleArray(ProviderRuntimeModeLimit),
+});
+export type ProviderRuntimeModeLimitsResult = typeof ProviderRuntimeModeLimitsResult.Type;
 
 /** Unavailable snapshots must set installed and enabled false. */
 export const ServerProviderAvailability = Schema.Literals(["available", "unavailable"]);
@@ -386,6 +415,8 @@ export const ServerObservability = Schema.Struct({
   otlpLogsSource: Schema.optional(OtlpEndpointSource),
   otlpLogsVariable: Schema.optional(TrimmedNonEmptyString),
   otlpLogsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /** Relay tracing policy for browsers opened from this server. */
+  relayTracingAllowed: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerObservability = typeof ServerObservability.Type;
 
@@ -785,6 +816,8 @@ export const ServerConfig = Schema.Struct({
   environmentThemes: Schema.optional(Schema.Array(EnvironmentTheme)),
   /** Stream-only and opt-in; the source stream emits the current set on subscribe. */
   usageLimitSources: Schema.optional(UsageLimitSourceSnapshots),
+  /** Stream-only and opt-in, like `usageLimitSources`; absent while there is none. */
+  hostPressure: Schema.optional(HostPressure),
 });
 export type ServerConfig = typeof ServerConfig.Type;
 
@@ -921,6 +954,14 @@ export const ServerConfigStreamUsageLimitSourcesUpdatedEvent = Schema.Struct({
 export type ServerConfigStreamUsageLimitSourcesUpdatedEvent =
   typeof ServerConfigStreamUsageLimitSourcesUpdatedEvent.Type;
 
+export const ServerConfigStreamHostPressureUpdatedEvent = Schema.Struct({
+  version: Schema.Literal(1),
+  type: Schema.Literal("hostPressureUpdated"),
+  payload: HostPressure,
+});
+export type ServerConfigStreamHostPressureUpdatedEvent =
+  typeof ServerConfigStreamHostPressureUpdatedEvent.Type;
+
 export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSnapshotEvent,
   ServerConfigStreamKeybindingsUpdatedEvent,
@@ -929,6 +970,7 @@ export const ServerConfigStreamEvent = Schema.Union([
   ServerConfigStreamSettingsUpdatedEvent,
   ServerConfigStreamEnvironmentThemesUpdatedEvent,
   ServerConfigStreamUsageLimitSourcesUpdatedEvent,
+  ServerConfigStreamHostPressureUpdatedEvent,
 ]);
 export type ServerConfigStreamEvent = typeof ServerConfigStreamEvent.Type;
 
@@ -1023,6 +1065,18 @@ export class ServerProviderUpdateError extends Schema.TaggedError<ServerProvider
     return `Provider update failed for ${this.provider}: ${this.reason}`;
   }
 }
+
+export const DatabaseMigrationProgress = Schema.Struct({
+  current: Schema.Int.check(Schema.isGreaterThan(0)),
+  total: Schema.Int.check(Schema.isGreaterThan(0)),
+});
+export type DatabaseMigrationProgress = typeof DatabaseMigrationProgress.Type;
+
+export const ServerStartupStatus = Schema.Struct({
+  status: Schema.Literal("starting"),
+  migration: Schema.NullOr(DatabaseMigrationProgress),
+});
+export type ServerStartupStatus = typeof ServerStartupStatus.Type;
 
 export const ServerNpmReleaseInput = Schema.Struct({
   spec: Schema.String.check(

@@ -58,7 +58,7 @@ export function WorktreeLayoutApprovalDialogHost() {
                 <span className="text-meta text-muted-foreground">
                   {m(WORKTREE_LAYOUT_COMMAND_LABELS[command.kind])}
                 </span>
-                <pre className="max-h-48 overflow-auto whitespace-pre-wrap wrap-anywhere rounded-control surface-well px-3 py-2 font-mono text-meta">
+                <pre className="max-h-48 overflow-auto whitespace-pre-wrap wrap-anywhere rounded-control surface-well px-3 py-2 font-mono text-caption">
                   {command.command}
                 </pre>
               </div>

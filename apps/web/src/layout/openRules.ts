@@ -8,18 +8,29 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import { readThreadShell } from "../state/entities";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
+import {
+  readWorkspaceFocusTarget,
+  requestWorkspaceFocus,
+  type WorkspaceFocusTarget,
+} from "../lib/workspaceFocus";
 import { isThreadlessSurfacesRef } from "../threadlessSurfaces";
 import type { ThreadRouteTarget } from "../threadRoutes";
 import {
   createLayoutLauncherContent,
   findLayoutLauncherFor,
+  findLayoutTab,
+  findLayoutTabByContent,
   findLayoutPane,
   findLayoutSurfaceTabs,
   layoutChatSwaps,
+  layoutTabContentKey,
+  resizeLayoutColumn,
+  selectFocusedPane,
   selectFocusedTab,
   selectFocusedWorkspace,
   THREAD_TERMINAL_SURFACE_ID,
   type LayoutState,
+  type LayoutTabContent,
   type LayoutTabLocation,
   type LayoutTabDestination,
 } from "./layoutModel";
@@ -141,6 +152,83 @@ export function toggleThreadSidePane(threadRef: ScopedThreadRef, openDefault: ()
   );
 }
 
+/** What the last mod+alt+E fill changed, so the next press puts it back. */
+let sidePaneFill: {
+  readonly tabId: string;
+  readonly threadRef: ScopedThreadRef;
+  readonly opened: boolean;
+  readonly returnTabId: string | null;
+  readonly focus: WorkspaceFocusTarget | null;
+} | null = null;
+
+/**
+ * mod+alt+E with a pane filling the window: every pane comes back, as "Show every pane" does.
+ * After a mod+alt+E fill, a side pane it opened hides again and focus returns where it was.
+ */
+export function restoreThreadSidePaneFill(): boolean {
+  const store = useLayoutStore.getState();
+  const filled = store.maximizedTabId;
+  const fill = sidePaneFill;
+  sidePaneFill = null;
+  if (filled === null) return false;
+  store.toggleMaximizedTab(filled);
+  if (fill?.tabId !== filled) return true;
+  if (fill.opened) hideThreadSurfaces(fill.threadRef);
+  const layout = useLayoutStore.getState().layout;
+  if (fill.returnTabId !== null && findLayoutTab(layout, (tab) => tab.id === fill.returnTabId)) {
+    store.focusTab(fill.returnTabId);
+  }
+  if (fill.focus && fill.focus.tab !== filled) requestWorkspaceFocus(fill.focus);
+  return true;
+}
+
+/**
+ * mod+alt+E for a thread: its side pane fills the window, opening first when it is hidden.
+ * Pressed again, `restoreThreadSidePaneFill` brings the layout back.
+ */
+export function toggleThreadSidePaneFill(
+  threadRef: ScopedThreadRef,
+  openDefault: () => boolean,
+): void {
+  if (restoreThreadSidePaneFill()) return;
+  const returnTabId = selectFocusedTab(useLayoutStore.getState().layout)?.id ?? null;
+  const focus = readWorkspaceFocusTarget();
+  const besideTab = () => {
+    const layout = useLayoutStore.getState().layout;
+    const chat = findThreadChat(layout, threadRef);
+    if (!chat) return null;
+    return (
+      findLayoutSurfaceTabs(layout, threadRef).find(
+        (location) =>
+          location.tab.content.kind === "surface" &&
+          location.tab.content.surfaceId !== THREAD_TERMINAL_SURFACE_ID &&
+          onScreen(layout, location) &&
+          atDestination(location, chat, false),
+      ) ?? null
+    );
+  };
+  const fill = (tabId: string, openedByPress = true) => {
+    const store = useLayoutStore.getState();
+    sidePaneFill = { tabId, threadRef, opened: openedByPress, returnTabId, focus };
+    store.focusTab(tabId);
+    store.toggleMaximizedTab(tabId);
+    if (focus?.tab !== tabId) requestWorkspaceFocus({ area: "panel", tab: tabId });
+  };
+  const shown = besideTab();
+  if (shown) return fill(shown.tab.id, false);
+  toggleThreadSidePane(threadRef, openDefault);
+  const opened = besideTab();
+  if (opened) return fill(opened.tab.id);
+  // Surface tabs can land in a later store commit than the one that showed them.
+  const unsubscribe = useLayoutStore.subscribe(() => {
+    const next = besideTab();
+    if (!next) return;
+    unsubscribe();
+    fill(next.tab.id);
+  });
+  window.setTimeout(unsubscribe, 1000);
+}
+
 /**
  * cmd+D and cmd+L for a thread: the diff or linked pull requests tab hidden behind another
  * tab comes forward; otherwise `toggle` opens it where the side pane goes or hides it.
@@ -251,10 +339,64 @@ export function openPullRequestWorkspace(threadRef: ScopedThreadRef, number: num
   useTerminalUiStateStore.getState().setTerminalOpen(threadRef, true);
 }
 
+/** Column widths captured when companions hide, keyed by thread: session-only like the resize itself. */
+const companionColumnsHiddenByOpen = new Map<
+  string,
+  Array<{ content: LayoutTabContent; width: number; cameraWidth: number | null }>
+>();
+
 function chatThreadRef(target: ThreadRouteTarget): ScopedThreadRef | null {
   if (target.kind === "server") return target.threadRef;
   const draft = useComposerDraftStore.getState().getDraftSession(target.draftId);
   return draft ? scopeThreadRef(draft.environmentId, draft.threadId) : null;
+}
+
+/** The thread a tab shows: its chat's, or the one its surface belongs to. */
+function tabThreadKey(content: LayoutTabContent | undefined): string | null {
+  if (content?.kind === "surface") return scopedThreadKey(content.threadRef);
+  if (content?.kind !== "chat") return null;
+  const threadRef = chatThreadRef(content.target);
+  return threadRef ? scopedThreadKey(threadRef) : layoutTabContentKey(content);
+}
+
+/**
+ * Showing `content` in pane `paneId`, which `before` already has, switches to another thread's chat:
+ * a navigation, which panes do not animate. A pane opened beside for it is a person's open, which does.
+ */
+export function isThreadSwitch(
+  before: LayoutState,
+  paneId: string | undefined,
+  content: LayoutTabContent | undefined,
+): boolean {
+  return (
+    content?.kind === "chat" &&
+    paneId !== undefined &&
+    findLayoutPane(before, paneId) !== null &&
+    tabThreadKey(content) !== tabThreadKey(selectFocusedTab(before)?.content)
+  );
+}
+
+const SWITCHING = "data-layout-switching";
+
+/** Marks the document for the frames a thread switch lands in: its pane chrome holds still there
+ * (index.css, PaneTabs). Returns the early unmark. */
+export function markLayoutSwitching(): () => void {
+  const root = document.documentElement;
+  root.setAttribute(SWITCHING, "");
+  let frame = requestAnimationFrame(() => {
+    frame = requestAnimationFrame(() => root.removeAttribute(SWITCHING));
+  });
+  return () => {
+    cancelAnimationFrame(frame);
+    root.removeAttribute(SWITCHING);
+  };
+}
+
+export const isLayoutSwitching = () => document.documentElement.hasAttribute(SWITCHING);
+
+/** `after` focuses another thread's chat than `before` (see `isThreadSwitch`). */
+export function switchesThread(before: LayoutState, after: LayoutState): boolean {
+  return isThreadSwitch(before, selectFocusedPane(after)?.id, selectFocusedTab(after)?.content);
 }
 
 /**
@@ -266,16 +408,18 @@ export function followLayoutCompanions(open: () => void): void {
   const before = useLayoutStore.getState().layout;
   open();
   const after = useLayoutStore.getState().layout;
+  if (switchesThread(before, after)) useLayoutStore.getState().noteNavigation();
   for (const swap of layoutChatSwaps(before, after)) {
     const from = chatThreadRef(swap.from);
     const to = chatThreadRef(swap.to);
     if (from && to && scopedThreadKey(from) === scopedThreadKey(to)) continue;
-    if (from) hideCompanionsOf(from, before.focusedWorkspaceId);
+    if (from) hideCompanionsOf(from, before);
     if (to) showCompanionsOf(to);
   }
 }
 
-function hideCompanionsOf(threadRef: ScopedThreadRef, workspaceId: string) {
+function hideCompanionsOf(threadRef: ScopedThreadRef, before: LayoutState) {
+  const workspaceId = before.focusedWorkspaceId;
   const layout = useLayoutStore.getState().layout;
   const tabs = findLayoutSurfaceTabs(layout, threadRef);
   const panelTabs = tabs.filter(
@@ -298,6 +442,16 @@ function hideCompanionsOf(threadRef: ScopedThreadRef, workspaceId: string) {
       threadRef,
     ).terminalOpen && terminalTab?.workspace.id === workspaceId;
   if (!panel && !terminal) return;
+  // An open that replaced the chat's ghost tab leaves its column only in the layout before it.
+  const chat = findThreadChat(layout, threadRef) ?? findThreadChat(before, threadRef);
+  const locations = [...(chat ? [chat] : []), ...tabs];
+  const columns = new Map(
+    locations.map(({ column, tab, workspace }) => [
+      column.id,
+      { content: tab.content, width: column.width, cameraWidth: workspace.cameraWidth },
+    ]),
+  );
+  companionColumnsHiddenByOpen.set(scopedThreadKey(threadRef), [...columns.values()]);
   useLayoutStore.getState().setHiddenCompanions(scopedThreadKey(threadRef), { panel, terminal });
   if (panel) useRightPanelStore.getState().close(threadRef);
   if (terminal) useTerminalUiStateStore.getState().setTerminalOpen(threadRef, false);
@@ -307,15 +461,34 @@ function showCompanionsOf(threadRef: ScopedThreadRef) {
   const key = scopedThreadKey(threadRef);
   const store = useLayoutStore.getState();
   const hidden = store.hiddenCompanionsByThreadKey[key];
+  const hiddenColumns = companionColumnsHiddenByOpen.get(key) ?? [];
+  companionColumnsHiddenByOpen.delete(key);
   if (!hidden) return;
   store.setHiddenCompanions(key, null);
   const chat = findThreadChat(store.layout, threadRef);
   const focused = selectFocusedTab(store.layout);
   if (!chat) return;
-  if (hidden.panel) useRightPanelStore.getState().syncFromLayout(threadRef, { open: true });
+  if (hidden.panel) {
+    requestLayoutSurfacePlacement(threadRef, layoutSurfacePlacement(chat, false));
+    useRightPanelStore.getState().syncFromLayout(threadRef, { open: true });
+  }
   if (hidden.terminal) {
     requestLayoutSurfacePlacement(threadRef, layoutSurfacePlacement(chat, true));
     useTerminalUiStateStore.getState().setTerminalOpen(threadRef, true);
   }
   if (focused) useLayoutStore.getState().focusTab(focused.id);
+  // A navigation hide refits the remaining columns; returning restores the widths it borrowed.
+  useLayoutStore.setState((state) => {
+    let layout = state.layout;
+    for (const column of hiddenColumns) {
+      const location = findLayoutTabByContent(layout, column.content);
+      if (!location) continue;
+      const scale =
+        column.cameraWidth && location.workspace.cameraWidth
+          ? column.cameraWidth / location.workspace.cameraWidth
+          : 1;
+      layout = resizeLayoutColumn(layout, location.column.id, column.width * scale);
+    }
+    return { layout };
+  });
 }

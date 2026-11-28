@@ -104,6 +104,7 @@ import {
   deriveThreadActivityRun,
   deriveLatestThreadRun,
   presentProviderStarting,
+  pendingProviderStartup,
   deriveThreadStructureRuntime,
   limitRecoveryOwnsSnooze,
 } from "@t3tools/client-runtime/state/thread-execution";
@@ -117,7 +118,6 @@ import {
   threadSupportsProviderHandoff,
 } from "@t3tools/client-runtime/state/thread-workflows";
 import { resolvePendingHandoff } from "@t3tools/client-runtime/handoff";
-import { HandoffRow } from "./chat/V2LifecycleRow";
 import {
   codexFeedbackMessage,
   deriveWorkspaceMutationId,
@@ -155,7 +155,6 @@ import { WorkspaceMutationIdContext } from "./chat/ChatMarkdownMedia";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   assistantCitationFromLocation,
-  assistantCitationScopeFromLocation,
   useSideChatCitationReveal,
 } from "../lib/assistantCitationNavigation";
 import type { AssistantCitationSourceAnchor } from "~/lib/assistantTextSelection";
@@ -176,6 +175,7 @@ import {
   derivePhase,
   deriveActiveWorkStartedAt,
   deriveCanInterruptRunningThread,
+  findLatestTaskList,
   findRevertCheckpoint,
   isLatestRunSettled,
 } from "../session-logic";
@@ -202,7 +202,11 @@ import {
   ThreadPreviewMiniPlayer,
   useThreadPreviewCanvasSource,
 } from "./preview/ThreadPreviewMiniPlayer";
-import { createChatCanvasStore, resolveChatCanvasModel } from "./chat/canvasStore";
+import {
+  createChatCanvasStore,
+  resolveChatCanvasModel,
+  selectCanvasMeasurements,
+} from "./chat/canvasStore";
 import { usePreviewSession } from "./preview/usePreviewSession";
 
 import {
@@ -426,6 +430,7 @@ import { ThreadVisitWatermark } from "./chat/ThreadVisitWatermark";
 import { useDraftEnvironmentRouting } from "./chat/useDraftEnvironmentRouting";
 import { branchMismatchBannerItem, extensionStatusBannerItem } from "./chat/ThreadActivityBanners";
 import { ThreadNow } from "./chat/ThreadNow";
+import { ComposerBanner } from "./chat/ComposerBanner";
 import { threadRuntimeIsActive, type ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import { useDelayedStatus } from "../hooks/useDelayedStatus";
 import { useTimelineFollow } from "./chat/useTimelineFollow";
@@ -688,12 +693,8 @@ export default function ChatView(props: ChatViewProps) {
     : null;
   const citationActivation = citationLocation?.key ?? "";
   const citationRequest = (
-    citationLocation && locationCitation && locationCitation.threadId === threadId
-      ? {
-          citation: locationCitation,
-          scope: assistantCitationScopeFromLocation(citationLocation.href),
-          key: citationActivation,
-        }
+    locationCitation && locationCitation.threadId === threadId
+      ? { citation: locationCitation, key: citationActivation }
       : null
   ) as AssistantCitationRequest | null;
   useSideChatCitationReveal(
@@ -1619,6 +1620,7 @@ export default function ChatView(props: ChatViewProps) {
     localDispatchStartedAt,
     isPreparingWorktree: isLocallyPreparingWorktree,
     isSendBusy,
+    localDispatchProviderInstanceId,
     backgroundSubmissionPending,
   } = useLocalDispatchState({
     environmentId,
@@ -1685,15 +1687,24 @@ export default function ChatView(props: ChatViewProps) {
     deriveActiveWorkStartedAt(activeActivityRun, activeRuntime, localDispatchStartedAt) ??
     runlessWorkStartedAt;
   // Until the server has the run, a send shows the provider it is starting, not the thinking brain.
+  const dispatchedProviderEntry =
+    providerInstanceEntries.find((entry) => entry.instanceId === localDispatchProviderInstanceId) ??
+    selectedProviderEntry;
+  const dispatchedProviderStartup =
+    dispatchedProviderEntry === undefined
+      ? null
+      : pendingProviderStartup(serverProjection, dispatchedProviderEntry.instanceId);
   const providerStartingRun =
     activeActivityRun?.providerStartingLabelMsg !== undefined
       ? activeActivityRun
       : isSendBusy &&
-          selectedProviderEntry !== undefined &&
+          dispatchedProviderEntry !== undefined &&
+          dispatchedProviderStartup !== null &&
           (activeActivityRun === null || !ACTIVE_RUN_STATUSES.has(activeActivityRun.status))
         ? presentProviderStarting({
-            instanceId: selectedProviderEntry.instanceId,
-            driver: selectedProviderEntry.driverKind,
+            instanceId: dispatchedProviderEntry.instanceId,
+            driver: dispatchedProviderEntry.driverKind,
+            phase: dispatchedProviderStartup.phase,
           })
         : null;
   const activeRunPreparing = activeActivityRun?.status === "preparing";
@@ -2220,7 +2231,7 @@ export default function ChatView(props: ChatViewProps) {
     chatCanvasStore,
     (state) =>
       resolveChatCanvasModel({
-        measurements: state.measurements,
+        measurements: selectCanvasMeasurements(state, rightPanelOpen),
         detailsCardMeasurement: state.detailsCardMeasurement,
         threadRef: activeThreadRef,
         preview: canvasPreview,
@@ -2672,7 +2683,6 @@ export default function ChatView(props: ChatViewProps) {
     : null;
   const {
     onOpenToolDiffStable,
-    onOpenTurnDiffStable,
     openChangesFromThreadPanelStable,
     toggleThreadPanelStable,
     shortcuts: rightPanelShortcuts,
@@ -2780,7 +2790,6 @@ export default function ChatView(props: ChatViewProps) {
     !activeProject ||
     !isServerThread ||
     !manualCompactionProviderAvailable ||
-    isWorking ||
     isRevertingCheckpoint ||
     threadDetailLoading ||
     isPreparingWorktree ||
@@ -2788,8 +2797,9 @@ export default function ChatView(props: ChatViewProps) {
     feedbackUploading ||
     pendingApprovals.length > 0 ||
     pendingUserInputs.length > 0;
-  const compactDisabled = compactThreadUnavailable;
-  const compactUnavailableReason = !compactThreadUnavailable
+  // A typed /compact queues behind a running turn, so only the immediate compaction waits for idle.
+  const compactDisabled = compactThreadUnavailable || isWorking;
+  const compactUnavailableReason = !compactDisabled
     ? null
     : isWorking
       ? gt("Compact when the agent finishes")
@@ -3727,10 +3737,6 @@ export default function ChatView(props: ChatViewProps) {
   // Built outside the condition, where the compiler memoizes it.
   const timelineFooterContent = (
     <TimelineFooter
-      environmentId={environmentId}
-      projection={serverProjection}
-      handoffSelection={usablePendingHandoffSelection}
-      providerEnvironmentId={activeThread.environmentId}
       statusLine={threadStatusLine}
       guestThreadRef={pendingGuestMessageCount > 0 && isServerThread ? activeThreadRef : null}
       onImageExpand={onExpandTimelineImageStable}
@@ -3738,11 +3744,7 @@ export default function ChatView(props: ChatViewProps) {
     />
   );
   const timelineFooter =
-    pendingHandoff === null &&
-    !hasThreadNow &&
-    threadStatusLine === null &&
-    pendingGuestMessageCount === 0 &&
-    !hasQueuedTurns
+    !hasThreadNow && threadStatusLine === null && pendingGuestMessageCount === 0 && !hasQueuedTurns
       ? null
       : timelineFooterContent;
 
@@ -3802,6 +3804,11 @@ export default function ChatView(props: ChatViewProps) {
           !embedded && "pane-mobile-chrome",
         )}
         data-chat-column
+        style={
+          {
+            "--chat-header-height": embedded ? "0px" : "var(--workspace-topbar-height)",
+          } as CSSProperties
+        }
         onMouseUp={preventMiddleClickPasteOutsideEditable}
       >
         {embedded ? null : (
@@ -3856,6 +3863,7 @@ export default function ChatView(props: ChatViewProps) {
               enabled: threadFindEnabled,
             }}
             store={chatCanvasStore}
+            rightPanelOpen={rightPanelOpen}
             threadRef={activeThreadRef}
             preview={canvasPreview}
             detailsCardTopInset={isThreadFindActive ? THREAD_FIND_BAR_RESERVED_HEIGHT : 0}
@@ -3955,10 +3963,8 @@ export default function ChatView(props: ChatViewProps) {
                   displayThreadKey={displayedTimelineKey}
                   announceTurnStatus={!isProviderSubagent}
                   onOpenToolDiff={parentPanel?.openToolDiff ?? onOpenToolDiffStable}
-                  // Side chat runs keep no checkpoints to diff, and a fork would promote the side chat.
-                  {...(embedded
-                    ? {}
-                    : { onOpenTurnDiff: onOpenTurnDiffStable, onForkFromRun: onForkFromRunStable })}
+                  // A fork would promote the side chat.
+                  {...(embedded ? {} : { onForkFromRun: onForkFromRunStable })}
                   onOpenThread={onOpenRelatedThreadStable}
                   // The header's parent tab already names a subagent's parent here.
                   parentThreadLink={
@@ -4081,7 +4087,7 @@ export default function ChatView(props: ChatViewProps) {
                         className="empty:hidden"
                       />
                       {hasThreadNow ? (
-                        <div className="surface-composer-banner ps-2.5 pe-3.25 pt-2">
+                        <ComposerBanner.Dock>
                           <ThreadNow
                             key={routeThreadKey}
                             attention={attentionNow}
@@ -4089,7 +4095,7 @@ export default function ChatView(props: ChatViewProps) {
                             syncPhase={shownThreadSyncPhase}
                             goal={goalNow}
                           />
-                        </div>
+                        </ComposerBanner.Dock>
                       ) : null}
                       {hasQueuedTurns ? queuedRunsControl : null}
                       {composerTasks?.type === "todo_list" &&
@@ -4291,6 +4297,8 @@ export default function ChatView(props: ChatViewProps) {
                               setThreadError={setThreadError}
                               onExpandImage={onExpandTimelineImageStable}
                               onFileOpen={openFileAttachmentStable}
+                              canMoveEditingQueuedMessageToStash={queuedRunEdit.canMoveEditToStash}
+                              onMoveEditingQueuedMessageToStash={queuedRunEdit.removeEditedRun}
                               editingQueuedAttachments={queuedRunEdit.editingAttachments}
                               removedEditingQueuedAttachments={
                                 queuedRunEdit.removedEditingAttachments
@@ -4461,9 +4469,7 @@ export default function ChatView(props: ChatViewProps) {
                     ? { onCheckoutPullRequestRequest: openPullRequestDialogStable }
                     : {})}
                   onComposerFocusRequest={scheduleComposerFocusStable}
-                  {...(isServerThread && isGitRepo
-                    ? { onOpenChanges: openChangesFromThreadPanelStable }
-                    : {})}
+                  {...(isGitRepo ? { onOpenChanges: openChangesFromThreadPanelStable } : {})}
                   onRunProjectScript={runProjectScriptStable}
                   onAddProjectScript={saveProjectScriptStable}
                   onUpdateProjectScript={updateProjectScriptStable}
@@ -4477,6 +4483,7 @@ export default function ChatView(props: ChatViewProps) {
                     sources: serverConfig?.usageLimitSources ?? EMPTY_USAGE_LIMIT_SOURCES,
                     contextWindow: activeContextWindow,
                   }}
+                  taskList={findLatestTaskList(serverProjection)}
                 />
 
                 <PullRequestThreadDialogHost
@@ -4533,34 +4540,14 @@ function preventMiddleClickPasteOutsideEditable(event: ReactMouseEvent) {
   event.preventDefault();
 }
 
-// A new footer element re-renders the whole timeline. Reading the providers and resolving
-// the handoff here keeps the element memoized; the compiler leaves it unmemoized when it
-// depends on either from the chat view.
 function TimelineFooter(props: {
-  readonly environmentId: EnvironmentId;
-  readonly projection: Parameters<typeof resolvePendingHandoff>[0];
-  readonly handoffSelection: Parameters<typeof resolvePendingHandoff>[1];
-  readonly providerEnvironmentId: EnvironmentId;
   readonly statusLine: ReactNode;
   readonly guestThreadRef: ScopedThreadRef | null;
   readonly onImageExpand: ComponentProps<typeof GuestPendingMessages>["onImageExpand"];
   readonly onFileOpen: ComponentProps<typeof GuestPendingMessages>["onFileOpen"];
 }) {
-  const providersByEnvironment = useEnvironmentProviders();
-  const providers = providersByEnvironment.get(props.providerEnvironmentId) ?? EMPTY_PROVIDERS;
-  const pendingHandoff = resolvePendingHandoff(props.projection, props.handoffSelection, providers);
   return (
     <>
-      {pendingHandoff === null ? null : (
-        <div className="chat-content-lane">
-          <HandoffRow
-            environmentId={props.environmentId}
-            endpoints={pendingHandoff}
-            providers={providers}
-            pending
-          />
-        </div>
-      )}
       {props.statusLine}
       {props.guestThreadRef === null ? null : (
         <GuestPendingMessages

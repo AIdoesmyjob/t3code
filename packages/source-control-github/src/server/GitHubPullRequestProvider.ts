@@ -71,6 +71,7 @@ const CAPABILITIES: PullRequestCapabilities = {
   edit: { changeRequest: true, comment: true, maintainerEdits: true },
   stacks: true,
   stackActions: true,
+  stackAutoMerge: true,
   labels: true,
   // Statuses and check runs land on the head commit itself and are read whole, so an empty list
   // after a push is CI that never started rather than a read that saw nothing.
@@ -592,9 +593,12 @@ export const make = Effect.gen(function* () {
         Effect.mapError(fail("getChangeRequestActivity")),
         Effect.map(([pullRequest, reviewThreads]): ProviderChangeRequestActivity => {
           const commitStats = new Map(
-            pullRequest.commits.map(({ oid, additions, deletions }) => [
+            pullRequest.commits.map(({ oid, additions, deletions, changedFiles }) => [
               oid,
-              additions === undefined ? {} : { additions, deletions },
+              {
+                ...(additions === undefined ? {} : { additions, deletions }),
+                ...(changedFiles === undefined ? {} : { changedFiles }),
+              },
             ]),
           );
           return {

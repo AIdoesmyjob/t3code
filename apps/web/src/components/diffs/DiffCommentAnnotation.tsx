@@ -237,6 +237,7 @@ export function DiffCommentAnnotation({
           }
           if (event.key === "Escape") {
             event.preventDefault();
+            event.stopPropagation();
             if (speech && speech.state.phase !== "idle") speech.cancel();
             else onCancel();
           }

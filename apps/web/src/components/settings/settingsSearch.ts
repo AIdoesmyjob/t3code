@@ -286,6 +286,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/worktrees",
     scope: "project-defaults",
     searchTerms: [
+      msg("Delete worktrees with deleted threads"),
       msg(
         "disk storage automatic delete deleted archived threads old inactive merged settled unchanged worktrees retention days project inherit off custom local changes kept branches thread history commits default branch",
       ),
@@ -320,7 +321,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "project-overview",
     title: msg("Project overview"),
     to: "/settings/projects",
-    searchTerms: [msg("name icon emoji image checkout remove delete")],
+    searchTerms: [
+      msg("Pin"),
+      msg("Pinned projects come first in project pickers."),
+      msg("name icon emoji image checkout remove delete"),
+    ],
   },
   {
     id: "default-model",
@@ -434,6 +439,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Chat width"),
     to: "/settings/appearance",
     searchTerms: [msg("wide full width column layout messages composer monitor")],
+  },
+  {
+    id: "html-preview-width",
+    title: msg("HTML preview width"),
+    to: "/settings/appearance",
+    searchTerms: [msg("wide full width inline page render chart dashboard artifact centered")],
   },
   {
     id: "thread-details-items",
@@ -1133,7 +1144,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "diagnostics",
     title: msg("Diagnostics"),
     to: "/settings/maintenance",
-    searchTerms: [msg("logs traces processes resource history failures spans cpu memory")],
+    searchTerms: [
+      msg("logs traces processes resource history failures spans cpu memory"),
+      msg("Live Processes"),
+      msg("Latest Failures"),
+      msg("Most Common Failures"),
+      msg("Slowest Spans"),
+      msg("Top Span Names"),
+    ],
   },
   {
     id: "agent-feedback",
@@ -1149,6 +1167,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "open-source-licenses",
     title: msg("Open source licenses"),
     to: "/settings/about",
+    searchTerms: [msg("Third-party notices")],
   },
   {
     id: "keybindings",
@@ -1201,6 +1220,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Providers"),
     to: "/settings/providers",
     searchTerms: [
+      msg("ChatGPT account"),
       msg(
         "agents cli codex claude cursor grok fx kiro opencode antigravity google sign in sign out install subscription instances authentication api key models configuration binary path config directory codex_home shadow home endpoint arguments environment variables display name accent color custom favorite hidden auto compact native sessions import resume",
       ),
@@ -1493,6 +1513,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "project-actions",
     title: msg("Actions"),
     to: "/settings/projects",
+    scope: "project-defaults",
     searchTerms: [msg("commands scripts setup run dev server checkout worktree t3.json import")],
   },
   {
@@ -1555,6 +1576,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("managed tunnel cloud other devices remote tunnels limit t3 chat")],
     desktopOnly: true,
     cloudOnly: true,
+  },
+  {
+    id: "mcp-url",
+    localEnvironmentOnly: true,
+    title: msg("MCP URL"),
+    to: "/settings/access",
+    targetId: "connections-environment",
+    searchTerms: [msg("outside agents chatgpt claude codex hosted bot oauth server address copy")],
   },
   {
     id: "connect-device-approval",
@@ -1867,11 +1896,17 @@ export function searchSettings(
       const title = normalizeSearchText(decodeMsg(item.title));
       // The title as displayed, so search also works in the active language.
       const displayedTitle = normalizeSearchText(translate(item.title));
+      const navLabel = SETTINGS_NAV_LABELS[item.to];
+      const displayedNavLabel = translate(navLabel);
       const fields = [
         title,
         normalizeSearchText(SETTINGS_SECTION_LABELS[item.to]),
         displayedTitle,
         normalizeSearchText(translate(SETTINGS_SECTION_LABELS[item.to])),
+        // Decode only the untranslated label: decodeMsg truncates a translation at its first colon.
+        normalizeSearchText(
+          displayedNavLabel === navLabel ? decodeMsg(navLabel) : displayedNavLabel,
+        ),
         ...(item.searchTerms ?? []).map(normalizeSearchText),
         ...(item.searchTerms ?? []).map((term) => normalizeSearchText(translate(term))),
       ];

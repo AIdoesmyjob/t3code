@@ -61,12 +61,12 @@ import {
   Component,
   lazy,
   Suspense,
+  useContext,
   useEffect,
   useEffectEvent,
   useRef,
   useState,
   type ComponentProps,
-  type KeyboardEvent as ReactKeyboardEvent,
   type RefObject,
 } from "react";
 import { useLayoutStore } from "~/layout/layoutStore";
@@ -75,6 +75,7 @@ import { useRightPanelStore } from "~/rightPanelStore";
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
+import { fileManagerActionForPath } from "~/components/chat/OpenInPicker.logic";
 import { MediaVideoPlayer } from "~/components/media/MediaVideoPlayer";
 import { MediaActions, type MediaActionSource } from "~/components/media/MediaActions";
 import {
@@ -91,7 +92,7 @@ import { useStableCallback } from "~/hooks/useStableCallback";
 import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "~/hooks/useLocalStorage";
 import { resolveDiffThemeName } from "~/lib/diffRendering";
 import { PREFERRED_HIGHLIGHTER } from "~/lib/syntaxHighlighting";
-import { cn, isMacPlatform } from "~/lib/utils";
+import { cn } from "~/lib/utils";
 import { requestWorkspaceFocus } from "~/lib/workspaceFocus";
 import type { ChatFileAttachment } from "~/types";
 import { isHostPath } from "@t3tools/shared/path";
@@ -105,6 +106,7 @@ import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { type DraftId, useComposerDraftStore } from "~/composerDraftStore";
 import { buildFileReviewComment, type ReviewCommentContext } from "~/reviewCommentContext";
 import { assetEnvironment } from "~/state/assets";
+import { useFileDownload } from "./useFileDownload";
 import { usePreviewAvailable } from "~/browser/previewRuntime";
 import { useEnvironmentHttpBaseUrl, usePrimaryEnvironmentId } from "~/state/environments";
 import { hostEnvironmentIdAtom } from "~/state/primaryEnvironment";
@@ -126,6 +128,7 @@ import { FileMediaDetails } from "./FileMediaDetails";
 import { FileBreadcrumbs } from "./FileBreadcrumbs";
 import { breadcrumbPathOf, retainedBreadcrumbTrail, trailChildOf } from "./filePath";
 import { ChunkedMarkdown } from "./ChunkedMarkdown";
+import { createPositionMemory, PreviewPositionKey, previewPositionKey } from "./previewPosition";
 import { splitMarkdown } from "@t3tools/shared/markdownChunks";
 import {
   type FileCommentAnnotationEntry,
@@ -233,7 +236,8 @@ function WorkspaceImagePreview(props: {
     workspaceRoot: props.workspaceRoot,
     absolutePath: props.absolutePath,
   });
-  const assetUrl = useAssetUrlState(props.environmentId, resource);
+  // A linked image outside the root gets a grant pinned to its inode, so a replacement needs a new one.
+  const assetUrl = useAssetUrlState(props.environmentId, resource, props.workspaceMutationId);
   const revisionSuffix =
     props.workspaceMutationId === null
       ? ""
@@ -305,6 +309,7 @@ export function WorkspaceBrowserPreview(props: {
   readonly workspaceRoot: string;
   readonly title: string;
   readonly workspaceMutationId: string | null;
+  readonly refreshRevision?: number;
 }) {
   const pdf = isPdfPreviewFile(props.absolutePath);
   const resource = workspaceAssetResource({
@@ -314,14 +319,21 @@ export function WorkspaceBrowserPreview(props: {
     workspaceRoot: props.workspaceRoot,
     absolutePath: props.absolutePath,
   });
-  // Each workspace mutation re-mints the URL: a file outside the workspace is signed by its
-  // inode, which an atomic replace changes.
-  const assetUrl = useAssetUrlState(props.environmentId, resource, props.workspaceMutationId);
+  const refreshRevision = props.refreshRevision ?? 0;
+  const assetRevision =
+    refreshRevision > 0
+      ? props.workspaceMutationId === null
+        ? `refresh:${refreshRevision}`
+        : `${props.workspaceMutationId}:refresh:${refreshRevision}`
+      : props.workspaceMutationId;
+  // Each workspace mutation or manual refresh re-mints the URL: a file outside the workspace is
+  // signed by its inode, which an atomic replace changes.
+  const assetUrl = useAssetUrlState(props.environmentId, resource, assetRevision);
   const refreshAssetUrl = useAssetUrlRefresh(props.environmentId, resource);
   // Servers that report the file's revision let an unchanged page stay loaded; older ones only
   // offer the workspace mutation, which changes after every command.
   const fileRevision = assetUrl._tag === "Success" ? assetUrl.fileRevision : undefined;
-  const latestRevision = fileRevision ?? props.workspaceMutationId;
+  const latestRevision = fileRevision ?? assetRevision;
   // The HTML frame keeps the URL it loaded, so it moves only once a re-minted URL has arrived.
   const [frame, setFrame] = useState<HtmlPreviewFrame | null>(null);
   const [endingGrant, setEndingGrant] = useState<string | null>(null);
@@ -695,11 +707,12 @@ interface FileRevealState {
   scrollContainer: HTMLElement | null;
   detachScrollListener: (() => void) | null;
   restoreFrameId: number | null;
+  /** Where CodeView settled on the revealed line, while the view is still there. */
+  revealedScrollTop: number | null;
 }
 
 // A file pane tab unmounts while another tab of its pane shows, so its offset outlives the panel.
-const savedFileScrollTops = new Map<string, number>();
-const SAVED_FILE_SCROLL_TOPS_LIMIT = 200;
+const codeScrollPositions = createPositionMemory<number>();
 
 // Snapshot connected file scrollers before tab switches mutate the DOM so unmount never forces layout.
 const activeFileScrollSnapshots = new Set<() => void>();
@@ -720,11 +733,11 @@ function ensureFileScrollStoreSubscriptions() {
 }
 
 class FileScrollSnapshot extends Component<{
-  relativePath: string | null;
+  scrollKey: string | null;
   snapshot: () => void;
 }> {
-  override getSnapshotBeforeUpdate(previous: Readonly<{ relativePath: string | null }>) {
-    if (previous.relativePath !== this.props.relativePath) this.props.snapshot();
+  override getSnapshotBeforeUpdate(previous: Readonly<{ scrollKey: string | null }>) {
+    if (previous.scrollKey !== this.props.scrollKey) this.props.snapshot();
     return null;
   }
 
@@ -735,21 +748,15 @@ class FileScrollSnapshot extends Component<{
   }
 }
 
-function saveFileScrollTop(key: string, scrollTop: number) {
-  savedFileScrollTops.delete(key);
-  savedFileScrollTops.set(key, scrollTop);
-  if (savedFileScrollTops.size > SAVED_FILE_SCROLL_TOPS_LIMIT) {
-    const oldest = savedFileScrollTops.keys().next().value;
-    if (oldest !== undefined) savedFileScrollTops.delete(oldest);
-  }
-}
-
 function useFileLineReveal(
-  scrollScope: string,
   relativePath: string | null,
+  positionKey: string | null,
   revealLine: number | null,
   revealRequestId: number,
-): { onPostRender: FilePostRender; snapshotScroll: () => void } {
+): {
+  onPostRenderFor: (scroller: "virtualizer" | "codeView") => FilePostRender;
+  snapshotScroll: () => void;
+} {
   const [revealStatesByPath] = useState(() => new Map<string, FileRevealState>());
 
   const snapshotScroll = () => {
@@ -760,219 +767,250 @@ function useFileLineReveal(
     }
   };
 
-  const onPostRender: FilePostRender = (fileContainer, instance, phase) => {
-    if (relativePath === null) return;
+  const onPostRenderFor =
+    (scroller: "virtualizer" | "codeView"): FilePostRender =>
+    (fileContainer, instance, phase) => {
+      if (relativePath === null) return;
 
-    const scrollKey = `${scrollScope}\u0000${relativePath}`;
-    const existingState = revealStatesByPath.get(relativePath);
-    const state: FileRevealState = existingState ?? {
-      frameId: null,
-      cancelGuard: null,
-      handledRequestId: null,
-      latestRequestId: null,
-      scrollTop: savedFileScrollTops.get(scrollKey) ?? 0,
-      scrollContainer: null,
-      detachScrollListener: null,
-      restoreFrameId: null,
-    };
-    if (!existingState) revealStatesByPath.set(relativePath, state);
+      const stateKey = positionKey ?? relativePath;
+      const existingState = revealStatesByPath.get(stateKey);
+      const state: FileRevealState = existingState ?? {
+        frameId: null,
+        cancelGuard: null,
+        handledRequestId: null,
+        latestRequestId: null,
+        scrollTop: codeScrollPositions.get(positionKey) ?? 0,
+        scrollContainer: null,
+        detachScrollListener: null,
+        restoreFrameId: null,
+        revealedScrollTop: null,
+      };
+      if (!existingState) revealStatesByPath.set(stateKey, state);
 
-    const cancelPendingReveal = () => {
-      if (state.frameId !== null) {
-        cancelAnimationFrame(state.frameId);
-        state.frameId = null;
-      }
-      state.cancelGuard?.();
-      if (state.restoreFrameId !== null) {
-        cancelAnimationFrame(state.restoreFrameId);
-        state.restoreFrameId = null;
-      }
-    };
-
-    const scrollContainer = fileContainer.closest<HTMLElement>(".file-preview-virtualizer");
-
-    if (phase === "unmount") {
-      cancelPendingReveal();
-      state.detachScrollListener?.();
-      state.detachScrollListener = null;
-      saveFileScrollTop(scrollKey, state.scrollTop);
-      state.scrollContainer = null;
-      return;
-    }
-
-    const contents = instance.file?.contents;
-    const targetLine =
-      revealLine === null || contents === undefined ? null : clampFileLine(contents, revealLine);
-    updateFileLinkReveal(fileContainer, targetLine);
-
-    if (!(instance instanceof VirtualizedFile)) return;
-
-    if (state.latestRequestId !== revealRequestId) {
-      cancelPendingReveal();
-      state.latestRequestId = revealRequestId;
-      state.handledRequestId = null;
-    }
-
-    if (scrollContainer && state.scrollContainer !== scrollContainer) {
-      state.detachScrollListener?.();
-      state.scrollContainer = scrollContainer;
-      ensureFileScrollStoreSubscriptions();
-      const syncScrollTop = () => {
-        if (state.restoreFrameId === null && scrollContainer.isConnected) {
-          state.scrollTop = scrollContainer.scrollTop;
+      const cancelPendingReveal = () => {
+        if (state.frameId !== null) {
+          cancelAnimationFrame(state.frameId);
+          state.frameId = null;
+        }
+        state.cancelGuard?.();
+        if (state.restoreFrameId !== null) {
+          cancelAnimationFrame(state.restoreFrameId);
+          state.restoreFrameId = null;
         }
       };
-      scrollContainer.addEventListener("scroll", syncScrollTop, { passive: true });
-      activeFileScrollSnapshots.add(syncScrollTop);
-      state.detachScrollListener = () => {
-        scrollContainer.removeEventListener("scroll", syncScrollTop);
-        activeFileScrollSnapshots.delete(syncScrollTop);
-      };
-      const savedScrollTop = state.scrollTop;
-      // A pending line reveal owns the scroll position.
-      if (
-        savedScrollTop > 0 &&
-        (revealLine === null || state.handledRequestId === revealRequestId)
-      ) {
-        const restoreScroll = (attempt: number) => {
-          state.restoreFrameId = requestAnimationFrame(() => {
-            state.restoreFrameId = null;
-            if (!scrollContainer.isConnected) return;
-            if (scrollContainer.scrollTop !== 0) {
-              state.scrollTop = scrollContainer.scrollTop;
-              return;
-            }
-            // Wait for the virtualizer to size the file so the offset is not clamped.
-            const fits =
-              scrollContainer.scrollHeight - scrollContainer.clientHeight >= savedScrollTop;
-            if (fits || attempt >= REVEAL_MAX_ATTEMPTS) {
-              scrollContainer.scrollTop = savedScrollTop;
-              return;
-            }
-            restoreScroll(attempt + 1);
-          });
+
+      const scrollContainer = fileContainer.closest<HTMLElement>(".file-preview-virtualizer");
+
+      if (phase === "unmount") {
+        cancelPendingReveal();
+        state.detachScrollListener?.();
+        state.detachScrollListener = null;
+        codeScrollPositions.set(positionKey, state.scrollTop);
+        // A rebuilt CodeView estimates its line heights again, so a saved offset no longer points at
+        // the line. Starting the worker pool rebuilds the viewer right after its first render.
+        if (state.revealedScrollTop !== null && state.revealedScrollTop === state.scrollTop) {
+          state.handledRequestId = null;
+        }
+        state.revealedScrollTop = null;
+        state.scrollContainer = null;
+        return;
+      }
+
+      const contents = instance.file?.contents;
+      const targetLine =
+        revealLine === null || contents === undefined ? null : clampFileLine(contents, revealLine);
+      updateFileLinkReveal(fileContainer, targetLine);
+
+      if (!(instance instanceof VirtualizedFile)) return;
+
+      if (state.latestRequestId !== revealRequestId) {
+        cancelPendingReveal();
+        state.latestRequestId = revealRequestId;
+        state.handledRequestId = null;
+      }
+
+      if (scrollContainer && state.scrollContainer !== scrollContainer) {
+        state.detachScrollListener?.();
+        state.scrollContainer = scrollContainer;
+        ensureFileScrollStoreSubscriptions();
+        const syncScrollTop = () => {
+          if (state.restoreFrameId === null && scrollContainer.isConnected) {
+            state.scrollTop = scrollContainer.scrollTop;
+          }
         };
-        restoreScroll(0);
-      }
-    }
-
-    if (revealLine === null) {
-      fileContainer.style.minHeight = "";
-      return;
-    }
-
-    if (!scrollContainer) return;
-    fileContainer.style.minHeight = `${Math.ceil(
-      Math.max(instance.height, scrollContainer.clientHeight),
-    )}px`;
-
-    if (state.handledRequestId === revealRequestId || state.frameId !== null) {
-      return;
-    }
-
-    const resolveScrollTarget = (line: number): number | null => {
-      const linePosition = instance.getLinePosition(line);
-      if (!linePosition) return null;
-
-      const scrollContainerRect = scrollContainer.getBoundingClientRect();
-      const fileTop =
-        scrollContainer.scrollTop +
-        fileContainer.getBoundingClientRect().top -
-        scrollContainerRect.top;
-      const root = fileContainer.shadowRoot ?? fileContainer;
-      const renderedLineElement = root.querySelector<HTMLElement>(`[data-line="${line}"]`);
-      const renderedLineRect = renderedLineElement?.getBoundingClientRect();
-
-      return resolveCenteredFileLineScrollTop({
-        scrollTop: scrollContainer.scrollTop,
-        scrollHeight: scrollContainer.scrollHeight,
-        viewportTop: scrollContainerRect.top,
-        viewportHeight: scrollContainer.clientHeight,
-        fileTop,
-        estimatedLine: linePosition,
-        ...(renderedLineRect && renderedLineRect.height > 0
-          ? {
-              renderedLine: {
-                top: renderedLineRect.top,
-                height: renderedLineRect.height,
-              },
-            }
-          : {}),
-      });
-    };
-
-    const guardScrollTarget = (line: number) => {
-      let framesLeft = REVEAL_GUARD_FRAMES;
-      let guardFrameId: number | null = null;
-      const cancelGuard = () => {
-        if (guardFrameId !== null) {
-          cancelAnimationFrame(guardFrameId);
-          guardFrameId = null;
-        }
-        scrollContainer.removeEventListener("wheel", cancelGuard);
-        scrollContainer.removeEventListener("touchstart", cancelGuard);
-        scrollContainer.removeEventListener("pointerdown", cancelGuard, true);
-        window.removeEventListener("keydown", cancelGuard, true);
-        if (state.cancelGuard === cancelGuard) state.cancelGuard = null;
-      };
-      scrollContainer.addEventListener("wheel", cancelGuard, { passive: true });
-      scrollContainer.addEventListener("touchstart", cancelGuard, { passive: true });
-      // Capture gutter pointer events before Pierre stops propagation so comments can cancel the reveal
-      // guard.
-      scrollContainer.addEventListener("pointerdown", cancelGuard, {
-        passive: true,
-        capture: true,
-      });
-      window.addEventListener("keydown", cancelGuard, true);
-      const holdTarget = () => {
-        guardFrameId = null;
-        framesLeft -= 1;
-        if (framesLeft <= 0 || !scrollContainer.isConnected) {
-          cancelGuard();
-          return;
-        }
-        const targetTop = resolveScrollTarget(line);
+        scrollContainer.addEventListener("scroll", syncScrollTop, { passive: true });
+        activeFileScrollSnapshots.add(syncScrollTop);
+        state.detachScrollListener = () => {
+          scrollContainer.removeEventListener("scroll", syncScrollTop);
+          activeFileScrollSnapshots.delete(syncScrollTop);
+        };
+        const savedScrollTop = state.scrollTop;
+        // A pending line reveal owns the scroll position.
         if (
-          targetTop !== null &&
-          Math.abs(scrollContainer.scrollTop - targetTop) > REVEAL_GUARD_TOLERANCE_PX
+          savedScrollTop > 0 &&
+          (revealLine === null || state.handledRequestId === revealRequestId)
         ) {
-          scrollContainer.scrollTop = targetTop;
+          const restoreScroll = (attempt: number) => {
+            state.restoreFrameId = requestAnimationFrame(() => {
+              state.restoreFrameId = null;
+              if (!scrollContainer.isConnected) return;
+              if (scrollContainer.scrollTop !== 0) {
+                state.scrollTop = scrollContainer.scrollTop;
+                return;
+              }
+              // Wait for the virtualizer to size the file so the offset is not clamped.
+              const fits =
+                scrollContainer.scrollHeight - scrollContainer.clientHeight >= savedScrollTop;
+              if (fits || attempt >= REVEAL_MAX_ATTEMPTS) {
+                scrollContainer.scrollTop = savedScrollTop;
+                return;
+              }
+              restoreScroll(attempt + 1);
+            });
+          };
+          restoreScroll(0);
         }
-        guardFrameId = requestAnimationFrame(holdTarget);
+      }
+
+      if (revealLine === null) {
+        fileContainer.style.minHeight = "";
+        return;
+      }
+
+      if (!scrollContainer) return;
+      // CodeView's file element is the mounted window of rows, which the viewer sizes and places.
+      if (scroller === "virtualizer") {
+        fileContainer.style.minHeight = `${Math.ceil(
+          Math.max(instance.height, scrollContainer.clientHeight),
+        )}px`;
+      }
+
+      if (state.handledRequestId === revealRequestId || state.frameId !== null) {
+        return;
+      }
+
+      const resolveScrollTarget = (line: number): number | null => {
+        const linePosition = instance.getLinePosition(line);
+        if (!linePosition) return null;
+
+        const scrollContainerRect = scrollContainer.getBoundingClientRect();
+        const fileTop =
+          scrollContainer.scrollTop +
+          fileContainer.getBoundingClientRect().top -
+          scrollContainerRect.top;
+        const root = fileContainer.shadowRoot ?? fileContainer;
+        const renderedLineElement = root.querySelector<HTMLElement>(`[data-line="${line}"]`);
+        const renderedLineRect = renderedLineElement?.getBoundingClientRect();
+
+        return resolveCenteredFileLineScrollTop({
+          scrollTop: scrollContainer.scrollTop,
+          scrollHeight: scrollContainer.scrollHeight,
+          viewportTop: scrollContainerRect.top,
+          viewportHeight: scrollContainer.clientHeight,
+          fileTop,
+          estimatedLine: linePosition,
+          ...(renderedLineRect && renderedLineRect.height > 0
+            ? {
+                renderedLine: {
+                  top: renderedLineRect.top,
+                  height: renderedLineRect.height,
+                },
+              }
+            : {}),
+        });
       };
-      guardFrameId = requestAnimationFrame(holdTarget);
-      state.cancelGuard = cancelGuard;
+
+      const guardScrollTarget = (line: number) => {
+        let framesLeft = REVEAL_GUARD_FRAMES;
+        let guardFrameId: number | null = null;
+        const cancelGuard = () => {
+          if (guardFrameId !== null) {
+            cancelAnimationFrame(guardFrameId);
+            guardFrameId = null;
+          }
+          scrollContainer.removeEventListener("wheel", cancelGuard);
+          scrollContainer.removeEventListener("touchstart", cancelGuard);
+          scrollContainer.removeEventListener("pointerdown", cancelGuard, true);
+          window.removeEventListener("keydown", cancelGuard, true);
+          if (state.cancelGuard === cancelGuard) state.cancelGuard = null;
+        };
+        scrollContainer.addEventListener("wheel", cancelGuard, { passive: true });
+        scrollContainer.addEventListener("touchstart", cancelGuard, { passive: true });
+        // Capture gutter pointer events before Pierre stops propagation so comments can cancel the reveal
+        // guard.
+        scrollContainer.addEventListener("pointerdown", cancelGuard, {
+          passive: true,
+          capture: true,
+        });
+        window.addEventListener("keydown", cancelGuard, true);
+        const holdTarget = () => {
+          guardFrameId = null;
+          framesLeft -= 1;
+          if (framesLeft <= 0 || !scrollContainer.isConnected) {
+            cancelGuard();
+            return;
+          }
+          // CodeView's file element holds only its mounted rows, so only a mounted row places the line.
+          const targetTop =
+            scroller === "codeView" &&
+            !(fileContainer.shadowRoot ?? fileContainer).querySelector(`[data-line="${line}"]`)
+              ? null
+              : resolveScrollTarget(line);
+          if (
+            targetTop !== null &&
+            Math.abs(scrollContainer.scrollTop - targetTop) > REVEAL_GUARD_TOLERANCE_PX
+          ) {
+            scrollContainer.scrollTop = targetTop;
+          }
+          // The write's scroll event lands a frame later, and a rebuild before it must save this offset.
+          state.scrollTop = scrollContainer.scrollTop;
+          if (scroller === "codeView") state.revealedScrollTop = state.scrollTop;
+          guardFrameId = requestAnimationFrame(holdTarget);
+        };
+        guardFrameId = requestAnimationFrame(holdTarget);
+        state.cancelGuard = cancelGuard;
+      };
+
+      const scheduleReveal = (attempt: number) => {
+        state.frameId = requestAnimationFrame(() => {
+          state.frameId = null;
+          if (state.latestRequestId !== revealRequestId || !fileContainer.isConnected) {
+            return;
+          }
+
+          // Wait for contents and metrics; missing data would clamp fresh-mount reveals to line 1 and mark them
+          // handled.
+          const currentContents = instance.file?.contents;
+          const line =
+            currentContents === undefined ? null : clampFileLine(currentContents, revealLine);
+          const targetTop = line === null ? null : resolveScrollTarget(line);
+          if (line === null || targetTop === null) {
+            if (attempt < REVEAL_MAX_ATTEMPTS) scheduleReveal(attempt + 1);
+            return;
+          }
+          updateFileLinkReveal(fileContainer, line);
+
+          state.handledRequestId = revealRequestId;
+          if (scroller === "codeView") {
+            // That window's geometry cannot place the line, so the viewer scrolls to it.
+            // It centers its estimate of the line, and rows it mounts on arrival can still move it.
+            instance.scrollToLine(line, "center", (result) => {
+              if (result !== "settled") return;
+              state.scrollTop = scrollContainer.scrollTop;
+              state.revealedScrollTop = state.scrollTop;
+              guardScrollTarget(line);
+            });
+            return;
+          }
+          scrollContainer.scrollTop = targetTop;
+          guardScrollTarget(line);
+        });
+      };
+
+      scheduleReveal(0);
     };
 
-    const scheduleReveal = (attempt: number) => {
-      state.frameId = requestAnimationFrame(() => {
-        state.frameId = null;
-        if (state.latestRequestId !== revealRequestId || !fileContainer.isConnected) {
-          return;
-        }
-
-        // Wait for contents and metrics; missing data would clamp fresh-mount reveals to line 1 and mark them
-        // handled.
-        const currentContents = instance.file?.contents;
-        const line =
-          currentContents === undefined ? null : clampFileLine(currentContents, revealLine);
-        const targetTop = line === null ? null : resolveScrollTarget(line);
-        if (line === null || targetTop === null) {
-          if (attempt < REVEAL_MAX_ATTEMPTS) scheduleReveal(attempt + 1);
-          return;
-        }
-        updateFileLinkReveal(fileContainer, line);
-
-        scrollContainer.scrollTop = targetTop;
-        state.handledRequestId = revealRequestId;
-        guardScrollTarget(line);
-      });
-    };
-
-    scheduleReveal(0);
-  };
-
-  return { onPostRender, snapshotScroll };
+  return { onPostRenderFor, snapshotScroll };
 }
 
 const EMPTY_REVIEW_COMMENTS: ReadonlyArray<ReviewCommentContext> = [];
@@ -1123,7 +1161,6 @@ function EditableFileSurface({
     const entry = lineAnnotations
       .flatMap((annotation) => annotation.metadata.entries)
       .find((candidate) => candidate.id === entryId);
-    // oxlint-disable-next-line react/purity -- Submission timestamps are read in this event handler (oxc#27309).
     const createdAt = new Date().toISOString();
     if (entry && composerDraftTarget) {
       addReviewComment(composerDraftTarget, {
@@ -1302,25 +1339,6 @@ function EditableFileSurface({
   );
 }
 
-function selectRenderedContentOnSelectAll(event: ReactKeyboardEvent<HTMLElement>) {
-  const mac = isMacPlatform(navigator.platform);
-  const selectAll =
-    event.key.toLowerCase() === "a" &&
-    (mac ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey) &&
-    !event.shiftKey &&
-    !event.altKey;
-  // React bubbles keys from portaled children (the image dialog) through this surface.
-  if (
-    !selectAll ||
-    !(event.target instanceof Node) ||
-    !event.currentTarget.contains(event.target)
-  ) {
-    return;
-  }
-  event.preventDefault();
-  window.getSelection()?.selectAllChildren(event.currentTarget);
-}
-
 function RenderedMarkdownSurface({
   environmentId,
   cwd,
@@ -1364,7 +1382,6 @@ function RenderedMarkdownSurface({
       relativePath={relativePath}
       threadRef={threadRef}
       workspaceMutationId={workspaceMutationId}
-      onKeyDown={selectRenderedContentOnSelectAll}
       onTaskListChange={onTaskListChange}
     />
   );
@@ -1379,7 +1396,23 @@ function initialExplorerOpen(): boolean {
   }
 }
 
-export default function FilePreviewPanel({
+export default function FilePreviewPanel(props: FilePreviewPanelProps) {
+  const relativePath =
+    props.attachment === undefined
+      ? resolveFilePreviewPath(props.relativePath, props.cwd)
+      : props.relativePath;
+  const positionKey =
+    props.attachment === undefined && relativePath !== null
+      ? previewPositionKey(props.environmentId, props.threadRef.threadId, props.cwd, relativePath)
+      : null;
+  return (
+    <PreviewPositionKey value={positionKey}>
+      <FilePreviewPanelContent {...props} />
+    </PreviewPositionKey>
+  );
+}
+
+function FilePreviewPanelContent({
   environmentId,
   cwd,
   repositoryRoot,
@@ -1463,12 +1496,12 @@ export default function FilePreviewPanel({
     attachment === undefined &&
     (file.isNotFile || (folderTrail !== undefined && file.data === null && file.error === null));
   const hostFolderPath = isFolder && isHostFile ? relativePath : null;
-  // A chat-linked folder reads as a file until its read settles, and revealing a
-  // folder selects it in its parent instead of opening it, so reveal waits.
-  const revealsInFileManager =
-    !isFolder &&
-    (file.data !== null || file.error !== null) &&
-    serverConfig?.shellRevealInFileManager === true;
+  // A chat-linked folder reads as a file until its read settles, and a trail only implies a folder.
+  const fileManagerAction = fileManagerActionForPath({
+    isFolder: relativePath === null || file.isNotFile,
+    isSettled: file.data !== null || file.error !== null,
+    canReveal: serverConfig?.shellRevealInFileManager === true,
+  });
   // Everything preview-related keys off previewPath; a folder has no preview.
   const previewPath = isFolder ? null : relativePath;
   const [explorerOpen, setExplorerOpen] = useState(initialExplorerOpen);
@@ -1558,6 +1591,7 @@ export default function FilePreviewPanel({
     (!isMarkdown || markdownRenderable);
   const showsRawText =
     previewPath !== null &&
+    !isMedia &&
     file.data !== null &&
     !(isMarkdown && renderMarkdown) &&
     !renderMermaid &&
@@ -1680,9 +1714,20 @@ export default function FilePreviewPanel({
   // Mentions resolve against the workspace, so only workspace files can be added.
   const canAddToChat =
     previewPath !== null && relativePath !== null && !isHostFile && composerRef !== null;
-  const { onPostRender: onFilePostRender, snapshotScroll: snapshotFileScroll } = useFileLineReveal(
-    `${environmentId}\u0000${cwd}`,
+  const downloadFile = useFileDownload(environmentId);
+  // PDFs, large text, and binary or document files render their own Save button.
+  const rendersOwnSave =
+    isPdf ||
+    showsLargeText ||
+    (!isMedia && !renderBrowserFile && (isDocument || file.readError?.failure === "binary_file"));
+  const handleSave =
+    downloadFile && previewPath !== null && absolutePath !== null && !rendersOwnSave
+      ? () => downloadFile(cwd, absolutePath)
+      : null;
+  const positionKey = useContext(PreviewPositionKey);
+  const { onPostRenderFor: fileLineReveal, snapshotScroll: snapshotFileScroll } = useFileLineReveal(
     relativePath,
+    positionKey,
     revealLine,
     revealRequestId,
   );
@@ -1872,13 +1917,14 @@ export default function FilePreviewPanel({
                   availableEditors={availableEditors}
                   openInCwd={absolutePath}
                   openInCwdIsFile={file.isFile}
-                  revealFileManager={revealsInFileManager}
+                  fileManagerAction={fileManagerAction}
                   compact
                 />
               ) : null}
               {showsRawText ||
               canOpenInBrowser ||
               copyableContents !== null ||
+              handleSave !== null ||
               (showsLargeText && absolutePath !== null && relativePath !== null) ||
               (foldActions && canAddToChat) ? (
                 <Menu>
@@ -1925,6 +1971,12 @@ export default function FilePreviewPanel({
                         {isCopied ? <T>Copied</T> : <T>Copy contents</T>}
                       </MenuItem>
                     ) : null}
+                    {handleSave ? (
+                      <MenuItem onClick={handleSave}>
+                        <DownloadIcon aria-hidden />
+                        {gt("Save file")}
+                      </MenuItem>
+                    ) : null}
                     {showsLargeText && absolutePath && relativePath ? (
                       <LargeFileActions
                         environmentId={environmentId}
@@ -1963,7 +2015,7 @@ export default function FilePreviewPanel({
       ref={setSurfaceElement}
       className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background"
     >
-      <FileScrollSnapshot relativePath={relativePath} snapshot={snapshotFileScroll} />
+      <FileScrollSnapshot scrollKey={positionKey ?? relativePath} snapshot={snapshotFileScroll} />
       {fileHeader ? (
         <div className={FILE_SURFACE_SUBHEADER_CLASS} data-surface-subheader>
           {fileHeader.crumbs}
@@ -2054,10 +2106,11 @@ export default function FilePreviewPanel({
               workspaceRoot={cwd}
               title={relativePath}
               workspaceMutationId={workspaceMutationId}
+              refreshRevision={fileRefreshRevision}
             />
           ) : relativePath && absolutePath && showsLargeText ? (
             <WorkspaceLargeTextPreview
-              key={`${absolutePath}:${renderTable}:${renderMarkdown}:${fileRefreshRevision}`}
+              key={`${threadRef.threadId}:${absolutePath}:${renderTable}:${renderMarkdown}:${fileRefreshRevision}`}
               environmentId={environmentId}
               threadRef={threadRef}
               absolutePath={absolutePath}
@@ -2068,7 +2121,7 @@ export default function FilePreviewPanel({
               copyContents={copyLargeText}
               preview={file.data?.contents ?? ""}
               sizeBytes={file.data?.byteLength ?? 0}
-              onPostRender={onFilePostRender}
+              onPostRender={fileLineReveal("codeView")}
               workspaceMutationId={workspaceMutationId}
               revealLine={revealLine}
               revealRequestId={revealRequestId}
@@ -2078,7 +2131,7 @@ export default function FilePreviewPanel({
             absolutePath &&
             (isDocument || file.readError?.failure === "binary_file") ? (
             <WorkspaceDocumentPreview
-              key={`${environmentId}:${absolutePath}`}
+              key={`${environmentId}:${threadRef.threadId}:${absolutePath}`}
               environmentId={environmentId}
               threadRef={threadRef}
               draft={draft}
@@ -2135,28 +2188,34 @@ export default function FilePreviewPanel({
                 threadRef={threadRef}
                 contents={file.data.contents}
                 workspaceMutationId={workspaceMutationId}
-                readOnly={file.data.truncated || isHostFile || !canWriteFiles}
+                readOnly={
+                  file.data.truncated || file.data.readOnly === true || isHostFile || !canWriteFiles
+                }
                 onPendingChange={onPendingChange}
               />
             ) : tableDelimiter && renderTable ? (
               <DelimitedTablePreview
-                key={relativePath}
+                key={`${threadRef.threadId}:${relativePath}`}
                 name={relativePath}
                 text={file.data.contents}
                 delimiter={tableDelimiter}
               />
-            ) : file.data.truncated || isHostFile || !canWriteFiles ? (
+            ) : file.data.truncated ||
+              file.data.readOnly === true ||
+              isHostFile ||
+              !canWriteFiles ? (
               <SourceFilePreview
+                key={`${threadRef.threadId}:${relativePath}`}
                 name={relativePath}
                 text={file.data.contents}
                 cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
-                onPostRender={onFilePostRender}
+                onPostRender={fileLineReveal("codeView")}
                 wordWrap={wordWrap}
               />
             ) : (
               <DiffWorkerPoolProvider>
                 <EditableFileSurface
-                  key={`${relativePath}:${resolvedTheme}`}
+                  key={`${threadRef.threadId}:${relativePath}:${resolvedTheme}`}
                   environmentId={environmentId}
                   projectId={projectId}
                   cwd={cwd}
@@ -2166,7 +2225,7 @@ export default function FilePreviewPanel({
                   resolvedTheme={resolvedTheme}
                   revealRequestId={revealRequestId}
                   wordWrap={wordWrap}
-                  onPostRender={onFilePostRender}
+                  onPostRender={fileLineReveal("virtualizer")}
                   onPendingChange={onPendingChange}
                   onEditorChange={handleEditorChangeStable}
                 />
@@ -2198,6 +2257,10 @@ export default function FilePreviewPanel({
                 selectedPathRevealId={revealRequestId}
                 visible={showExplorer}
                 onOpenFile={openFileFromSurface}
+                onOpenFilePreview={(path) => {
+                  setRenderMarkdownPreferred(true);
+                  openFileFromSurface(path);
+                }}
                 answersPanelFind={!previewPath}
                 workspaceMutationId={workspaceMutationId}
                 {...(previewPath && !isMedia && !isPdf

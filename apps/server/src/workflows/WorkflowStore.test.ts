@@ -685,51 +685,6 @@ it.effect("tells the milestone hub of each run and question transition once", ()
   ),
 );
 
-it.effect("a run waiting on you is listed however many runs started after it", () =>
-  withStore(
-    Effect.gen(function* () {
-      const store = yield* WorkflowStore.WorkflowStore;
-      const start = (runId: string) =>
-        store.runStarted({
-          runId,
-          workflow: "ask",
-          version: 1,
-          engineTag: "ask@1",
-          idempotencyKey: runId,
-          input: {},
-        });
-      yield* start("old");
-      yield* store.runStatus("old", "waiting", "waiting on you");
-      yield* store.waitOpened({
-        runId: "old",
-        name: "approve",
-        workflow: "ask",
-        key: undefined,
-        token: "t",
-        schemaJson: "{}",
-        requestJson: '{"title":"Ship it?"}',
-        watchJson: null,
-        deadline: null,
-      });
-      yield* start("paused");
-      yield* store.runPaused("paused", "gave up", true);
-      for (let index = 0; index < 500; index++) {
-        yield* TestClock.adjust("1 second");
-        yield* start(`new-${index}`);
-        yield* store.runEnded(`new-${index}`, "completed", null, null);
-      }
-      assert.deepStrictEqual(
-        (yield* store.requests).map((wait) => wait.run_id),
-        ["old"],
-      );
-      // Needs you lists the paused runs and open questions it is sent; one it is not sent is lost.
-      const listed = new Set((yield* store.runs(undefined)).map((run) => run.run_id));
-      assert.isTrue(listed.has("old"));
-      assert.isTrue(listed.has("paused"));
-    }),
-  ),
-);
-
 const started = (
   store: WorkflowStore.WorkflowStore["Service"],
   runId: string,
@@ -959,6 +914,83 @@ it.effect("reads that run on every change or sweep do not read every run", () =>
     }),
   ),
 );
+
+it.effect("runsWhere keyPrefix matches keys whose next character is the highest code point", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      const start = (runId: string, idempotencyKey: string) =>
+        store.runStarted({
+          runId,
+          workflow: "intake",
+          version: 1,
+          engineTag: "intake@1",
+          idempotencyKey,
+          input: {},
+        });
+      const maxScalar = String.fromCodePoint(0x10ffff);
+      yield* start("a", "case/abc");
+      yield* start("b", `case/${maxScalar}tail`);
+      yield* start("c", "case0");
+      yield* start("max-hit", `${maxScalar}x`);
+      yield* start("bmp-hit", `a\uD7FF${maxScalar}`);
+      yield* start("bmp-next", "a\uE000");
+
+      const ids = (keyPrefix: string) =>
+        Effect.map(store.runsWhere({ keyPrefix }), (rows) => rows.map((row) => row.run_id));
+
+      assert.deepStrictEqual(yield* ids("case/"), ["b", "a"]);
+      assert.deepStrictEqual(yield* ids(maxScalar), ["max-hit"]);
+      assert.deepStrictEqual(yield* ids("a\uD7FF"), ["bmp-hit"]);
+    }),
+  ),
+);
+
+it.effect("a run waiting on you is listed however many runs started after it", () =>
+  withStore(
+    Effect.gen(function* () {
+      const store = yield* WorkflowStore.WorkflowStore;
+      const start = (runId: string) =>
+        store.runStarted({
+          runId,
+          workflow: "ask",
+          version: 1,
+          engineTag: "ask@1",
+          idempotencyKey: runId,
+          input: {},
+        });
+      yield* start("old");
+      yield* store.runStatus("old", "waiting", "waiting on you");
+      yield* store.waitOpened({
+        runId: "old",
+        name: "approve",
+        workflow: "ask",
+        key: undefined,
+        token: "t",
+        schemaJson: "{}",
+        requestJson: '{"title":"Ship it?"}',
+        watchJson: null,
+        deadline: null,
+      });
+      yield* start("paused");
+      yield* store.runPaused("paused", "gave up", true);
+      for (let index = 0; index < 500; index++) {
+        yield* TestClock.adjust("1 second");
+        yield* start(`new-${index}`);
+        yield* store.runEnded(`new-${index}`, "completed", null, null);
+      }
+      assert.deepStrictEqual(
+        (yield* store.requests).map((wait) => wait.run_id),
+        ["old"],
+      );
+      // Needs you lists the paused runs and open questions it is sent; one it is not sent is lost.
+      const listed = new Set((yield* store.runs(undefined)).map((run) => run.run_id));
+      assert.isTrue(listed.has("old"));
+      assert.isTrue(listed.has("paused"));
+    }),
+  ),
+);
+
 it.effect("a resumed run takes back all it held, though a smaller limit queued meanwhile", () =>
   withStore(
     Effect.gen(function* () {

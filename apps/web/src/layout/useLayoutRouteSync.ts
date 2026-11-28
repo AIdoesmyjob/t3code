@@ -21,7 +21,8 @@ import {
 } from "./layoutModel";
 import { useLayoutBehavior, type LayoutNewTabPosition } from "./layoutBehavior";
 import { arrangeLayoutChange, useLayoutStore, type LayoutNewTabRequest } from "./layoutStore";
-import { followLayoutCompanions } from "./openRules";
+import { clearPaneTabSelection } from "./paneTabSelection";
+import { followLayoutCompanions, switchesThread } from "./openRules";
 import { layoutChatRoute } from "./useLayoutSettingsSync";
 import { layoutPageHref, layoutRoutePage } from "./pageNavigation";
 import { isAppModalPage, getMainAppHref } from "../components/sidebar/mainAppLocation";
@@ -102,7 +103,11 @@ export function useLayoutRouteSync(
   threadTarget: ThreadRouteTarget | null,
   /** The URL is the index, which shows the layout with no thread behind the URL. */
   atIndex = false,
-): LayoutState {
+): {
+  layout: LayoutState;
+  /** Counts routes that switched to another thread, from the render that first shows each. */
+  switches: number;
+} {
   const navigate = useNavigate();
   const location = useLocation();
   const routePage = layoutRoutePage(location);
@@ -140,6 +145,7 @@ export function useLayoutRouteSync(
   const [sync, setSync] = useState(() => ({
     startedPaused: appModalPaused,
     settled: true,
+    switches: 0,
     request: {
       href:
         routeContent && isReloadedRoute() && findLayoutTabByContent(layout, routeContent)
@@ -157,19 +163,21 @@ export function useLayoutRouteSync(
   if (!appModalPaused && (sync.startedPaused || request.href !== routeHref)) {
     const pending = request.href !== routeHref;
     const restoringWorkspace = sync.startedPaused && location.href === getMainAppHref();
+    const routed =
+      pending && routeContent && !restoringWorkspace
+        ? arrangeLayoutChange(
+            layout,
+            showRouteInLayout(layout, routeContent, promotedDraftId, newTab),
+          )
+        : layout;
     setSync({
       startedPaused: false,
       settled: false,
+      switches: sync.switches + (switchesThread(layout, routed) ? 1 : 0),
       request: {
         href: routeHref,
         base: layout,
-        derived:
-          pending && routeContent && !restoringWorkspace
-            ? arrangeLayoutChange(
-                layout,
-                showRouteInLayout(layout, routeContent, promotedDraftId, newTab),
-              )
-            : layout,
+        derived: routed,
         content: routeContent,
         promotedDraftId,
         newTab,
@@ -185,11 +193,19 @@ export function useLayoutRouteSync(
     documentRouteShown = true;
   }, []);
   const committedRequest = useRef<typeof request | null>(null);
+  const lastLocationHrefRef = useRef(location.href);
   // Commit before paint, including commitDerived's fallback if queued focus or
   // another store update changed the base after this route was rendered.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Commit the rendered route request to the external layout store before pane DOM paints.
   useLayoutEffect(() => {
-    if (appModalPaused) return;
+    if (lastLocationHrefRef.current !== location.href) {
+      lastLocationHrefRef.current = location.href;
+      clearPaneTabSelection();
+    }
+    if (appModalPaused) {
+      clearPaneTabSelection();
+      return;
+    }
     routeKeyRef.current = routeKey;
     if (committedRequest.current === request) return;
     committedRequest.current = request;
@@ -205,7 +221,7 @@ export function useLayoutRouteSync(
       );
     }
     if (newTab && content) useLayoutStore.getState().clearNewTabRequest();
-  }, [appModalPaused, request, routeKey]);
+  }, [appModalPaused, location.href, request, routeKey]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to layout focus changes and keeps the router URL aligned with the focused tab
   useEffect(() => {
@@ -272,5 +288,5 @@ export function useLayoutRouteSync(
     }
   }, [navigate, readAppModalPaused]);
 
-  return appModalPaused ? layout : derived;
+  return { layout: appModalPaused ? layout : derived, switches: sync.switches };
 }

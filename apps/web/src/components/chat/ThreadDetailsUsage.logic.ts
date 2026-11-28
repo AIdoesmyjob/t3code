@@ -47,6 +47,26 @@ export function resolveThreadDetailsLimits(
   return hubPool(provider.driver, model, providers, hubs, now) ?? { kind: "instance", limits: own };
 }
 
+export function resolveThreadHttpQuotas(
+  providerInstanceId: ProviderInstanceId | null,
+  sources: UsageLimitSourceSnapshots,
+) {
+  if (providerInstanceId === null) return [];
+  return sources.flatMap((source) =>
+    source.kind === "http"
+      ? (source.quotaAccounts ?? []).flatMap((account) =>
+          account.providerInstanceId === providerInstanceId
+            ? account.windows.map((window) => ({
+                key: JSON.stringify([source.id, account.id, window.id]),
+                accountLabel: account.label,
+                window,
+              }))
+            : [],
+        )
+      : [],
+  );
+}
+
 export function nextPoolReset(window: LimitPoolWindow, now: number) {
   const pooled = window.members.length > 1;
   return (
@@ -121,8 +141,6 @@ function windowMetersModel(
   model: string | null,
 ): boolean | null {
   if (model === null) return null;
-  // Antigravity usage no longer says which model a window meters, so the nearest per period shows.
-  if (driver === "antigravity") return null;
   if (driver === "claudeAgent" && window.id.startsWith("seven_day_")) {
     const scope = window.id.slice("seven_day_".length);
     return `_${model.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_`.includes(`_${scope}_`);

@@ -52,10 +52,21 @@ import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
 import { Button } from "~/components/ui/button";
 import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { PaneNotch } from "~/components/PaneNotch";
+import { closeLayoutTabOrSelectionByUser } from "~/layout/layoutActions";
 import { beginLayoutTabDrag } from "~/layout/layoutDrag";
+import {
+  handlePaneTabClick,
+  isLayoutTabSelected,
+  useIsLayoutTabSelected,
+} from "~/layout/paneTabSelection";
 import { useLayoutStore } from "~/layout/layoutStore";
 import { useLayoutPane, useLayoutPaneFocusedRef } from "~/layout/layoutPaneContext";
-import { LayoutPaneTab, LayoutPaneTabStrip, useLayoutPaneSiblingTabs } from "~/layout/PaneTabs";
+import {
+  LayoutPaneTab,
+  LayoutPaneTabStrip,
+  showLayoutTabMenu,
+  useLayoutPaneSiblingTabs,
+} from "~/layout/PaneTabs";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -78,6 +89,7 @@ import {
   isDiffToggleShortcut,
   isTerminalClearShortcut,
   isTerminalNewShortcut,
+  isTerminalCycleShortcut,
   isTerminalSplitShortcut,
   isTerminalSplitVerticalShortcut,
   isTerminalToggleShortcut,
@@ -107,6 +119,7 @@ import { readEnvironmentScope } from "../state/session";
 import { terminalEnvironment } from "../state/terminal";
 import { useEnvironmentScope } from "../state/session";
 import { openTerminalLinkInPreview } from "./preview/openTerminalLinkInPreview";
+import { useOpenInSystemBrowser } from "../browser/useOpenInSystemBrowser";
 import { terminalInputWriter } from "./terminal/terminalInputWriter";
 import { useAtomCommand } from "../state/use-atom-command";
 import { preventTerminalCloseShortcut } from "../lib/terminalCloseShortcut";
@@ -714,6 +727,8 @@ function TerminalSessionViewport({
       if (version > 0) synchronizedStatusRef.current = status;
     },
   );
+  const openInSystemBrowser = useOpenInSystemBrowser(environmentId);
+  const openLinkInSystemBrowser = useEffectEvent((url: string) => openInSystemBrowser(url));
   const openLinkInPreview = useEffectEvent(
     (url: string, forceBrowser: boolean, fallbackToBrowser: () => void) =>
       openTerminalLinkInPreview({ url, threadRef, openPreview, fallbackToBrowser, forceBrowser }),
@@ -1129,6 +1144,7 @@ function TerminalSessionViewport({
           isTerminalSplitShortcut(event, currentKeybindings, options) ||
           isTerminalSplitVerticalShortcut(event, currentKeybindings, options) ||
           isTerminalNewShortcut(event, currentKeybindings, options) ||
+          isTerminalCycleShortcut(event, currentKeybindings, options) ||
           isDiffToggleShortcut(event, currentKeybindings, options) ||
           // Match Sidebar's context, or a key it will reject skips the shell.
           isThreadNavigationShortcut(event, currentKeybindings, {
@@ -1137,9 +1153,15 @@ function TerminalSessionViewport({
         ) {
           return false;
         }
-        // Tab switching belongs to the layout, so it bubbles to the app's handler.
+        // Tab switching and the side pane fill belong to the layout, so they bubble to the app.
         const command = resolveShortcutCommand(event, currentKeybindings, options);
-        if (command === "tab.next" || command === "tab.previous") return false;
+        if (
+          command === "tab.next" ||
+          command === "tab.previous" ||
+          command === "rightPanel.toggleMaximized"
+        ) {
+          return false;
+        }
 
         const activeTerminal = terminalRef.current;
         const navigationData = activeTerminal
@@ -1184,7 +1206,7 @@ function TerminalSessionViewport({
             return;
           }
           const fallbackToBrowser = () => {
-            void localApi.shell.openExternal(text).catch((error: unknown) => {
+            void openLinkInSystemBrowser(text).catch((error: unknown) => {
               writeSystemMessage(
                 latestTerminal,
                 thrownErrorMessage(error, m) ?? m(msg("Unable to open link")),
@@ -1496,12 +1518,14 @@ function TerminalTabStrip({
   children: ReactNode;
 }) {
   const gt = useGT();
-  const { tabId } = useLayoutPane();
+  const { tabId, paneId } = useLayoutPane();
+  const selected = useIsLayoutTabSelected(notch ? paneId : null, notch ? tabId : null);
   if (notch) {
     return (
       <div
         ref={ref}
         data-layout-pane-tab={tabId ?? undefined}
+        data-selected-tab={selected ? "" : undefined}
         className="flex shrink-0 items-center gap-1"
         role="tablist"
         aria-label={gt("Terminals")}
@@ -2078,6 +2102,21 @@ export default function ThreadTerminalDrawer({
                           ? (event) => beginLayoutTabDrag(event, layoutTabId)
                           : undefined
                       }
+                      onContextMenu={
+                        mode === "pane" && layoutTabId !== null
+                          ? (event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              void showLayoutTabMenu(
+                                layoutTabId,
+                                { x: event.clientX, y: event.clientY },
+                                keybindings,
+                                undefined,
+                                contextMenuSourceOf(event),
+                              );
+                            }
+                          : undefined
+                      }
                       className={cn(
                         "group/tab flex h-7 shrink-0 items-center gap-1.75 rounded-control px-2.5 text-label",
                         isActive
@@ -2091,7 +2130,17 @@ export default function ThreadTerminalDrawer({
                         {/* The terminal icon turns into the close button on hover, like the panel tabs. */}
                         <PanelTabCloseButton
                           label={closeTerminalLabel}
-                          onClick={() => confirmCloseTerminal(terminalId)}
+                          onClick={() => {
+                            if (
+                              mode === "pane" &&
+                              layoutTabId !== null &&
+                              isLayoutTabSelected(layoutTabId)
+                            ) {
+                              closeLayoutTabOrSelectionByUser(layoutTabId);
+                              return;
+                            }
+                            confirmCloseTerminal(terminalId);
+                          }}
                         >
                           <SquareTerminal
                             aria-hidden
@@ -2114,7 +2163,16 @@ export default function ThreadTerminalDrawer({
                                   .filter(Boolean)
                                   .join(", ")}
                                 className="flex min-w-0 cursor-pointer items-center rounded-kbd outline-none focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-ring"
-                                onClick={() => onActiveTerminalChange(terminalId)}
+                                onClick={(event) => {
+                                  if (
+                                    mode === "pane" &&
+                                    layoutTabId !== null &&
+                                    handlePaneTabClick(event, layoutTabId, { active: isActive })
+                                  ) {
+                                    return;
+                                  }
+                                  onActiveTerminalChange(terminalId);
+                                }}
                               />
                             }
                           >

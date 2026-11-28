@@ -4,6 +4,7 @@ import { page, userEvent } from "vite-plus/test/browser";
 import type { ReactNode } from "react";
 
 import { act, render } from "../../../test/render";
+import { getStandardThemeColors, type ThemeDefinition } from "../../themePalette";
 import { Dialog, DialogPopup, DialogTitle } from "../ui/dialog";
 import { ThemeEditorPanel } from "./ThemeEditorPanel";
 
@@ -115,6 +116,30 @@ async function renderBesideSettings() {
   };
 }
 
+const IME_ESCAPE_229 = { key: "Escape", keyCode: 229, bubbles: true, cancelable: true };
+
+async function pressImeEscapes(target: HTMLElement) {
+  // The bare 229 goes first, before a compositionend opens Base UI's own composition window.
+  for (const { compositionEnd, ...composition } of [
+    { key: "Escape", isComposing: false, keyCode: 229, compositionEnd: false },
+    { key: "Escape", isComposing: true, keyCode: 27, compositionEnd: false },
+    // Safari ends the composition just before the Escape keydown.
+    { key: "Escape", isComposing: false, keyCode: 229, compositionEnd: true },
+  ]) {
+    const keydown = new KeyboardEvent("keydown", {
+      ...composition,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(() => {
+      if (compositionEnd)
+        target.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+      target.dispatchEvent(keydown);
+    });
+    expect(keydown.defaultPrevented).toBe(false);
+  }
+}
+
 // The modal Settings dialog marks the editor inert, hiding it from role queries and pointer input.
 async function editorElement(selector: string) {
   const query = () => document.querySelector<HTMLElement>(`[data-theme-editor-panel] ${selector}`);
@@ -186,6 +211,14 @@ describe("ThemeEditorPanel", () => {
       pointerAt(hueSlider, "pointerup", 0.5);
     });
     await expect.element(hex).not.toHaveValue(original);
+    const edited = (hex.element() as HTMLInputElement).value;
+
+    const pickerHex = page.getByRole("textbox", { name: "Accent picker hex value" });
+    await act(() =>
+      pickerHex.element().dispatchEvent(new KeyboardEvent("keydown", IME_ESCAPE_229)),
+    );
+    await expect.element(hue).toBeInTheDocument();
+    expect((hex.element() as HTMLInputElement).value).toBe(edited);
 
     await act(async () => {
       pointerAt(hueSlider, "pointerdown", 0.25);
@@ -234,7 +267,12 @@ describe("ThemeEditorPanel", () => {
 
   it("closes on Escape without closing Settings", async () => {
     await using view = await renderBesideSettings();
-    (await editorElement("input")).focus();
+    const input = await editorElement("input");
+    input.focus();
+    await pressImeEscapes(input);
+    expect(view.onEditorOpenChange).not.toHaveBeenCalled();
+    expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+
     await userEvent.keyboard("{Escape}");
 
     expect(view.onEditorOpenChange).toHaveBeenCalledWith(false);
@@ -245,6 +283,11 @@ describe("ThemeEditorPanel", () => {
     await using view = await renderBesideSettings();
     (await editorElement('[aria-label="Inspect app colors"]')).click();
     await editorElement('[aria-label="Cancel inspecting app colors"]');
+    await pressImeEscapes(await editorElement("input"));
+    await editorElement('[aria-label="Cancel inspecting app colors"]');
+    expect(view.onEditorOpenChange).not.toHaveBeenCalled();
+    expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+
     await userEvent.keyboard("{Escape}");
 
     await editorElement('[aria-label="Inspect app colors"]');
@@ -265,6 +308,9 @@ describe("ThemeEditorPanel", () => {
 
     const editor = await editorElement('textarea[aria-label="Custom CSS"]');
     editor.focus();
+    const imeEscape = new KeyboardEvent("keydown", IME_ESCAPE_229);
+    await act(() => editor.dispatchEvent(imeEscape));
+    expect(imeEscape.defaultPrevented).toBe(false);
     await userEvent.keyboard("{Escape}");
     editor.dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -282,5 +328,82 @@ describe("ThemeEditorPanel", () => {
 
     expect(view.onEditorOpenChange).toHaveBeenCalledWith(false);
     expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("clears the advanced color filter on Escape before closing on a second Escape", async () => {
+    await using view = await renderBesideSettings();
+    (await editorElement('[aria-label="Use advanced theme colors"]')).click();
+
+    const filter = (await editorElement('input[aria-label="Filter colors"]')) as HTMLInputElement;
+    filter.focus();
+    await userEvent.keyboard("accent");
+    await expect.poll(() => filter.value).toBe("accent");
+
+    await userEvent.keyboard("{Escape}");
+    await expect.poll(() => filter.value).toBe("");
+    expect(view.onEditorOpenChange).not.toHaveBeenCalled();
+    expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      filter.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          cancelable: true,
+          key: "Escape",
+          repeat: true,
+        }),
+      );
+    });
+    expect(view.onEditorOpenChange).not.toHaveBeenCalled();
+    expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+
+    await userEvent.keyboard("{Escape}");
+    expect(view.onEditorOpenChange).toHaveBeenCalledWith(false);
+    expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps the color filter on an IME Escape", async () => {
+    await using view = await renderBesideSettings();
+    (await editorElement('[aria-label="Use advanced theme colors"]')).click();
+
+    const filter = (await editorElement('input[aria-label="Filter colors"]')) as HTMLInputElement;
+    filter.focus();
+    await userEvent.keyboard("accent");
+    await expect.poll(() => filter.value).toBe("accent");
+
+    await pressImeEscapes(filter);
+    expect(filter.value).toBe("accent");
+    expect(view.onEditorOpenChange).not.toHaveBeenCalled();
+    expect(view.onSettingsOpenChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps appearance switching available in advanced mode for dual-palette themes", async () => {
+    const editingTheme: ThemeDefinition = {
+      id: "custom-hand-tuned",
+      label: "Hand Tuned",
+      appearance: "dark",
+      colors: { ...getStandardThemeColors("dark"), sidebar: "#123456" },
+      variants: {
+        light: { ...getStandardThemeColors("light"), sidebar: "#abcdef" },
+      },
+    };
+    await using _screen = await render(
+      <ThemeEditorPanel
+        open
+        onOpenChange={() => {}}
+        onSaved={() => true}
+        editingTheme={editingTheme}
+        initialAppearance="dark"
+        restoreTheme={() => {}}
+      />,
+    );
+
+    await expect
+      .element(page.getByRole("switch", { name: "Use advanced theme colors" }))
+      .toBeChecked();
+    await userEvent.click(page.getByRole("button", { name: "Light" }));
+    await expect
+      .element(page.getByRole("textbox", { name: "Sidebar background hex value" }))
+      .toHaveValue("#abcdef");
   });
 });

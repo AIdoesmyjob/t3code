@@ -1,18 +1,31 @@
 # Appearance and themes
 
-Customize T3 Code's theme, light/dark appearance, math rendering, motion, and custom CSS. Appearance settings are saved per device or browser.
+Customize T3 Code's theme, light/dark appearance, app icon, style, math rendering, motion, and custom CSS. Appearance settings are saved per device or browser.
 
 ## Switch themes and appearance
 
-- **Web and desktop**: Open **Settings → Appearance** to choose a theme and light, dark, or system mode. Select the light or dark preview on a theme card to pair different themes with each mode.
+- **Web and desktop**: Open **Settings → Appearance** to choose a theme and light, black chrome, dark, or system mode. **Black chrome** is light mode with a black window and sidebar around the light panes. Select the light or dark preview on a theme card to pair different themes with each mode.
   - Open theme picker from anywhere: `Cmd+Option+A` (macOS) or `Ctrl+Alt+A` (Windows/Linux), or **Change theme** in the command palette.
-  - Cycle System / Light / Dark: `Cmd+Option+Shift+A` (macOS) or `Ctrl+Alt+Shift+A` (Windows/Linux), or **Change appearance** in the command palette.
+  - Cycle System / Light / Black chrome / Dark: `Cmd+Option+Shift+A` (macOS) or `Ctrl+Alt+Shift+A` (Windows/Linux), or **Change appearance** in the command palette.
 - **Mobile**: Open **Settings → Appearance**. Mobile uses its own themes and text/code/terminal preferences and does not follow environment themes.
   - On Android 12+, **Material You** pulls colors from your wallpaper (configurable separately for light and dark), and **Material You Layout** controls Material You shapes and spacing independently of the theme.
 
-## Composer context
+## App icon
 
-Git-backed projects show branch and worktree controls below the composer before the first message. Turn on **Settings → Appearance → Composer context** (web and desktop) to keep those controls visible after the thread starts.
+On web and desktop, open **Settings → Appearance** and choose **App icon**, or use **Change app
+icon** in the command palette, to pick the black, Sunrise, or Blueprint icon or an older T3 Code
+icon. Desktop shows it in the Dock or taskbar, and the browser shows it in the tab. **Default**
+returns to your build's own icon. The choice is saved separately on each device.
+
+On macOS, the chosen icon shows in the Dock while T3 Code runs; when it is closed, the Dock and
+Finder show the default icon.
+
+## Style
+
+On web and desktop, **Style** in **Settings → Appearance** sets how buttons and controls are
+painted, independently of the theme: **Standard** (the default), **Flat**, **Soft**, **Gloss**,
+**Accent gloss**, or **Outline**. Accent gloss paints main buttons, the send button, and switches
+in the theme's accent color.
 
 ## Math
 
@@ -24,7 +37,13 @@ Turn on **Settings → Appearance → Render math** (per device) to render LaTeX
 
 ## Motion
 
-Sidebars, the right panel, and the terminal drawer open immediately by default. Adjust **Settings → Appearance → Panel animations** (0–400 ms) to enable transitions, unless OS reduced motion is enabled.
+The main sidebar, right panel, and terminal drawer open and close with a short 150 ms animation by
+default. The **Panel animations** slider sets it from 0 ms (off) to 400 ms. Moving between threads
+always snaps to the selected thread's panel state without replaying its transitions.
+
+Moving around the layout (switching workspaces, focusing a column off screen, opening and closing
+panes, the overview) always animates, whatever the slider says. Reduced motion in your operating
+system makes all of it, and the panels, instant.
 
 ## Custom themes
 

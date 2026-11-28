@@ -1,4 +1,5 @@
 import { EnvironmentId } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
 import { T, useGT } from "gt-react";
 import {
   FolderOpenIcon,
@@ -17,6 +18,7 @@ import { usePrimaryEnvironmentId } from "../../state/environments";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ProjectActionsSettings } from "./ProjectActionsSettings";
 import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
 import { useSettingsScope } from "./SettingsScopeContext";
 import {
@@ -24,6 +26,7 @@ import {
   SettingsEmptyTile,
   SettingsEmptyTiles,
   SettingsPageContainer,
+  SettingsRow,
   SettingsSection,
 } from "./settingsLayout";
 import { useSettingsProjectGroups } from "./useSettingsProjectGroups";
@@ -52,6 +55,7 @@ export function ProjectsSettings() {
             </Button>
           ) : null}
         </div>
+        <ImportProjectsSection />
       </SettingsPageContainer>
     ) : null;
   // Keep the panel mounted so it can follow members when regrouping changes the project key.
@@ -68,6 +72,7 @@ export function ProjectsSettings() {
           environmentId={value.machine ? EnvironmentId.make(value.machine) : null}
           checkoutKey={value.checkout ?? null}
           unavailable={unavailable}
+          header={<ImportProjectsSection />}
         />
       ) : unavailable ? (
         unavailable
@@ -75,6 +80,31 @@ export function ProjectsSettings() {
         <ProjectChooser />
       )}
     </div>
+  );
+}
+
+/** Environment-wide, so it sits in each page state's column after that state's primary content. */
+function ImportProjectsSection() {
+  const gt = useGT();
+  const { environment } = useSettingsScope();
+  if (!environment) return null;
+  const title = gt("Import projects and their threads");
+  return (
+    <SettingsSection title={title} hideTitle className="w-full text-left">
+      <SettingsRow
+        title={title}
+        description={environment.label}
+        control={
+          <Button
+            size="sm"
+            variant="secondary"
+            render={<Link to="/welcome" hash={`projects:${environment.environmentId}`} />}
+          >
+            <T context="verb, opens a page">Open</T>
+          </Button>
+        }
+      />
+    </SettingsSection>
   );
 }
 
@@ -129,6 +159,7 @@ function ProjectChooser() {
               </Button>
             ) : null}
           </div>
+          <ImportProjectsSection />
           <SettingsEmptyTiles title={gt("What you'll set for each project")}>
             <SettingsEmptyTile
               icon={<PencilIcon />}
@@ -153,6 +184,7 @@ function ProjectChooser() {
             </SettingsEmptyTile>
           </SettingsEmptyTiles>
         </SettingsEmptyState>
+        <ProjectActionsSettings />
       </SettingsPageContainer>
     );
   }
@@ -165,6 +197,7 @@ function ProjectChooser() {
       >
         <AddProjectButton />
       </SettingsEmptyState>
+      <ImportProjectsSection />
       <SettingsSection title={gt("Your projects")}>
         <div className="p-1">
           {groups.map((group) => {
@@ -203,6 +236,7 @@ function ProjectChooser() {
           })}
         </div>
       </SettingsSection>
+      <ProjectActionsSettings />
     </SettingsPageContainer>
   );
 }

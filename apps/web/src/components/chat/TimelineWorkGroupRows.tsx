@@ -1,8 +1,5 @@
 import { T, useGT, useMessages } from "gt-react";
-import {
-  thoughtPreviewMarkdown,
-  THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
-} from "./TimelineWorkEntryRow.logic";
+import { sliceThoughtPreviewSource, thoughtPreviewMarkdown } from "./TimelineWorkEntryRow.logic";
 import {
   TimelineApprovalCtx,
   type TimelinePendingRequest,
@@ -513,12 +510,10 @@ export function WorkingTimelineRow({ row }: { row: Extract<TimelineRow, { kind: 
             </WorkingBarChip>
           ) : null}
           {setupLive && ctx.onCancelWorktreeSetup ? (
-            <WorkingBarChip
-              icon={<XIcon aria-hidden className="size-3 shrink-0" />}
-              onClick={ctx.onCancelWorktreeSetup}
-            >
+            <Button size="xs" variant="ghost-muted" onClick={ctx.onCancelWorktreeSetup}>
+              <XIcon aria-hidden className="size-3" />
               <T>Cancel</T>
-            </WorkingBarChip>
+            </Button>
           ) : null}
           {window ? <WorkingBarSlot window={window} pendingRequest={pendingRequest} /> : null}
         </div>
@@ -727,7 +722,7 @@ export function LiveWorkEntryTimelineRow({
   const failed = workEntryDisplayIndicatesToolFailure(row.entry);
   const thoughtLine =
     row.thought && !row.expanded
-      ? liveThoughtLine((row.thought.detail ?? "").slice(0, THOUGHT_PREVIEW_SOURCE_MAX_LENGTH))
+      ? liveThoughtLine(sliceThoughtPreviewSource(row.thought.detail ?? ""))
       : "";
   const thoughtIsStatus = thoughtLine !== "" && row.entry === row.thought;
 
@@ -781,7 +776,7 @@ export function LiveWorkEntryTimelineRow({
           ) : row.entry.itemType === "reasoning" ? (
             <ChatMarkdown
               inline
-              text={(row.entry.detail ?? label).slice(0, THOUGHT_PREVIEW_SOURCE_MAX_LENGTH)}
+              text={sliceThoughtPreviewSource(row.entry.detail ?? label)}
               cwd={ctx.markdownCwd}
               parseRawHtml={false}
               extensions={

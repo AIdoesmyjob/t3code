@@ -44,6 +44,7 @@ import {
   isTimelineMinimapTurnVisible,
   pendingApprovalSlotLabel,
   resolveAssistantMessageCopyState,
+  resolveTimelineMinimapHitStrip,
   type MessagesTimelineRow,
   workEntryDisplayLabel,
   workEntryReadOutput,
@@ -160,6 +161,20 @@ it.each([
     else expect(rows).toContain(marker);
   },
 );
+
+describe("resolveTimelineMinimapHitStrip", () => {
+  it.each([
+    { gutter: 256, left: 32, width: 40 },
+    { gutter: 48, left: 32, width: 16 },
+    { gutter: 32, left: 0, width: 8 },
+    { gutter: 24, left: 0, width: 8 },
+    { gutter: 6, left: 0, width: 6 },
+    { gutter: 0, left: 0, width: 0 },
+    { gutter: -4, left: 0, width: 0 },
+  ])("keeps the minimap inside a $gutter px gutter", ({ gutter, left, width }) => {
+    expect(resolveTimelineMinimapHitStrip(gutter)).toEqual({ left, width });
+  });
+});
 
 describe("resolveAssistantMessageCopyState", () => {
   it("copies the rendered representation of Codex directives", () => {
@@ -1210,8 +1225,8 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRows[1]?.showAssistantCopyButton).toBe(true);
   });
 
-  it("projects assistant diffs and rewinds the first visible run to thread start after a rewind", () => {
-    const assistantTurnDiffSummary = {
+  it("rewinds the first visible run to thread start after a rewind", () => {
+    const checkpoint = {
       runId: "turn-1" as never,
       completedAt: "2026-01-01T00:00:30Z",
       assistantMessageId: "assistant-1" as never,
@@ -1255,7 +1270,7 @@ describe("deriveMessagesTimelineRows", () => {
       ],
       isWorking: false,
       activeTurnStartedAt: null,
-      turnDiffSummaries: [assistantTurnDiffSummary],
+      turnDiffSummaries: [checkpoint],
       supportsConversationRollback: true,
       turnWorkFold: true,
       threadStartCheckpointAvailable: true,
@@ -1265,13 +1280,7 @@ describe("deriveMessagesTimelineRows", () => {
       (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
         row.kind === "message" && row.message.role === "user",
     );
-    const assistantRow = rows.find(
-      (row): row is Extract<(typeof rows)[number], { kind: "message" }> =>
-        row.kind === "message" && row.message.role === "assistant",
-    );
-
     expect(userRow?.revertTurnCount).toBe(0);
-    expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
     expect(rows.find((row) => row.kind === "turn-fold")).toMatchObject({
       label: "Worked for 30s",
       foldable: false,
@@ -6768,6 +6777,20 @@ describe("parent run waiting on foreground subagents", () => {
     expect(liveRow([], "hideAll")).toEqual({ ...thinking, label: "Waiting on subagents" });
   });
 
+  // regression: #40551 a finished status after the children is the parent parking, not new work
+  it("names the running children when the parent's finished status message follows them", () => {
+    const status: OrchestrationV2TurnItem = {
+      ...base("status", 5),
+      status: "completed",
+      type: "assistant_message",
+      messageId: MessageId.make("status"),
+      text: "Subagents launched; waiting for them to report back.",
+      streaming: false,
+    };
+    expect(liveRow([status])).toEqual({ ...thinking, label: "Waiting on subagents" });
+    expect(liveRow([{ ...status, runId: RunId.make("other-run") }])).toEqual(thinking);
+  });
+
   it("keeps Thinking when a hidden newer parent command follows the children", () => {
     const command: OrchestrationV2TurnItem = {
       ...base("command", 5),
@@ -7231,4 +7254,39 @@ describe("workEntryReadOutput", () => {
       ),
     ).toBe("/workspace/t3code/src/app.ts\n~/.claude/CLAUDE.md\n~/.gitconfig");
   });
+});
+
+it("updates cached rows whose spacing or setup handoff changed without new content", () => {
+  const working: MessagesTimelineRow = {
+    kind: "working",
+    id: "working",
+    createdAt: "2026-01-01T00:00:00Z",
+    continuesWorkLog: true,
+  };
+  const snapshot: WorktreeSetupSnapshot = {
+    threadId: ThreadId.make("thread-setup"),
+    phase: "failed",
+    startedAt: "2026-01-01T00:00:00Z",
+    endedAt: "2026-01-01T00:01:00Z",
+    branch: "feature",
+    baseRef: "main",
+    worktreePath: null,
+    setupScript: null,
+    stages: [],
+    error: null,
+    sequence: 3,
+  };
+  const setup: MessagesTimelineRow = {
+    kind: "worktree-setup",
+    id: "setup",
+    createdAt: snapshot.startedAt,
+    snapshot,
+  };
+  const cached = computeStableMessagesTimelineRows([setup, working], {
+    result: [],
+    byId: new Map(),
+  });
+  const { continuesWorkLog: _continued, ...settledWorking } = working;
+  const next = computeStableMessagesTimelineRows([setup, settledWorking], cached);
+  expect(next.result).toEqual([setup, settledWorking]);
 });

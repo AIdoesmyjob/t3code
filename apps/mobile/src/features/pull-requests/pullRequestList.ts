@@ -57,7 +57,8 @@ export function pullRequestProjectChoices<
 ) {
   const isSelected = (project: Project) =>
     project.id === input.controls.projectId &&
-    project.environmentId === input.controls.projectEnvironmentId;
+    (input.controls.projectEnvironmentId === undefined ||
+      project.environmentId === input.controls.projectEnvironmentId);
   return pullRequestFilterProjects(
     projects.filter(
       (project) =>
@@ -68,6 +69,25 @@ export function pullRequestProjectChoices<
     input.groups,
     projects.find(isSelected),
   );
+}
+
+export function selectedPullRequestProjectRefs(
+  projects: ReadonlyArray<{
+    readonly memberProjectRefs: ReadonlyArray<ScopedProjectRef>;
+  }>,
+  selectedProject: { readonly id: string; readonly environmentId?: string | undefined } | undefined,
+): ReadonlyArray<ScopedProjectRef> | undefined {
+  if (selectedProject === undefined) return undefined;
+  const match = projects.find((project) =>
+    project.memberProjectRefs.some(
+      (ref) =>
+        ref.projectId === selectedProject.id &&
+        (selectedProject.environmentId === undefined ||
+          ref.environmentId === selectedProject.environmentId),
+    ),
+  );
+  if (match) return match.memberProjectRefs;
+  return selectedProject.environmentId === undefined ? undefined : [];
 }
 
 export function pullRequestListKey(
@@ -362,31 +382,45 @@ export function pullRequestFilterChoices(input: {
   readonly query: string;
 }): readonly string[] {
   const needle = input.query.trim().toLowerCase();
-  const seen = new Set<string>();
-  const rows: string[] = [];
-  const add = (value: string) => {
-    const key = value.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    rows.push(value);
-  };
   const loaded = input.suggestions.filter((value) => value.toLowerCase().includes(needle));
-  for (const value of input.selected) add(value);
-  // Loaded matches alone could fill the list, so the host's answers get room after the first half.
-  for (const value of loaded.slice(0, FILTER_CHOICE_LIMIT / 2)) add(value);
-  for (const value of input.hosted) add(value);
-  for (const value of loaded.slice(FILTER_CHOICE_LIMIT / 2)) add(value);
-  return rows.slice(0, FILTER_CHOICE_LIMIT);
+  return distinctIgnoringCase([
+    ...input.selected,
+    // Loaded matches alone could fill the list, so the host's answers get room after the first half.
+    ...loaded.slice(0, FILTER_CHOICE_LIMIT / 2),
+    ...input.hosted,
+    ...loaded.slice(FILTER_CHOICE_LIMIT / 2),
+  ]).slice(0, FILTER_CHOICE_LIMIT);
+}
+
+/** Each value once whatever its case; the first spelling wins. Hosts match labels and logins that way. */
+export function distinctIgnoringCase(values: readonly string[]) {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = value.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+export const includesIgnoringCase = (values: readonly string[], value: string) =>
+  values.some((held) => held.toLowerCase() === value.toLowerCase());
+
+/** The labels picked after `label` is tapped: tapping one already picked, in any case, drops it. */
+export function toggledPullRequestLabels(selected: readonly string[], label: string) {
+  return includesIgnoringCase(selected, label)
+    ? selected.filter((held) => held.toLowerCase() !== label.toLowerCase())
+    : [...selected, label].slice(0, 10);
 }
 
 export function pullRequestListFacets(entries: readonly PullRequestListEntry[]) {
   return {
-    authors: [
-      ...new Set(entries.flatMap((entry) => (entry.author ? [entry.author.login] : []))),
-    ].sort((a, b) => a.localeCompare(b)),
-    labels: [...new Set(entries.flatMap((entry) => entry.labels.map((label) => label.name)))].sort(
-      (a, b) => a.localeCompare(b),
-    ),
+    authors: distinctIgnoringCase(
+      entries.flatMap((entry) => (entry.author ? [entry.author.login] : [])),
+    ).sort((a, b) => a.localeCompare(b)),
+    labels: distinctIgnoringCase(
+      entries.flatMap((entry) => entry.labels.map((label) => label.name)),
+    ).sort((a, b) => a.localeCompare(b)),
     labelColors: pullRequestLabelColors(entries.flatMap((entry) => entry.labels)),
   };
 }
@@ -513,6 +547,18 @@ export function pullRequestListReviewStatus(
       tint: "accent-icon-muted",
     } as const;
   return null;
+}
+
+export function pullRequestListDiffStatsLabel(
+  entry: Pick<PullRequestListEntry, "additions" | "deletions">,
+  resolve: MessageResolver = m,
+) {
+  return resolve(
+    msg(
+      "{additions, plural, one {{additions} addition} other {{additions} additions}}, {deletions, plural, one {{deletions} deletion} other {{deletions} deletions}}",
+      { additions: entry.additions, deletions: entry.deletions },
+    ),
+  );
 }
 
 export function pullRequestLabelColor(color: string | null) {

@@ -10,12 +10,17 @@ describe("isJsonToolText", () => {
     ['[{"threadId":"thread-1"}]', true],
     ['{\n\n  "status": "completed"\n}', true],
     ['{\n  "count": 1\n}\n\n{\n  "count": 2\n}', true],
+    ['{"id":1}\n{"id":2}', true],
+    ['{"id":1}\n{"id":-9007199254740993}', true],
     ["false", true],
     ["null", true],
     ["42", true],
     ['"completed"', true],
     ['{"partial":', false],
     ['{"count":1}\n\nFinished.', false],
+    ['{"count":1}\nFinished.', false],
+    ['{"id":1}\n{"id":', false],
+    ["1\n2\n3", false],
     ["No output.", false],
     ["", false],
   ] as const)("classifies %j as JSON: %s", (text, expected) => {
@@ -182,5 +187,37 @@ describe("MCP app tool output", () => {
       ],
     });
     expect(turnItemOutputText(bounded)).toBe("chart\n[image]");
+  });
+});
+
+describe("file search output text", () => {
+  function searchItem(
+    results: Extract<OrchestrationV2TurnItem, { type: "file_search" }>["results"],
+  ): OrchestrationV2TurnItem {
+    const {
+      toolName: _toolName,
+      input: _input,
+      output: _output,
+      ...base
+    } = toolItem(null) as Extract<OrchestrationV2TurnItem, { type: "dynamic_tool" }>;
+    return { ...base, type: "file_search", pattern: "needle", results };
+  }
+
+  it("prints matches under one heading per file", () => {
+    expect(
+      turnItemOutputText(
+        searchItem([
+          { fileName: "src/one.ts", line: 2, preview: "  const needle = 1;" },
+          { fileName: "src/two.ts", line: 7, column: 3, preview: "needle()" },
+          { fileName: "src/one.ts", line: 9, preview: "return needle;" },
+        ]),
+      ),
+    ).toBe("src/one.ts\n2:   const needle = 1;\n9: return needle;\n\nsrc/two.ts\n7:3: needle()");
+  });
+
+  it("keeps a plain file list one path per line", () => {
+    expect(turnItemOutputText(searchItem([{ fileName: "a.ts" }, { fileName: "b.ts" }]))).toBe(
+      "a.ts\nb.ts",
+    );
   });
 });

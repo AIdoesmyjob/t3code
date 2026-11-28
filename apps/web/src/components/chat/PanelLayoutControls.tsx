@@ -8,7 +8,7 @@ import { Button } from "../ui/button";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
 import { useMobileSidebarSheetMounted } from "../ui/sidebar";
 import { Toggle } from "../ui/toggle";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 export interface PanelLayoutControlsProps {
   showThreadPanelControl?: boolean;
@@ -47,21 +47,22 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
     </Button>
   );
   const threadPanelControl = (
-    <Tooltip>
-      <TooltipTrigger render={<span className="flex shrink-0" data-thread-panel-toggle />}>
-        {threadPanelPresentation === "popover" ? (
-          <PopoverTrigger handle={threadPanelPopoverHandle} render={threadPanelToggle} />
-        ) : (
-          threadPanelToggle
-        )}
-      </TooltipTrigger>
-      <TooltipPopup side="bottom">
-        {disabledReason ??
-          (threadPanelShortcutLabel
-            ? gt("Toggle thread details ({shortcut})", { shortcut: threadPanelShortcutLabel })
-            : gt("Toggle thread details"))}
-      </TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={<span className="flex shrink-0" data-thread-panel-toggle />}
+      label={
+        disabledReason ??
+        (threadPanelShortcutLabel
+          ? gt("Toggle thread details ({shortcut})", { shortcut: threadPanelShortcutLabel })
+          : gt("Toggle thread details"))
+      }
+      side="bottom"
+    >
+      {threadPanelPresentation === "popover" ? (
+        <PopoverTrigger handle={threadPanelPopoverHandle} render={threadPanelToggle} />
+      ) : (
+        threadPanelToggle
+      )}
+    </SharedTooltipTrigger>
   );
 
   return (
@@ -78,35 +79,41 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
 export const RightPanelMaximizeControl = memo(function RightPanelMaximizeControl({
   maximized,
   onToggle,
+  shortcutLabel,
 }: {
   maximized: boolean;
   onToggle: () => void;
+  shortcutLabel: string | null;
 }) {
   const gt = useGT();
   const mobileSidebarSheetMounted = useMobileSidebarSheetMounted();
   if (mobileSidebarSheetMounted) return null;
   const label = maximized ? gt("Restore panel size") : gt("Maximize panel");
+  const tooltipLabel = shortcutLabel
+    ? maximized
+      ? gt("Restore panel size ({shortcut})", { shortcut: shortcutLabel })
+      : gt("Maximize panel ({shortcut})", { shortcut: shortcutLabel })
+    : label;
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Toggle
-            className="shrink-0 [-webkit-app-region:no-drag]"
-            pressed={maximized}
-            onPressedChange={onToggle}
-            aria-label={label}
-            variant="ghost"
-            size="sm"
-          >
-            {maximized ? (
-              <Minimize2Icon className="size-3.5" />
-            ) : (
-              <Maximize2Icon className="size-3.5" />
-            )}
-          </Toggle>
-        }
-      />
-      <TooltipPopup side="bottom">{label}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Toggle
+          className="shrink-0 [-webkit-app-region:no-drag]"
+          pressed={maximized}
+          onPressedChange={onToggle}
+          aria-label={label}
+          variant="ghost"
+          size="sm"
+        >
+          {maximized ? (
+            <Minimize2Icon className="size-3.5" />
+          ) : (
+            <Maximize2Icon className="size-3.5" />
+          )}
+        </Toggle>
+      }
+      label={tooltipLabel}
+      side="bottom"
+    />
   );
 });

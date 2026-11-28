@@ -16,7 +16,8 @@ import {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { markdownLinkDestinationScanner } from "@t3tools/shared/markdownLinks";
+import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { parseUrl } from "@t3tools/shared/url";
 
 export interface WorkflowQuestionChoice {
@@ -694,6 +695,18 @@ export function workflowAnswer(result: WorkflowStep["result"]): {
     : null;
 }
 
+/** Who withdrew a question unanswered, and why, when a step's result says so. */
+export function workflowWithdrawal(
+  result: WorkflowStep["result"],
+): { readonly by: string; readonly reason: string | null } | null {
+  const withdrawn = field(result, "withdrawn");
+  const by = field(withdrawn, "by");
+  const reason = field(withdrawn, "reason");
+  return typeof by === "string"
+    ? { by, reason: typeof reason === "string" && reason.trim() !== "" ? reason : null }
+    : null;
+}
+
 /**
  * Whether the client whose session on the run's environment is `sessionId` gave `answer`. Decided
  * by session, never by name: two browsers share "Chrome on Linux" and every phone its app's name.
@@ -919,8 +932,8 @@ export function workflowReferenceLabel(reference: WorkflowRunSubject): string {
   const issue = workflowReferenceIssue(reference);
   if (issue !== null) return /^\d+$/.test(issue.key) ? `#${issue.key}` : issue.key;
   if (reference.title !== "") return reference.title;
-  if (reference.url !== null && URL.canParse(reference.url)) return new URL(reference.url).host;
-  return reference.kind;
+  const url = reference.url === null ? null : parseUrl(reference.url);
+  return url?.host ?? reference.kind;
 }
 
 /** The references a step touched, in the order the run first touched them. */
@@ -932,11 +945,26 @@ export function workflowStepReferences(
 }
 
 /** A step's time in one shape down a column: 0.3s, 9.7s, 12s, then minutes. */
-export function workflowStepTime(ms: number): string {
-  if (ms < 9_950 && ms % 1000 !== 0) return `${(Math.max(ms, 100) / 1000).toFixed(1)}s`;
+export function workflowStepTime(ms: number, resolve: MFunctionType = mFallback): string {
+  if (ms < 9_950 && ms % 1000 !== 0) {
+    return resolve(msg("{seconds}s", { seconds: (Math.max(ms, 100) / 1000).toFixed(1) }));
+  }
   const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  return formatDuration(ms);
+  if (seconds < 60) return resolve(msg("{seconds}s", { seconds }));
+  return formatDuration(ms, resolve);
+}
+
+function stripMarkdownLinks(text: string): string {
+  const scan = markdownLinkDestinationScanner(text);
+  let out = "";
+  let cursor = 0;
+  for (const match of text.matchAll(/\[([^[\]]*)\](?=\()/g)) {
+    const dest = match.index >= cursor ? scan(match.index + match[0].length) : null;
+    if (dest === null) continue;
+    out += text.slice(cursor, match.index) + match[1];
+    cursor = dest.end;
+  }
+  return cursor === 0 ? text : out + text.slice(cursor);
 }
 
 /**
@@ -986,11 +1014,11 @@ export function workflowOneLine(text: string): string {
     indented?.trim() ??
     "";
   const code: string[] = [];
-  const plain = line
+  const stripped = line
     .replace(/^(?:>\s*)+/, "")
     .replace(/^([-*]|\d+\.)\s+/, "")
-    .replace(/(`+)(.+?)\1(?!`)/g, (_, _ticks, inner: string) => `\0${code.push(inner) - 1}\0`)
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/(`+)(.+?)\1(?!`)/g, (_, _ticks, inner: string) => `\0${code.push(inner) - 1}\0`);
+  const plain = stripMarkdownLinks(stripped)
     .replace(/(?<![\p{L}\p{M}\p{N}_/])(__|_)(\S(?:.*?\S)?)\1(?![\p{L}\p{M}\p{N}_/])/gu, "$2")
     .replace(/(\*\*|\*)(\S(?:.*?\S)?)\1/g, "$2")
     .replace(/\0(\d+)\0/g, (match, index: string) => code[Number(index)] ?? match);

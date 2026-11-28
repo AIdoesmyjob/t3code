@@ -12,6 +12,7 @@ import {
   fitLayoutColumns,
   LAYOUT_READABLE_COLUMN_PX,
   closeLayoutTab,
+  closeLayoutTabs,
   closeLayoutTabsWhere,
   createLayoutState,
   cycleLayoutColumnWidth,
@@ -19,6 +20,8 @@ import {
   findLayoutTabByContent,
   ghostLoneLayoutChats,
   isLayoutTabInFocusedGroup,
+  layoutTabContentKey,
+  selectFocusedTab,
   keepLayoutTab,
   focusAdjacentLayoutTab,
   focusLayoutColumnEdge,
@@ -29,6 +32,7 @@ import {
   focusLayoutWorkspaceStep,
   moveLayoutFocused,
   moveLayoutTab,
+  moveLayoutTabs,
   moveLayoutChatToColumn,
   moveLayoutTabToNewWorkspace,
   moveLayoutTabToWorkspace,
@@ -283,7 +287,12 @@ interface LayoutStoreState {
    * Session state: a restart shows the whole layout again.
    */
   maximizedTabId: string | null;
+  /** Content keys retain Fill window across tab swaps, including replaced ghost tabs. */
+  filledContentKeys: ReadonlySet<string>;
   toggleMaximizedTab: (tabId: string) => void;
+  /** Bumped by each switch to another thread's chat: the panes it swaps land in place, unanimated. */
+  navigation: number;
+  noteNavigation: () => void;
   /**
    * The share a thread's surfaces reopen at beside (`panel`) or below
    * (`terminal`) its chat, remembered from when they last hid. A kind without
@@ -338,6 +347,7 @@ interface LayoutStoreState {
   showChatInNewWorkspace: (target: ThreadRouteTarget, name: string | null) => void;
   /** A user's close notifies subscribeLayoutThreadsClosedByUser for draft surface cleanup. */
   closeTabByUser: (tabId: string) => void;
+  closeTabsByUser: (tabIds: readonly string[]) => void;
   /**
    * Focus the tab showing this chat, in any workspace, if one does. A
    * sidebar click on the thread already behind the URL (seen from the empty
@@ -361,6 +371,7 @@ interface LayoutStoreState {
     drawnUnitWidth?: number,
   ) => void;
   moveTab: (tabId: string, destination: LayoutTabDestination) => void;
+  moveTabs: (tabIds: readonly string[], destination: LayoutTabDestination) => void;
   /** Move the tab showing this content to the destination, or open one there. */
   placeContent: (content: LayoutTabContent, destination: LayoutTabDestination) => void;
   focusTab: (tabId: string) => void;
@@ -399,11 +410,6 @@ interface LayoutStoreState {
 export const useLayoutStore = create<LayoutStoreState>()(
   persist(
     (set) => {
-      // Focus that leaves a maximized pane's group brings the other panes back.
-      const keepMaximized = (layout: LayoutState, maximizedTabId: string | null) =>
-        maximizedTabId !== null && isLayoutTabInFocusedGroup(layout, maximizedTabId)
-          ? maximizedTabId
-          : null;
       // Columns that open, close, move or resize are arranged at the window's
       // width now; a resize drag is arranged at the width it measures in.
       const apply = (update: (layout: LayoutState) => LayoutState, keepArrangement = false) => {
@@ -415,7 +421,11 @@ export const useLayoutStore = create<LayoutStoreState>()(
           const updated = update(intended);
           if (updated === state.layout) return state;
           const layout = keepArrangement ? updated : arrangeLayoutChange(state.layout, updated);
-          const maximizedTabId = keepMaximized(layout, state.maximizedTabId);
+          const focused = selectFocusedTab(layout);
+          const maximizedTabId =
+            focused && state.filledContentKeys.has(layoutTabContentKey(focused.content))
+              ? focused.id
+              : null;
           return maximizedTabId === state.maximizedTabId ? { layout } : { layout, maximizedTabId };
         });
       };
@@ -507,6 +517,7 @@ export const useLayoutStore = create<LayoutStoreState>()(
         showChatInNewWorkspace: (target, name) =>
           apply((layout) => showLayoutChatInNewWorkspace(layout, { kind: "chat", target }, name)),
         closeTabByUser: (tabId) => closeByUser((layout) => closeLayoutTab(layout, tabId)),
+        closeTabsByUser: (tabIds) => closeByUser((layout) => closeLayoutTabs(layout, tabIds)),
         focusChat: (target) =>
           apply((layout) => {
             const existing = findLayoutTabByContent(layout, { kind: "chat", target });
@@ -514,12 +525,18 @@ export const useLayoutStore = create<LayoutStoreState>()(
           }),
         newTabRequest: null,
         maximizedTabId: null,
+        filledContentKeys: new Set(),
+        navigation: 0,
+        noteNavigation: () => set((state) => ({ navigation: state.navigation + 1 })),
         toggleMaximizedTab: (tabId) =>
           set((state) => {
-            if (state.maximizedTabId === tabId) return { maximizedTabId: null };
-            return isLayoutTabInFocusedGroup(state.layout, tabId)
-              ? { maximizedTabId: tabId }
-              : state;
+            const focused = selectFocusedTab(state.layout);
+            if (!focused || !isLayoutTabInFocusedGroup(state.layout, tabId)) return state;
+            const key = layoutTabContentKey(focused.content);
+            const filledContentKeys = new Set(state.filledContentKeys);
+            if (filledContentKeys.has(key)) filledContentKeys.delete(key);
+            else filledContentKeys.add(key);
+            return { filledContentKeys, maximizedTabId: filledContentKeys.has(key) ? tabId : null };
           }),
         companionShares: {},
         forgetCompanionShares: () =>
@@ -581,6 +598,8 @@ export const useLayoutStore = create<LayoutStoreState>()(
           ),
         moveTab: (tabId, destination) =>
           apply((layout) => moveLayoutTab(layout, tabId, destination)),
+        moveTabs: (tabIds, destination) =>
+          apply((layout) => moveLayoutTabs(layout, tabIds, destination)),
         placeContent: (content, destination) =>
           apply((layout) => placeLayoutContent(layout, content, destination)),
         focusTab: (tabId) => apply((layout) => focusLayoutTab(layout, tabId)),
@@ -603,7 +622,8 @@ export const useLayoutStore = create<LayoutStoreState>()(
         requestCenter: () => set((state) => ({ centerRequest: state.centerRequest + 1 })),
         commitDerived: (from, to, derive) =>
           apply((layout) => (layout === from ? to : derive(layout))),
-        reset: () => set({ layout: createLayoutState() }),
+        reset: () =>
+          set({ layout: createLayoutState(), maximizedTabId: null, filledContentKeys: new Set() }),
       };
     },
     {

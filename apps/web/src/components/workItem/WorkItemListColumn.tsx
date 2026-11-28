@@ -56,6 +56,7 @@ export function WorkItemListColumn({
   const searchRef = useRef<HTMLDivElement | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- window keydown listener focuses the visible search input on Cmd/Ctrl+F
   useEffect(() => {
+    if (maximizedAway) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!focusedRef.current || event.defaultPrevented) return;
       if (event.key.toLowerCase() !== "f" || !(event.metaKey || event.ctrlKey)) return;
@@ -67,7 +68,7 @@ export function WorkItemListColumn({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [focusedRef]);
+  }, [focusedRef, maximizedAway]);
 
   return (
     <div
@@ -81,9 +82,9 @@ export function WorkItemListColumn({
         split && "overflow-hidden md:rounded-pane md:rounded-ss-none",
       )}
     >
-      {/* A closed right panel leaves this column full-width, so the header reserves native
-          window controls. */}
-      <SettingsPaneHeader transparent trailingEdge={!rightPanelOpen}>
+      {/* Beside an open review that pane holds the window's top-right corner; otherwise
+          the layout pane's own edge decides. */}
+      <SettingsPaneHeader transparent trailingEdge={split || rightPanelOpen ? false : undefined}>
         {/* Maximized away, the open review's notch holds the pane's tabs instead. */}
         {maximizedAway ? null : (
           <SettingsTabNotch title={title} icon={icon}>

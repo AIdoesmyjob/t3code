@@ -23,6 +23,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
 import { orchestrationV2WorktreePending } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   projectScriptCwd,
@@ -41,7 +42,7 @@ import { type ComposerImageAttachment, useComposerDraftStore } from "../composer
 import { useDiffPanelStore } from "../diffPanelStore";
 import { isElectron } from "../env";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
-import { useEnvironmentSettings } from "../hooks/useSettings";
+import { getClientSettings, useEnvironmentSettings } from "../hooks/useSettings";
 import { useLayoutPane } from "../layout/layoutPaneContext";
 import { copyLayoutFilePath } from "../layout/PaneTabs";
 import type { LauncherSurfaceKind } from "./SurfaceLauncher";
@@ -62,7 +63,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { browserMiniPlayerSource, usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
+import { browserMiniPlayerSource } from "../previewMiniPlayerStore";
 import {
   isPreviewSupportedInRuntime,
   readThreadPreviewState,
@@ -70,6 +71,7 @@ import {
   useThreadPreviewState,
 } from "../previewStateStore";
 import {
+  selectActiveRightPanelSurface,
   selectThreadRightPanelState,
   useRightPanelStore,
   type RightPanelSurface,
@@ -83,6 +85,7 @@ import {
   useQuietThreadShell,
   useQuietThreadProjection,
 } from "../state/entities";
+import { deviceEnvironment } from "../state/device";
 import { previewEnvironment } from "../state/preview";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../state/server";
 import {
@@ -114,6 +117,7 @@ import { MAX_TERMINALS_PER_GROUP } from "../types";
 import { agentControlledBrowserCloseConfirmation } from "./ChatView.logic";
 import { FileSurfaceState } from "./files/fileSurfaceChrome";
 import { addBrowserSurface } from "./preview/addBrowserSurface";
+import { floatPanelSurfaceOnClose } from "./preview/agentOpenedPreviews";
 import { closePreviewSession } from "./preview/closePreviewSession";
 import { getConfiguredPreviewUrls } from "./preview/previewEmptyStateLogic";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
@@ -618,6 +622,7 @@ function ThreadSurfacePane({
         }
       }}
       onCloseSurface={close}
+      onCloseSelectedSurfaces={noop}
       onOpenInMainView={openInMainView}
       onRenameDevice={(id, title) =>
         useRightPanelStore.getState().renameDevice(threadRef, id, title)
@@ -1164,11 +1169,131 @@ function readTerminalTabTitles(
   );
 }
 
+/** Terminal labels that closing this surface will end, or empty when no shell ends. */
+export function terminalTitlesForThreadSurface(
+  threadRef: ScopedThreadRef,
+  surfaceId: string,
+): string[] {
+  if (!readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope)) return [];
+  if (surfaceId === THREAD_TERMINAL_SURFACE_ID) {
+    const { terminalIds } = selectThreadTerminalUiState(
+      useTerminalUiStateStore.getState().terminalUiStateByThreadKey,
+      threadRef,
+    );
+    return readTerminalTabTitles(threadRef, terminalIds);
+  }
+  const surface = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    threadRef,
+  ).surfaces.find((candidate) => candidate.id === surfaceId);
+  if (surface?.kind !== "terminal") return [];
+  const titles = readTerminalTabTitles(threadRef, surface.terminalIds);
+  return titles.length > 0 ? titles : [m(msg("Terminal"))];
+}
+
+/** Collect terminal tab labels for any panel or thread terminal surfaces in `surfaceIds`. */
+export function readThreadSurfaceTerminalTitles(
+  threadRef: ScopedThreadRef,
+  surfaceIds: readonly string[],
+): string[] {
+  return surfaceIds.flatMap((surfaceId) => terminalTitlesForThreadSurface(threadRef, surfaceId));
+}
+
+/** Combined agent-controlled browser confirmation across one or more threads' surface tabs. */
+export function agentControlledBrowserCloseConfirmationForThreads(
+  entries: readonly {
+    readonly threadRef: ScopedThreadRef;
+    readonly surfaceIds: readonly string[];
+  }[],
+): string | null {
+  const agentSurfaces: RightPanelSurface[] = [];
+  const agentDesktopByTabId: Record<string, { controller: "agent" }> = {};
+  for (const { threadRef, surfaceIds } of entries) {
+    if (surfaceIds.length === 0) continue;
+    const panelIds = new Set(surfaceIds.filter((id) => id !== THREAD_TERMINAL_SURFACE_ID));
+    if (panelIds.size === 0) continue;
+    const { desktopByTabId } = readThreadPreviewState(threadRef);
+    const { surfaces } = selectThreadRightPanelState(
+      useRightPanelStore.getState().byThreadKey,
+      threadRef,
+    );
+    for (const surface of surfaces) {
+      if (
+        !panelIds.has(surface.id) ||
+        surface.kind !== "preview" ||
+        surface.resourceId === null ||
+        desktopByTabId[surface.resourceId]?.controller !== "agent"
+      ) {
+        continue;
+      }
+      agentSurfaces.push(surface);
+      agentDesktopByTabId[surface.resourceId] = { controller: "agent" };
+    }
+  }
+  return agentControlledBrowserCloseConfirmation(agentSurfaces, agentDesktopByTabId);
+}
+
+/** Close a batch of surfaces belonging to one thread atomically via `rightPanelStore.closeSurfaces`. */
+export async function closeThreadSurfaces(
+  threadRef: ScopedThreadRef,
+  surfaceIds: readonly string[],
+  options: { bulk?: boolean; skipConfirm?: boolean; activeSurfaceId?: string | null } = {},
+): Promise<void> {
+  if (surfaceIds.length === 0) return;
+  if (surfaceIds.length === 1) {
+    await closeThreadSurface(threadRef, surfaceIds[0]!, options);
+    return;
+  }
+  const hasThreadTerminal = surfaceIds.includes(THREAD_TERMINAL_SURFACE_ID);
+  const panelIds = new Set(surfaceIds.filter((id) => id !== THREAD_TERMINAL_SURFACE_ID));
+  const panelState = selectThreadRightPanelState(
+    useRightPanelStore.getState().byThreadKey,
+    threadRef,
+  );
+  const activeSurfaceId = options.activeSurfaceId ?? panelState.activeSurfaceId;
+  const surfaces = panelState.surfaces.filter((candidate) => panelIds.has(candidate.id));
+  if (surfaces.length > 0 && !options.skipConfirm) {
+    const message = agentControlledBrowserCloseConfirmation(
+      surfaces,
+      readThreadPreviewState(threadRef).desktopByTabId,
+    );
+    if (message) {
+      const confirmed = await readLocalApi()
+        ?.dialogs.confirm(message, { variant: "destructive" })
+        .catch(() => false);
+      if (!confirmed) return;
+    }
+  }
+  if (!options.bulk && !options.skipConfirm) {
+    const [first, ...rest] = readThreadSurfaceTerminalTitles(threadRef, surfaceIds);
+    if (first !== undefined && !(await confirmTerminalClose([first, ...rest]))) return;
+  }
+  if (surfaces.length > 0) {
+    // Close the tabs before releasing sessions, which can prune the tabs during reconciliation.
+    useRightPanelStore.getState().closeSurfaces(
+      threadRef,
+      surfaces.map((surface) => surface.id),
+    );
+    // The active tab's session closes last so reopening restores it first.
+    const releaseOrder = surfaces.toSorted(
+      (left, right) => Number(left.id === activeSurfaceId) - Number(right.id === activeSurfaceId),
+    );
+    surfaceServices?.cleanup(threadRef, releaseOrder);
+  }
+  if (hasThreadTerminal) {
+    await closeThreadSurface(threadRef, THREAD_TERMINAL_SURFACE_ID, {
+      ...options,
+      bulk: true,
+      skipConfirm: true,
+    });
+  }
+}
+
 /** Closing a surface ends its resources; cmd+J preserves the thread terminal's shells. */
 export async function closeThreadSurface(
   threadRef: ScopedThreadRef,
   surfaceId: string,
-  options: { bulk?: boolean } = {},
+  options: { bulk?: boolean; skipConfirm?: boolean } = {},
 ): Promise<void> {
   if (surfaceId === THREAD_TERMINAL_SURFACE_ID) {
     if (readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope)) {
@@ -1178,7 +1303,13 @@ export async function closeThreadSurface(
       );
       const [first, ...rest] = readTerminalTabTitles(threadRef, terminalIds);
       if (first !== undefined) {
-        if (!options.bulk && !(await confirmTerminalClose([first, ...rest]))) return;
+        if (
+          !options.bulk &&
+          !options.skipConfirm &&
+          !(await confirmTerminalClose([first, ...rest]))
+        ) {
+          return;
+        }
         surfaceServices?.endTerminals(threadRef, terminalIds);
       }
     }
@@ -1191,10 +1322,10 @@ export async function closeThreadSurface(
   ).surfaces.find((candidate) => candidate.id === surfaceId);
   if (!surface) return;
   const finish = () => {
-    surfaceServices?.cleanup(threadRef, [surface]);
     useRightPanelStore.getState().closeSurface(threadRef, surface.id);
+    surfaceServices?.cleanup(threadRef, [surface]);
   };
-  if (surface.kind === "preview") {
+  if (surface.kind === "preview" && !options.skipConfirm) {
     const message = agentControlledBrowserCloseConfirmation(
       [surface],
       readThreadPreviewState(threadRef).desktopByTabId,
@@ -1211,6 +1342,7 @@ export async function closeThreadSurface(
   if (
     surface.kind === "terminal" &&
     !options.bulk &&
+    !options.skipConfirm &&
     readEnvironmentScope(threadRef.environmentId, AuthTerminalOperateScope)
   ) {
     const [first = m(msg("Terminal")), ...rest] = readTerminalTabTitles(
@@ -1246,18 +1378,34 @@ export function discardThreadSurfaces(threadRef: ScopedThreadRef): void {
 }
 
 /**
- * Hide a thread's surfaces (alt+cmd+B): a live browser or device on screen
- * floats in its mini player instead of disappearing.
+ * Hide a thread's surfaces (alt+cmd+B): when Auto-show floating preview is on,
+ * a live browser or device on screen floats in its mini player instead of disappearing.
  */
 export function hideThreadSurfaces(threadRef: ScopedThreadRef): void {
-  const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef);
-  const active = state.surfaces.find((surface) => surface.id === state.activeSurfaceId);
-  if (active?.kind === "preview" && active.resourceId) {
-    usePreviewMiniPlayerStore
-      .getState()
-      .open(threadRef, browserMiniPlayerSource(active.resourceId));
-  } else if (active?.kind === "device" && active.target) {
-    usePreviewMiniPlayerStore.getState().open(threadRef, { kind: "device", ...active.target });
+  const active = selectActiveRightPanelSurface(
+    useRightPanelStore.getState().byThreadKey,
+    threadRef,
+  );
+  const source =
+    active?.kind === "preview" && active.resourceId
+      ? browserMiniPlayerSource(active.resourceId)
+      : active?.kind === "device" && active.target
+        ? ({ kind: "device", ...active.target } as const)
+        : null;
+  if (source) {
+    floatPanelSurfaceOnClose(threadRef, source, {
+      autoShowFloatingPreview: getClientSettings().browserAutoShowFloatingPreview,
+      previewState: readThreadPreviewState(threadRef),
+      deviceState:
+        source.kind === "device"
+          ? AsyncResult.getOrElse(
+              appAtomRegistry.get(
+                deviceEnvironment.state({ environmentId: threadRef.environmentId, input: {} }),
+              ),
+              () => null,
+            )
+          : null,
+    });
   }
   useRightPanelStore.getState().close(threadRef);
 }

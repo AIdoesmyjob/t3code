@@ -68,7 +68,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { BackgroundThreadContext } from "./backgroundThread";
+import { BackgroundThreadContext, HiddenThreadContext } from "./backgroundThread";
 import { isInSideChatPane } from "../../lib/sideChatPane";
 import { useStableCallback } from "../../hooks/useStableCallback";
 
@@ -105,6 +105,13 @@ export function useComposerStash(input: {
     threadDraftTarget?: ChatComposerProps["composerDraftTarget"],
   ) => ReadonlyMap<string, string>;
   readonly expandMobileComposer: () => void;
+  /** Set while the composer edits a queued message: stashing moves that message to the stash. */
+  readonly editingQueuedMessage?: {
+    /** False when the queued message has attachments or context records the stash cannot hold. */
+    readonly canMoveToStash: boolean;
+    /** Ends the edit and removes the queued message once its text is stashed. */
+    readonly onMovedToStash: () => void;
+  } | null;
 }) {
   const {
     environmentId,
@@ -131,6 +138,7 @@ export function useComposerStash(input: {
     setComposerTrigger,
     importContextRecords,
     expandMobileComposer,
+    editingQueuedMessage,
   } = input;
   const getComposerDraft = useComposerDraftStore((store) => store.getComposerDraft);
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
@@ -599,6 +607,7 @@ export function useComposerStash(input: {
     stashInFlightRef.current.add(snapshotKey);
 
     const stashTarget = composerDraftTarget;
+    const movedQueuedMessage = editingQueuedMessage ?? null;
     const entryId = randomUUID();
     const stashAndEncode = async () => {
       // Ordering matters in both directions: writing before clearing means a
@@ -678,6 +687,8 @@ export function useComposerStash(input: {
       setComposerCursor(0);
       setComposerTrigger(null);
       pulseStashBadge();
+      // The stash now holds the edited text; leaving the message queued would still send it.
+      movedQueuedMessage?.onMovedToStash();
 
       // Images are re-encoded for the stash rather than stored verbatim: the
       // composer allows up to 10MB per image, but localStorage gives the whole
@@ -761,10 +772,13 @@ export function useComposerStash(input: {
     if (stashMenuClosesOn.prompt !== prompt || composerMenuOpen) setIsStashMenuOpen(false);
   }
 
+  const embedded = use(BackgroundThreadContext);
+  const hiddenThread = use(HiddenThreadContext);
   // Read at event time, so the scope registers once per mounted composer instead of
   // re-registering (and reshuffling capture-scope priority) whenever a guard flips.
   const handleStashShortcut = useStableCallback((event: KeyboardEvent) => {
-    if (!paneFocusedRef.current) return false;
+    // An embedded side chat reads as a background thread; it takes keys pressed in its own pane.
+    if (!paneFocusedRef.current && !embedded) return false;
     // Always claim the shortcut so the browser save dialog never opens,
     // even when the composer is in a state that can't stash.
     event.preventDefault();
@@ -775,11 +789,11 @@ export function useComposerStash(input: {
       return;
     }
     if (projectSelectionRequired || activePendingProgress !== null) return;
+    if (editingQueuedMessage && !editingQueuedMessage.canMoveToStash) return;
     void stashCurrentPromptStable();
   });
   // Capture phase while the composer is mounted, so Mod+S never reaches the browser's save
   // dialog even when a focused widget (the model picker search) stops the key.
-  const backgroundThread = use(BackgroundThreadContext);
   const readShortcutContext = useStableCallback(() => ({
     terminalOpen: Boolean(
       selectThreadTerminalUiState(
@@ -790,16 +804,17 @@ export function useComposerStash(input: {
   }));
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- registers the capture-phase stash shortcut with the command registry while the composer is mounted
   useEffect(() => {
-    if (backgroundThread) return;
+    if (hiddenThread) return;
     return registerCommands(
       { "composer.stash": handleStashShortcut },
       {
         capture: true,
         context: readShortcutContext,
-        when: (event) => !isInSideChatPane(event.target),
+        // A side chat's composer takes the keys pressed in its pane; the main one takes the rest.
+        when: (event) => isInSideChatPane(event.target) === embedded,
       },
     );
-  }, [backgroundThread, handleStashShortcut, readShortcutContext]);
+  }, [embedded, hiddenThread, handleStashShortcut, readShortcutContext]);
 
   return {
     stashQueue,

@@ -16,7 +16,6 @@ import { useInlineActionConfirm } from "./useInlineActionConfirm";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { Button } from "../ui/button";
 import { RefreshIcon } from "../ui/refresh-icon";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import {
   MenuGroup,
   MenuGroupLabel,
@@ -25,6 +24,7 @@ import {
   MenuRadioItem,
   MenuSeparator,
 } from "../ui/menu";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { PullRequestGlyph } from "./pullRequestIcons";
 import { changeRequestTermKind } from "./changeRequestTerm";
 import { type PickableEnvironment } from "./pullRequestProjectAssignment.logic";
@@ -279,23 +279,21 @@ export function PullRequestStateBadge({
   label: string;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <div
-            data-slot="state-badge"
-            className={cn(
-              "surface-tint flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-control px-3 text-label sm:h-7 [&>svg]:shrink-0",
-              STATE_BADGE_TONES[tone],
-            )}
-          />
-        }
-      >
-        {icon}
-        <span className="min-w-0 truncate">{label}</span>
-      </TooltipTrigger>
-      <TooltipPopup side="top">{label}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <div
+          data-slot="state-badge"
+          className={cn(
+            "surface-tint flex h-8 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-control px-3 text-label sm:h-7 [&>svg]:shrink-0",
+            STATE_BADGE_TONES[tone],
+          )}
+        />
+      }
+      label={label}
+    >
+      {icon}
+      <span className="min-w-0 truncate">{label}</span>
+    </SharedTooltipTrigger>
   );
 }
 
@@ -373,6 +371,39 @@ export function PullRequestFinishedMenuItems({
   );
 }
 
+/** Closes an open pull request on a second press; the overflow menu and the merge menu share it. */
+export function PullRequestCloseMenuItem({
+  singular,
+  actionPending,
+  perform,
+  inlineConfirm,
+}: {
+  singular: string;
+  actionPending: boolean;
+  perform: PerformPullRequestAction;
+  inlineConfirm: ReturnType<typeof useInlineActionConfirm>;
+}) {
+  const gt = useGT();
+  const armed = inlineConfirm.isArmed("close");
+  const label = armed
+    ? gt("Confirm close?")
+    : gt("Close {term, select, mr {merge request} cr {change request} other {pull request}}", {
+        term: changeRequestTermKind({ singular }),
+      });
+  return (
+    <MenuItem
+      closeOnClick={armed}
+      aria-label={label}
+      variant="destructive"
+      disabled={actionPending}
+      {...inlineConfirm.props("close", () => void perform("close"))}
+    >
+      <PullRequestGlyph.closed className="size-3.5" />
+      {label}
+    </MenuItem>
+  );
+}
+
 /** Merge methods, host updates and page checkout behind the readiness action. */
 export function PullRequestPrimaryActionMenu({
   showsMergeMethods,
@@ -389,6 +420,8 @@ export function PullRequestPrimaryActionMenu({
   updateMethods,
   showCheckout,
   checkoutMenuItems,
+  showsClose,
+  singular,
 }: {
   showsMergeMethods: boolean;
   showsMergeNow: boolean;
@@ -404,6 +437,8 @@ export function PullRequestPrimaryActionMenu({
   updateMethods: ReadonlyArray<PullRequestUpdateMethod>;
   showCheckout: boolean;
   checkoutMenuItems: ReactNode;
+  showsClose: boolean;
+  singular: string;
 }) {
   const gt = useGT();
   const resolve = useMessages();
@@ -495,6 +530,23 @@ export function PullRequestPrimaryActionMenu({
             <MenuSeparator />
           ) : null}
           {checkoutMenuItems}
+        </>
+      ) : null}
+      {showsClose ? (
+        <>
+          {showsMergeMethods ||
+          showsMergeNow ||
+          showsAutoMerge ||
+          updateMethods.length > 0 ||
+          showCheckout ? (
+            <MenuSeparator />
+          ) : null}
+          <PullRequestCloseMenuItem
+            singular={singular}
+            actionPending={actionPending}
+            perform={perform}
+            inlineConfirm={inlineConfirm}
+          />
         </>
       ) : null}
     </>

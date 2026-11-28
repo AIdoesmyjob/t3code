@@ -11,7 +11,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { AtomRegistry } from "effect/reactivity";
 import { msg } from "gt-react";
-import { useContext } from "react";
+import { useContext, useRef } from "react";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { m, type MessageResolver } from "~/i18n/messages";
@@ -47,6 +47,7 @@ export function createScratchProjectActions(input: {
   readonly registry: AtomRegistry.AtomRegistry;
   readonly handleNewThread: NewThreadHandler;
 }) {
+  let startInFlight = false;
   const scratchWorkspaceRootFor = (environmentId: EnvironmentId | null): string | null => {
     let environment: ScratchEnvironment | undefined;
     for (const entry of input.environments()) {
@@ -106,22 +107,26 @@ export function createScratchProjectActions(input: {
    * Opens a draft without a project. With `sendCarriedDraft`, the message
    * typed on the no-projects home moves into it and sends from there.
    */
-  const startScratchThread = async (
+  const startScratchThread = (
     environmentId: EnvironmentId,
     options?: { sendCarriedDraft?: boolean },
-  ) => {
-    // Armed before the project exists, so the draft's move sends however it opens.
-    if (options?.sendCarriedDraft) useDraftSendOnOpenStore.setState({ armed: true });
-    const project = await openScratchProject(environmentId);
-    if (!project) {
-      useDraftSendOnOpenStore.setState({ armed: false });
-      return;
-    }
-    await input
-      .handleNewThread(scopeProjectRef(project.environmentId, project.id))
-      .catch((error: unknown) =>
-        reportScratchFailure(m(msg("Could not start without a project")), error),
-      );
+  ): Promise<void> => {
+    if (startInFlight) return Promise.resolve();
+    startInFlight = true;
+    return (async () => {
+      // Armed before the project exists, so the draft's move sends however it opens.
+      if (options?.sendCarriedDraft) useDraftSendOnOpenStore.setState({ armed: true });
+      const project = await openScratchProject(environmentId);
+      if (!project) return;
+      await input
+        .handleNewThread(scopeProjectRef(project.environmentId, project.id))
+        .catch((error: unknown) =>
+          reportScratchFailure(m(msg("Could not start without a project")), error),
+        );
+    })().finally(() => {
+      if (options?.sendCarriedDraft) useDraftSendOnOpenStore.setState({ armed: false });
+      startInFlight = false;
+    });
   };
 
   return {
@@ -138,10 +143,24 @@ export function useScratchProject() {
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const registry = useContext(RegistryContext);
   const handleNewThread = useNewThreadHandler();
-  return createScratchProjectActions({
+  const startInFlightRef = useRef(false);
+  const actions = createScratchProjectActions({
     environments: () => environments,
     primaryEnvironmentId: () => primaryEnvironmentId,
     registry,
     handleNewThread,
   });
+  return {
+    ...actions,
+    startScratchThread: (
+      environmentId: EnvironmentId,
+      options?: { sendCarriedDraft?: boolean },
+    ): Promise<void> => {
+      if (startInFlightRef.current) return Promise.resolve();
+      startInFlightRef.current = true;
+      return actions.startScratchThread(environmentId, options).finally(() => {
+        startInFlightRef.current = false;
+      });
+    },
+  };
 }

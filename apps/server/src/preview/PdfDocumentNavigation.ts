@@ -135,6 +135,7 @@ type PausedRequest = {
 
 export async function installPdfDocumentNavigation(
   cdp: CDPSession,
+  { handleAuthRequests }: { readonly handleAuthRequests: boolean },
   localAssets?: LocalAssetRouting,
 ) {
   const nativeViewer = await cdp.send("Runtime.evaluate", {
@@ -142,7 +143,7 @@ export async function installPdfDocumentNavigation(
     returnByValue: true,
   });
   const interceptPdfDocuments = nativeViewer.result?.value !== true;
-  if (!interceptPdfDocuments && localAssets === undefined) return;
+  if (!interceptPdfDocuments && !handleAuthRequests && localAssets === undefined) return;
   const { frameTree } = await cdp.send("Page.getFrameTree");
   const isPdfDocument = (event: PausedRequest) =>
     interceptPdfDocuments &&
@@ -248,7 +249,11 @@ export async function installPdfDocumentNavigation(
     );
   });
   await cdp.send("Fetch.enable", {
+    handleAuthRequests,
     patterns: [
+      ...(handleAuthRequests
+        ? [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" } as const]
+        : []),
       ...(localAssets === undefined
         ? []
         : [{ urlPattern: "*/api/assets/*", requestStage: "Request" as const }]),

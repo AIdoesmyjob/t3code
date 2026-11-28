@@ -14,6 +14,7 @@ import {
   useRightPanelStore,
 } from "../rightPanelStore";
 import { useLayoutBehaviorStore } from "./layoutBehavior";
+import { settleStripCamera } from "../motion/stripCamera";
 import { focusAdjacentLayoutTab } from "./layoutActions";
 import {
   commitLayoutDrop,
@@ -29,6 +30,7 @@ import {
   findLayoutChatForThread,
   findLayoutSurfaceTabs,
   LAYOUT_READABLE_COLUMN_PX,
+  selectFocusedPane,
   selectFocusedTab,
   type LayoutColumn,
   type LayoutTab,
@@ -39,8 +41,15 @@ import {
   useLayoutStore,
 } from "./layoutStore";
 import { LayoutDropZones } from "./DropZones";
+import { toggleThreadSidePane } from "./openRules";
+import { buildLayoutTabMenuItems, runLayoutTabMenuAction } from "./PaneTabs";
+import { useLayoutKeyboardCommands } from "./layoutCommands";
+import { clearPaneTabSelection, hasPaneTabSelection } from "./paneTabSelection";
+import { readLocalApi } from "../localApi";
 import { LayoutSurfaceHost, selectSurfaceMounts } from "./SurfaceHost";
 import { requestLayoutSurfacePlacement, useLayoutSurfaceSync } from "./surfaceSync";
+import { browserMiniPlayerSource, usePreviewMiniPlayerStore } from "../previewMiniPlayerStore";
+import { reconcilePreviewServerSessions, resetPreviewStateForTests } from "../previewStateStore";
 import { useTerminalUiStateStore } from "../terminalUiStateStore";
 
 const TOUR_KEY = "t3code:layout-tour:v1";
@@ -281,14 +290,16 @@ it("keeps the panes in place when the sidebar reopens before it has closed", asy
 
 const secondPaneStrip = () => inSecondPane("[data-layout-tab-strip]");
 const joinOffset = (strip: HTMLElement) =>
-  strip
-    .closest("[data-layout-tab-strip-slot]")!
-    .querySelector<HTMLElement>("[data-pane-join]")!
-    .style.getPropertyValue("--jx");
+  Number.parseFloat(
+    strip
+      .closest("[data-layout-tab-strip-slot]")!
+      .querySelector<HTMLElement>("[data-pane-join]")!
+      .style.getPropertyValue("--jx"),
+  );
 const tabOffset = (strip: HTMLElement, tabId: string) => {
   const tab = strip.querySelector<HTMLElement>(`[data-layout-pane-tab="${tabId}"]`)!;
   const left = tab.getBoundingClientRect().left - strip.getBoundingClientRect().left;
-  return `${Math.round(left + strip.scrollLeft)}px`;
+  return left + strip.scrollLeft;
 };
 
 it("scrolls overflowing pane tabs from the add button without moving the workspace", async () => {
@@ -372,7 +383,9 @@ it("scrolls overflowing pane tabs from the add button without moving the workspa
   await vi.waitFor(() => expect(strip.scrollLeft).toBe(140));
   expect(workspace.scrollLeft).toBe(before);
   const active = strip.querySelector<HTMLElement>("[data-joined]")!;
-  expect(joinOffset(strip)).toBe(tabOffset(strip, active.dataset.layoutPaneTab!));
+  expect(
+    Math.abs(joinOffset(strip) - tabOffset(strip, active.dataset.layoutPaneTab!)),
+  ).toBeLessThanOrEqual(1);
 
   const closed = strip.querySelector<HTMLElement>("[data-layout-pane-tab]")!;
   const joinedAt = joinOffset(strip);
@@ -393,8 +406,10 @@ it("scrolls overflowing pane tabs from the add button without moving the workspa
   );
   const middle = tabIds[Math.floor(tabIds.length / 2)]!;
   useLayoutStore.getState().focusTab(middle);
-  await vi.waitFor(() => expect(joinOffset(strip)).toBe(tabOffset(strip, middle)));
-  const held = Number.parseFloat(tabOffset(strip, middle)) - 100;
+  await vi.waitFor(() =>
+    expect(Math.abs(joinOffset(strip) - tabOffset(strip, middle))).toBeLessThanOrEqual(1),
+  );
+  const held = Math.round(tabOffset(strip, middle)) - 100;
   strip.scrollLeft = held;
   await vi.waitFor(() =>
     expect(strip.style.getPropertyValue("--strip-overflow-start")).toBe(`${held}px`),
@@ -403,7 +418,7 @@ it("scrolls overflowing pane tabs from the add button without moving the workspa
   await vi.waitFor(() => {
     const next = focusedTabId()!;
     expect(next).not.toBe(middle);
-    expect(joinOffset(strip)).toBe(tabOffset(strip, next));
+    expect(Math.abs(joinOffset(strip) - tabOffset(strip, next))).toBeLessThanOrEqual(1);
   });
   expect(strip.scrollLeft).toBe(held);
 
@@ -434,14 +449,19 @@ it("keeps a pane's tab strip and moves its joined tab when the pane switches tab
   const pane = useLayoutStore.getState().layout.workspaces[0]!.columns[1]!.panes[0]!;
   const first = pane.tabs.find((tab) => tab.id !== tabs.second.id)!;
   useLayoutStore.getState().focusTab(first.id);
+  // Chromium rounds layout pixels separately from transformed bounding boxes.
   await vi.waitFor(() =>
-    expect(joinOffset(secondPaneStrip())).toBe(tabOffset(secondPaneStrip(), first.id)),
+    expect(
+      Math.abs(joinOffset(secondPaneStrip()) - tabOffset(secondPaneStrip(), first.id)),
+    ).toBeLessThanOrEqual(1),
   );
   const strip = secondPaneStrip();
 
   useLayoutStore.getState().focusTab(tabs.second.id);
   await vi.waitFor(() => expect(focusedTabId()).toBe(tabs.second.id));
-  await vi.waitFor(() => expect(joinOffset(strip)).toBe(tabOffset(strip, tabs.second.id)));
+  await vi.waitFor(() =>
+    expect(Math.abs(joinOffset(strip) - tabOffset(strip, tabs.second.id))).toBeLessThanOrEqual(1),
+  );
   // The label under the landed shape reads as the active one, and only that one.
   await vi.waitFor(() =>
     expect(
@@ -900,6 +920,306 @@ it.each([
   },
 );
 
+function setupThreeColumns(columnWidth = 2 / 3) {
+  const base = setup(columnWidth);
+  const store = useLayoutStore.getState();
+  store.openTab(createLayoutLauncherContent(null), { placement: "new-column" });
+  const layout = useLayoutStore.getState().layout;
+  const workspace = layout.workspaces[0]!;
+  const columns = workspace.columns.map((column) => ({ ...column, width: columnWidth }));
+  useLayoutStore.setState({
+    layout: {
+      ...layout,
+      workspaces: [{ ...workspace, columns, focusedPaneId: columns[0]!.panes[0]!.id }],
+    },
+  });
+  return base;
+}
+
+const columnWidths = () =>
+  useLayoutStore.getState().layout.workspaces[0]!.columns.map((column) => column.width);
+const stripElement = () => document.querySelector<HTMLElement>("[data-layout-strip]")!;
+const paneRect = (column: number) => {
+  const paneId = useLayoutStore.getState().layout.workspaces[0]!.columns[column]!.panes[0]!.id;
+  const shown = [...document.querySelectorAll(`[data-layout-pane-id="${paneId}"]`)].find((pane) =>
+    pane.checkVisibility(),
+  );
+  return shown!.getBoundingClientRect();
+};
+const focusedColumn = () => {
+  const workspace = useLayoutStore.getState().layout.workspaces[0]!;
+  return workspace.columns.findIndex((column) =>
+    column.panes.some((pane) => pane.id === workspace.focusedPaneId),
+  );
+};
+const scrollStripTo = async (left: number) => {
+  stripElement().scrollTo({ left, behavior: "instant" });
+  const landed = Math.min(left, stripElement().scrollWidth - stripElement().clientWidth);
+  await vi.waitFor(() => expect(stripElement().scrollLeft).toBe(landed));
+};
+function dragFrom(x: number, y: number, path: number[]) {
+  const hit = document.elementFromPoint(x, y) as HTMLElement;
+  const pointer = (clientX: number) =>
+    ({
+      bubbles: true,
+      button: 0,
+      pointerId: 1,
+      pointerType: "mouse",
+      clientX,
+      clientY: y,
+    }) as const;
+  hit.dispatchEvent(new PointerEvent("pointerdown", pointer(x)));
+  for (const to of path) hit.dispatchEvent(new PointerEvent("pointermove", pointer(to)));
+  return {
+    hit,
+    release: (to: number) => hit.dispatchEvent(new PointerEvent("pointerup", pointer(to))),
+  };
+}
+
+it("resizes each column from the edge grabbed, in either direction, without moving its neighbors", async () => {
+  using _tabs = setupThreeColumns();
+  await using _screen = await renderHost();
+  const strip = stripElement();
+  const drag = async (label: string, index: number, travel: number) => {
+    settleStripCamera();
+    const handle = document.querySelectorAll<HTMLElement>(`[aria-label="${label}"]`)[index]!;
+    const rect = handle.getBoundingClientRect();
+    const view = strip.getBoundingClientRect();
+    const x = (Math.max(rect.left, view.left) + Math.min(rect.right, view.right)) / 2;
+    const y = rect.top + rect.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    expect(hit).toBe(handle);
+    const { release } = dragFrom(x, y, [x + travel / 2, x + travel]);
+    await vi.waitFor(() => expect(hit!.hasAttribute("data-dragging")).toBe(true));
+    release(x + travel);
+  };
+  const expectWidths = async (expected: number[]) =>
+    vi.waitFor(() =>
+      columnWidths().forEach((width, index) => expect(width).toBeCloseTo(expected[index]!, 3)),
+    );
+  const widths = columnWidths();
+
+  // Both halves of the first gap: the left half shrinks and grows the first column...
+  await drag("Resize column", 0, -90);
+  widths[0]! -= 90 / 900;
+  await expectWidths(widths);
+
+  // ...and the right half shrinks the second with the strip already at its start...
+  expect(strip.scrollLeft).toBe(0);
+  await drag("Resize column start", 0, 60);
+  widths[1]! -= 60 / 900;
+  await expectWidths(widths);
+  await vi.waitFor(() => expect(strip.scrollLeft).toBe(150));
+
+  // ...or grows it leftward while keeping the whole resized column visible on release.
+  const beforeGrow = strip.scrollLeft;
+  await drag("Resize column start", 0, -150);
+  widths[1]! += 150 / 900;
+  await expectWidths(widths);
+  await vi.waitFor(() => expect(strip.scrollLeft).toBeCloseTo(beforeGrow + 150, 0));
+
+  await drag("Resize column", 0, 45);
+  widths[0]! += 45 / 900;
+  await expectWidths(widths);
+
+  // At the strip's end, the middle column grows without shrinking the last, which shrinks
+  // cleanly from its right edge without triggering rightward autopan.
+  const scrollToEnd = async () => {
+    settleStripCamera();
+    strip.scrollTo({ left: strip.scrollWidth, behavior: "instant" });
+    await vi.waitFor(() => expect(strip.scrollLeft).toBe(strip.scrollWidth - strip.clientWidth));
+  };
+  await scrollToEnd();
+  await drag("Resize column", 1, 45);
+  widths[1]! += 45 / 900;
+  await expectWidths(widths);
+  await scrollToEnd();
+  await drag("Resize column", 2, -90);
+  widths[2]! -= 90 / 900;
+  await expectWidths(widths);
+});
+
+it("grows the rightmost column all the way to full width when dragged right at the window edge", async () => {
+  using _tabs = setup(0.5);
+  await using _screen = await renderHost();
+  const view = stripElement().getBoundingClientRect();
+  const widths = columnWidths();
+  const last = paneRect(1);
+  const y = last.top + last.height / 2;
+  const startX = view.right - 4;
+  const { hit, release } = dragFrom(startX, y, [view.right]);
+  expect(hit.getAttribute("aria-label")).toBe("Resize column");
+  await vi.waitFor(() => expect(paneRect(1).width).toBeGreaterThan(view.width - 10));
+  release(view.right);
+  widths[1] = 1;
+  await vi.waitFor(() =>
+    columnWidths().forEach((width, index) => expect(width).toBeCloseTo(widths[index]!, 3)),
+  );
+});
+
+it("reveals the full already-focused column after resizing from its left edge", async () => {
+  using _tabs = setupThreeColumns();
+  await using _screen = await renderHost();
+  useLayoutStore
+    .getState()
+    .focusPane(useLayoutStore.getState().layout.workspaces[0]!.columns[2]!.panes[0]!.id);
+  await vi.waitFor(() =>
+    expect(paneRect(2).right).toBeCloseTo(stripElement().getBoundingClientRect().right, 0),
+  );
+  settleStripCamera();
+  await scrollStripTo(stripElement().scrollWidth - stripElement().clientWidth - 60);
+  const widths = columnWidths();
+  const last = paneRect(2);
+  const x = last.left + 2;
+  const y = last.top + last.height / 2;
+  const handle = document.elementFromPoint(x, y) as HTMLElement;
+  expect(handle.getAttribute("aria-label")).toBe("Resize column start");
+
+  const scrolled = stripElement().scrollLeft;
+  const { release } = dragFrom(x, y, [x - 75, x - 150]);
+  await vi.waitFor(() => expect(handle.hasAttribute("data-dragging")).toBe(true));
+  release(x - 150);
+  widths[2]! += 150 / 900;
+  await vi.waitFor(() =>
+    columnWidths().forEach((width, index) => expect(width).toBeCloseTo(widths[index]!, 3)),
+  );
+  // Release reveals the previously clipped end of the already-focused column.
+  await vi.waitFor(() => expect(stripElement().scrollLeft).toBeCloseTo(scrolled + 150 + 60, 0));
+  expect(focusedColumn()).toBe(2);
+  await vi.waitFor(() =>
+    expect(paneRect(2).right).toBeCloseTo(stripElement().getBoundingClientRect().right, 0),
+  );
+  expect(handle.hasAttribute("data-dragging")).toBe(false);
+});
+
+it("keeps growing a column held at the strip's edge, up to the window's width", async () => {
+  using _tabs = setupThreeColumns();
+  await using _screen = await renderHost();
+  await scrollStripTo(450);
+  const view = stripElement().getBoundingClientRect();
+  // The middle column's start 150px into the window, its end 150px short of the right edge.
+  await vi.waitFor(() => expect(paneRect(1).left).toBeCloseTo(view.left + 154, 0));
+  const widths = columnWidths();
+  const middle = paneRect(1);
+  const y = middle.top + middle.height / 2;
+  const { hit, release } = dragFrom(middle.left + 2, y, [view.left + 4]);
+  expect(hit.getAttribute("aria-label")).toBe("Resize column start");
+  await vi.waitFor(() => expect(paneRect(1).width).toBeGreaterThan(view.width - 10));
+  release(view.left + 4);
+  widths[1] = 1;
+  await vi.waitFor(() =>
+    columnWidths().forEach((width, index) => expect(width).toBeCloseTo(widths[index]!, 3)),
+  );
+});
+
+it("shrinks a full-width column from its start at the window's left edge, beside the sidebar's rail", async () => {
+  using _tabs = setupThreeColumns();
+  const { layout } = useLayoutStore.getState();
+  const workspace = layout.workspaces[0]!;
+  useLayoutStore.setState({
+    layout: {
+      ...layout,
+      workspaces: [
+        {
+          ...workspace,
+          columns: workspace.columns.map((column, index) =>
+            index === 1 ? { ...column, width: 1 } : column,
+          ),
+          focusedPaneId: workspace.columns[1]!.panes[0]!.id,
+        },
+      ],
+    },
+  });
+  await using _screen = await renderHost({ edges: [40, 0] });
+  const strip = stripElement();
+  const view = strip.getBoundingClientRect();
+  await vi.waitFor(() => expect(paneRect(1).left).toBeCloseTo(view.left + 4, 0));
+  // The sidebar's resize rail reaches 8px past the sidebar's edge, over the strip.
+  const rail = document.createElement("div");
+  rail.style.cssText = `position:fixed;top:0;bottom:0;left:${view.left - 8}px;width:16px;z-index:100`;
+  document.body.append(rail);
+  using _rail = { [Symbol.dispose]: () => rail.remove() };
+  const widths = columnWidths();
+  const handle = document.querySelector<HTMLElement>('[aria-label="Resize column start"]')!;
+  const rect = handle.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const { hit, release } = dragFrom(x, rect.top + rect.height / 2, [x + 100, x + 200]);
+  expect(hit).toBe(handle);
+  await vi.waitFor(() => expect(handle.hasAttribute("data-dragging")).toBe(true));
+  release(x + 200);
+  widths[1]! -= 200 / strip.clientWidth;
+  await vi.waitFor(() =>
+    columnWidths().forEach((width, index) => expect(width).toBeCloseTo(widths[index]!, 3)),
+  );
+});
+
+it("keeps the size pill whole when keyboard resizing brings a column's start to the window's left edge", async () => {
+  using _tabs = setupThreeColumns();
+  await using _screen = await renderHost({ edges: [40, 0] });
+  const strip = stripElement();
+  const view = strip.getBoundingClientRect();
+  useLayoutStore
+    .getState()
+    .focusPane(useLayoutStore.getState().layout.workspaces[0]!.columns[1]!.panes[0]!.id);
+  await vi.waitFor(() => expect(focusedColumn()).toBe(1));
+  settleStripCamera();
+  // The second column's end at the window's right edge: growing it from its start keeps
+  // that end still, so its start lands on the window's left edge.
+  await scrollStripTo(Math.round(strip.clientWidth / 3));
+  const handle = document.querySelectorAll<HTMLElement>('[aria-label="Resize column start"]')[0]!;
+  handle.focus({ focusVisible: true });
+  handle.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true, cancelable: true }),
+  );
+  await vi.waitFor(() => expect(columnWidths()[1]).toBeCloseTo(1, 4));
+  await vi.waitFor(() => expect(Math.abs(paneRect(1).left - view.left - 4)).toBeLessThan(2));
+  const pill = await vi.waitFor(() => {
+    const shown = document.querySelector<HTMLElement>(".shadow-drag-label");
+    expect(shown?.textContent).toBe("Full width");
+    return shown!;
+  });
+  const box = pill.getBoundingClientRect();
+  expect(box.left).toBeGreaterThanOrEqual(view.left);
+  expect(box.right).toBeLessThanOrEqual(view.right);
+});
+
+it("moves focus to the neighboring column on a double-click in the gutter on that side", async () => {
+  using _tabs = setupThreeColumns();
+  await using _screen = await renderHost();
+  const widths = columnWidths();
+  const doubleClickAt = async (x: number) => {
+    const y = paneRect(0).top + paneRect(0).height / 2;
+    const gutter = document.elementFromPoint(x, y) as HTMLElement;
+    expect(gutter.hasAttribute("data-layout-gutter")).toBe(true);
+    const box = gutter.getBoundingClientRect();
+    await userEvent.dblClick(gutter, { position: { x: x - box.left, y: y - box.top } });
+  };
+
+  // Right of the focused first column: the second takes focus and comes on screen.
+  await doubleClickAt(paneRect(0).right + 2);
+  await vi.waitFor(() => expect(focusedColumn()).toBe(1));
+  await vi.waitFor(() =>
+    expect(paneRect(1).right).toBeLessThanOrEqual(stripElement().getBoundingClientRect().right),
+  );
+
+  // Left of it, back to the first.
+  await doubleClickAt(paneRect(1).left - 2);
+  await vi.waitFor(() => expect(focusedColumn()).toBe(0));
+  await vi.waitFor(() => expect(stripElement().scrollLeft).toBe(0));
+
+  // Past the last column there is nothing further: focus stays.
+  useLayoutStore
+    .getState()
+    .focusPane(useLayoutStore.getState().layout.workspaces[0]!.columns[2]!.panes[0]!.id);
+  await vi.waitFor(() =>
+    expect(paneRect(2).right).toBeCloseTo(stripElement().getBoundingClientRect().right, 0),
+  );
+  await doubleClickAt(stripElement().getBoundingClientRect().right - 2);
+  expect(focusedColumn()).toBe(2);
+  // Pressing a gutter's handle without moving it resizes nothing.
+  expect(columnWidths()).toEqual(widths);
+});
+
 it("keeps a Files split pane intact when opening the first file from it", async () => {
   using fixture = setupPullRequestDrop();
   const { chatPaneId } = fixture;
@@ -1033,6 +1353,48 @@ it("hides a thread's companion splits when switching tabs in the same pane and r
   expect(
     useLayoutStore.getState().hiddenCompanionsByThreadKey[scopedThreadKey(threadRef)],
   ).toBeUndefined();
+});
+
+it("lands a thread switch's panes where they rest, while a person's own close still moves", async () => {
+  using fixture = setupPullRequestDrop();
+  const { chatPaneId } = fixture;
+  useLayoutStore.getState().openKeptTab({
+    kind: "chat",
+    target: { kind: "server", threadRef: pullRequestThreadRef },
+  });
+  const chatTab = (ref: typeof threadRef) =>
+    findLayoutChatForThread(useLayoutStore.getState().layout, ref)!.tab.id;
+  useLayoutStore.getState().focusTab(chatTab(threadRef));
+  await using _screen = await renderHost({ viewport: 1200 });
+  const paneMotion = () =>
+    document
+      .getAnimations()
+      .filter((animation) => animation.playState === "running")
+      .map((animation) => (animation.effect as KeyframeEffect).target as HTMLElement)
+      .filter((target) => target.closest("[data-layout-pane-id], [data-layout-closing]") !== null);
+  const panes = () =>
+    [...document.querySelectorAll<HTMLElement>("[data-layout-pane-id]")].map((pane) => {
+      const { left, width } = pane.getBoundingClientRect();
+      return [Math.round(left), Math.round(width)];
+    });
+  await act(() => {
+    requestLayoutSurfacePlacement(threadRef, { kind: "split", paneId: chatPaneId, side: "right" });
+    useRightPanelStore.getState().open(threadRef, "diff");
+    useLayoutStore.getState().focusTab(chatTab(threadRef));
+  });
+  await vi.waitFor(() => expect(paneMotion()).toEqual([]));
+  const withDiff = panes();
+  expect(withDiff).toHaveLength(2);
+
+  for (const delta of [1, -1] as const) {
+    await act(() => focusAdjacentLayoutTab(delta));
+    expect(paneMotion()).toEqual([]);
+    expect(document.querySelector("[data-layout-closing]")).toBeNull();
+  }
+  expect(panes()).toEqual(withDiff);
+
+  await act(() => useRightPanelStore.getState().close(threadRef));
+  expect(document.querySelector("[data-layout-closing]")).not.toBeNull();
 });
 
 it("does not switch tabs when releasing the pointer after Escape cancels a tab drag", async () => {
@@ -1254,4 +1616,582 @@ it("skips hidden and aria-hidden inputs when moving keyboard focus into a surfac
 
   expect(document.activeElement).not.toBe(hiddenInput);
   expect(document.activeElement).toBe(host);
+});
+
+it.each([
+  {
+    name: "floats a navigated browser tab when Auto-show floating preview is on",
+    autoShow: true,
+    navStatus: { _tag: "Loading", url: "http://127.0.0.1:5173/", title: "" } as const,
+    before: null,
+    after: browserMiniPlayerSource("tab_panel"),
+  },
+  {
+    name: "does not float a navigated browser tab when Auto-show floating preview is off",
+    autoShow: false,
+    navStatus: { _tag: "Loading", url: "http://127.0.0.1:5173/", title: "" } as const,
+    before: null,
+    after: undefined,
+  },
+  {
+    name: "keeps a manually floated preview when Auto-show floating preview is off",
+    autoShow: false,
+    navStatus: { _tag: "Loading", url: "http://127.0.0.1:5173/", title: "" } as const,
+    before: browserMiniPlayerSource("tab_manual"),
+    after: browserMiniPlayerSource("tab_manual"),
+  },
+  {
+    name: "does not float an untouched browser tab even when Auto-show floating preview is on",
+    autoShow: true,
+    navStatus: { _tag: "Idle" } as const,
+    before: null,
+    after: undefined,
+  },
+])("toggleThreadSidePane $name", async ({ autoShow, navStatus, before, after }) => {
+  using fixture = setupPullRequestDrop();
+  const { chatPaneId } = fixture;
+  const settings = getClientSettings();
+  const miniPlayerBefore = usePreviewMiniPlayerStore.getState().byThreadKey;
+  using _restore = {
+    [Symbol.dispose]: () => {
+      __setClientSettingsForTests(settings);
+      usePreviewMiniPlayerStore.setState({ byThreadKey: miniPlayerBefore });
+      resetPreviewStateForTests();
+    },
+  };
+  __setClientSettingsForTests({ ...settings, browserAutoShowFloatingPreview: autoShow });
+  usePreviewMiniPlayerStore.setState({ byThreadKey: {} });
+  resetPreviewStateForTests();
+  reconcilePreviewServerSessions(threadRef, {
+    serverEpoch: "test",
+    revision: 1,
+    sessions: [
+      {
+        threadId: threadRef.threadId,
+        tabId: "tab_panel",
+        navStatus,
+        canGoBack: false,
+        canGoForward: false,
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+    ],
+  });
+  if (before) usePreviewMiniPlayerStore.getState().open(threadRef, before);
+  await using _screen = await render(<SurfaceSync />);
+
+  await act(() => {
+    requestLayoutSurfacePlacement(threadRef, { kind: "split", paneId: chatPaneId, side: "right" });
+    useRightPanelStore.getState().openBrowser(threadRef, "tab_panel");
+  });
+  expect(findLayoutSurfaceTabs(useLayoutStore.getState().layout, threadRef)).toHaveLength(1);
+
+  await act(() => {
+    toggleThreadSidePane(threadRef, () => false);
+  });
+  expect(findLayoutSurfaceTabs(useLayoutStore.getState().layout, threadRef)).toHaveLength(0);
+  expect(
+    usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(threadRef)]?.source,
+  ).toEqual(after);
+});
+
+it.each([
+  {
+    name: "floats a device tab when Auto-show floating preview is on",
+    autoShow: true,
+    floated: true,
+  },
+  {
+    name: "does not float a device tab when Auto-show floating preview is off",
+    autoShow: false,
+    floated: false,
+  },
+])("toggleThreadSidePane $name", async ({ autoShow, floated }) => {
+  using fixture = setupPullRequestDrop();
+  const { chatPaneId } = fixture;
+  const settings = getClientSettings();
+  const miniPlayerBefore = usePreviewMiniPlayerStore.getState().byThreadKey;
+  using _restore = {
+    [Symbol.dispose]: () => {
+      __setClientSettingsForTests(settings);
+      usePreviewMiniPlayerStore.setState({ byThreadKey: miniPlayerBefore });
+    },
+  };
+  __setClientSettingsForTests({ ...settings, browserAutoShowFloatingPreview: autoShow });
+  usePreviewMiniPlayerStore.setState({ byThreadKey: {} });
+  await using _screen = await render(<SurfaceSync />);
+
+  const target = {
+    hostId: "local",
+    deviceId: "pixel",
+    platform: "android" as const,
+    name: "Pixel 8",
+  };
+  await act(() => {
+    requestLayoutSurfacePlacement(threadRef, { kind: "split", paneId: chatPaneId, side: "right" });
+    useRightPanelStore.getState().openDevice(threadRef, target);
+  });
+  expect(findLayoutSurfaceTabs(useLayoutStore.getState().layout, threadRef)).toHaveLength(1);
+
+  await act(() => {
+    toggleThreadSidePane(threadRef, () => false);
+  });
+  expect(findLayoutSurfaceTabs(useLayoutStore.getState().layout, threadRef)).toHaveLength(0);
+  expect(
+    usePreviewMiniPlayerStore.getState().byThreadKey[scopedThreadKey(threadRef)]?.source,
+  ).toEqual(floated ? { kind: "device", ...target } : undefined);
+});
+
+it("supports Shift-range, Cmd/Ctrl-toggle, Escape/plain-click clear, per-pane scope and close-selected on pane tabs", async () => {
+  using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  const original = useLayoutStore.getState().layout;
+  const settings = getClientSettings();
+  const tour = localStorage.getItem(TOUR_KEY);
+  localStorage.setItem(TOUR_KEY, "true");
+  __setClientSettingsForTests({ ...settings, scrollingWorkspacesEnabled: true });
+  useLayoutStore.setState({ layout: createLayoutState() });
+  const store = useLayoutStore.getState();
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "new-column" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  const initialLayout = useLayoutStore.getState().layout;
+  const firstPane = initialLayout.workspaces[0]!.columns[0]!.panes[0]!;
+  const secondPane = initialLayout.workspaces[0]!.columns[1]!.panes[0]!;
+  const [t0, t1, t2, t3] = firstPane.tabs;
+  const [p2t0, p2t1] = secondPane.tabs;
+  store.focusTab(t0!.id);
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      clearPaneTabSelection();
+      __setClientSettingsForTests(settings);
+      useLayoutStore.setState({ layout: original });
+      if (tour === null) localStorage.removeItem(TOUR_KEY);
+      else localStorage.setItem(TOUR_KEY, tour);
+    },
+  };
+
+  await using _screen = await renderHost({ viewport: 1200 });
+  const tabEl = (id: string) =>
+    page.elementLocator(document.querySelector<HTMLElement>(`[data-layout-pane-tab="${id}"]`)!);
+
+  // Shift-click range from active t0 to t2 selects t0, t1, t2 without switching active tab.
+  await userEvent.click(tabEl(t2!.id), { modifiers: ["Shift"] });
+  expect(focusedTabId()).toBe(t0!.id);
+  await expect.element(tabEl(t0!.id)).toHaveAttribute("data-selected-tab", "");
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("data-selected-tab", "");
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("data-selected-tab", "");
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("aria-pressed", "true");
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("aria-pressed", "true");
+  await expect.element(tabEl(t3!.id)).toHaveAttribute("aria-pressed", "false");
+
+  // Context menu offers "Close selected tabs" on selected tabs and "Close" on unselected ones.
+  const selectedMenu = buildLayoutTabMenuItems(useLayoutStore.getState().layout, t1!.id);
+  expect(selectedMenu.some((item) => item.id === "layout:close-selected-tabs")).toBe(true);
+  expect(selectedMenu.some((item) => item.id === "layout:close-tab")).toBe(false);
+  const unselectedMenu = buildLayoutTabMenuItems(useLayoutStore.getState().layout, t3!.id);
+  expect(unselectedMenu.some((item) => item.id === "layout:close-tab")).toBe(true);
+  expect(unselectedMenu.some((item) => item.id === "layout:close-selected-tabs")).toBe(false);
+
+  // Escape clears selection.
+  await userEvent.keyboard("{Escape}");
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("aria-pressed", "false");
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("aria-pressed", "false");
+
+  // Cmd-click toggles individual tabs in and out, clearing when < 2 remain.
+  await userEvent.click(tabEl(t2!.id), { modifiers: ["Meta"] });
+  await expect.element(tabEl(t0!.id)).toHaveAttribute("data-selected-tab", "");
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("aria-pressed", "true");
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("aria-pressed", "false");
+  await userEvent.click(tabEl(t3!.id), { modifiers: ["Meta"] });
+  await expect.element(tabEl(t3!.id)).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(tabEl(t2!.id), { modifiers: ["Meta"] });
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("aria-pressed", "false");
+  await expect.element(tabEl(t3!.id)).toHaveAttribute("aria-pressed", "true");
+
+  // Plain click clears selection and activates the clicked tab.
+  await userEvent.click(tabEl(t1!.id));
+  expect(focusedTabId()).toBe(t1!.id);
+  await expect.element(tabEl(t3!.id)).toHaveAttribute("aria-pressed", "false");
+
+  // Selection never spans panes: Shift-clicking in pane 2 clears pane 1 and selects in pane 2.
+  await userEvent.click(tabEl(t3!.id), { modifiers: ["Shift"] });
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(tabEl(p2t0!.id), { modifiers: ["Shift"] });
+  await expect.element(tabEl(t2!.id)).toHaveAttribute("aria-pressed", "false");
+  await expect.element(tabEl(p2t0!.id)).toHaveAttribute("aria-pressed", "true");
+  await expect.element(tabEl(p2t1!.id)).toHaveAttribute("data-selected-tab", "");
+
+  // Close button on a selected tab closes all selected tabs in that pane; menu action works too.
+  await userEvent.click(tabEl(t0!.id));
+  await userEvent.click(tabEl(t2!.id), { modifiers: ["Shift"] });
+  const closeButton = document
+    .querySelector<HTMLElement>(`[data-layout-pane-tab="${t1!.id}"]`)!
+    .parentElement!.querySelector<HTMLButtonElement>("[data-tab-close]")!;
+  await userEvent.click(closeButton);
+  await vi.waitFor(() => {
+    const remaining = useLayoutStore
+      .getState()
+      .layout.workspaces[0]!.columns[0]!.panes[0]!.tabs.map((tab) => tab.id);
+    expect(remaining).toEqual([t3!.id]);
+  });
+
+  // Closing via context menu action closes selected tabs in pane 2.
+  await userEvent.click(tabEl(p2t1!.id));
+  await userEvent.click(tabEl(p2t0!.id), { modifiers: ["Shift"] });
+  await act(() => runLayoutTabMenuAction("layout:close-selected-tabs", p2t0!.id));
+  await vi.waitFor(() => {
+    expect(useLayoutStore.getState().layout.workspaces[0]!.columns).toHaveLength(1);
+  });
+});
+
+it("multi-selecting in an unfocused pane focuses it so Cmd+W closes that pane's selection", async () => {
+  const settings = getClientSettings();
+  __setClientSettingsForTests({ ...settings, scrollingWorkspacesEnabled: true });
+  const original = useLayoutStore.getState().layout;
+  const tour = localStorage.getItem(TOUR_KEY);
+  localStorage.setItem(TOUR_KEY, "true");
+  using _platform = vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
+  useLayoutStore.setState({ layout: createLayoutState() });
+  const store = useLayoutStore.getState();
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "new-column" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  const initialLayout = useLayoutStore.getState().layout;
+  const firstPane = initialLayout.workspaces[0]!.columns[0]!.panes[0]!;
+  const secondPane = initialLayout.workspaces[0]!.columns[1]!.panes[0]!;
+  const [p1t0, p1t1] = firstPane.tabs;
+  const [p2t0, p2t1] = secondPane.tabs;
+  store.focusTab(p1t1!.id);
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      clearPaneTabSelection();
+      __setClientSettingsForTests(settings);
+      useLayoutStore.setState({ layout: original });
+      if (tour === null) localStorage.removeItem(TOUR_KEY);
+      else localStorage.setItem(TOUR_KEY, tour);
+    },
+  };
+
+  function HostWithCommands() {
+    useLayoutKeyboardCommands();
+    return <Host />;
+  }
+
+  await page.viewport(1200, 600);
+  const container = document.createElement("div");
+  container.style.cssText = "position:fixed;inset:0;display:flex;";
+  await using _screen = await render(<HostWithCommands />, { container });
+  const tabEl = (id: string) =>
+    page.elementLocator(document.querySelector<HTMLElement>(`[data-layout-pane-tab="${id}"]`)!);
+
+  expect(selectFocusedPane(useLayoutStore.getState().layout)?.id).toBe(firstPane.id);
+  // Keyboard Shift+Enter on an inactive tab in unfocused pane 2 (no pointerdown) focuses pane 2
+  // while keeping p2t1 active.
+  const p2t0El = document.querySelector<HTMLElement>(`[data-layout-pane-tab="${p2t0!.id}"]`)!;
+  p2t0El.focus();
+  await userEvent.keyboard("{Shift>}{Enter}{/Shift}");
+  expect(selectFocusedPane(useLayoutStore.getState().layout)?.id).toBe(secondPane.id);
+  expect(focusedTabId()).toBe(p2t1!.id);
+  await expect.element(tabEl(p2t0!.id)).toHaveAttribute("aria-pressed", "true");
+  await expect.element(tabEl(p2t1!.id)).toHaveAttribute("data-selected-tab", "");
+
+  // Cmd+W closes pane 2's selected tabs, leaving pane 1 untouched.
+  await userEvent.keyboard("{Meta>}w{/Meta}");
+  await vi.waitFor(() => {
+    const columns = useLayoutStore.getState().layout.workspaces[0]!.columns;
+    expect(columns).toHaveLength(1);
+    expect(columns[0]!.panes[0]!.tabs.map((tab) => tab.id)).toEqual([p1t0!.id, p1t1!.id]);
+  });
+});
+
+it("keeps keyboard focus ring on selected tabs and skips start-edge hover corner on selected first tab", async () => {
+  const settings = getClientSettings();
+  __setClientSettingsForTests({ ...settings, scrollingWorkspacesEnabled: true });
+  const original = useLayoutStore.getState().layout;
+  const tour = localStorage.getItem(TOUR_KEY);
+  localStorage.setItem(TOUR_KEY, "true");
+  useLayoutStore.setState({ layout: createLayoutState() });
+  const store = useLayoutStore.getState();
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  const [t0, t1, t2] = useLayoutStore.getState().layout.workspaces[0]!.columns[0]!.panes[0]!.tabs;
+  // Make t2 active so t0 (first tab) and t1 are inactive.
+  store.focusTab(t2!.id);
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      clearPaneTabSelection();
+      __setClientSettingsForTests(settings);
+      useLayoutStore.setState({ layout: original });
+      if (tour === null) localStorage.removeItem(TOUR_KEY);
+      else localStorage.setItem(TOUR_KEY, tour);
+    },
+  };
+
+  await using _screen = await renderHost({ insetSidebar: true, viewport: 1200 });
+  const t0El = document.querySelector<HTMLElement>(`[data-layout-pane-tab="${t0!.id}"]`)!;
+  const t1El = document.querySelector<HTMLElement>(`[data-layout-pane-tab="${t1!.id}"]`)!;
+  const t2El = document.querySelector<HTMLElement>(`[data-layout-pane-tab="${t2!.id}"]`)!;
+  const header = t0El.closest<HTMLElement>("[data-pane-header]")!;
+  await vi.waitFor(() => expect(t2El.hasAttribute("data-joined")).toBe(true));
+
+  // Baseline: hovering unselected first tab sets data-pane-hover-start; keyboard focus shows inset ring.
+  t0El.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+  expect(header.hasAttribute("data-pane-hover-start")).toBe(true);
+  t0El.dispatchEvent(new PointerEvent("pointerleave", { bubbles: true }));
+
+  // Tab from t0 onto unselected t1 to measure its keyboard focus-visible boxShadow.
+  t0El.focus();
+  for (let step = 0; step < 4 && document.activeElement !== t1El; step += 1) {
+    await userEvent.keyboard("{Tab}");
+  }
+  expect(document.activeElement).toBe(t1El);
+  expect(t1El.matches(":focus-visible")).toBe(true);
+  const unselectedFocusShadow = getComputedStyle(t1El).boxShadow;
+  expect(unselectedFocusShadow).not.toBe("none");
+
+  // Select [t0, t1, t2] via Shift-click on t0 (t2 is active), then move keyboard focus onto selected t1.
+  await userEvent.click(page.elementLocator(t0El), { modifiers: ["Shift"] });
+  await expect.element(page.elementLocator(t0El)).toHaveAttribute("data-selected-tab", "");
+  await expect.element(page.elementLocator(t1El)).toHaveAttribute("data-selected-tab", "");
+
+  // Hovering a selected first tab must not light the start-edge corner patch.
+  t0El.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+  expect(header.hasAttribute("data-pane-hover-start")).toBe(false);
+
+  // Keyboard focus on a selected tab keeps the focus-visible inset ring.
+  t0El.focus();
+  for (let step = 0; step < 4 && document.activeElement !== t1El; step += 1) {
+    await userEvent.keyboard("{Tab}");
+  }
+  expect(document.activeElement).toBe(t1El);
+  expect(t1El.matches(":focus-visible")).toBe(true);
+  expect(getComputedStyle(t1El).boxShadow).toBe(unselectedFocusShadow);
+});
+
+it("lets Escape dismiss an open popover before clearing pane tab selection", async () => {
+  const settings = getClientSettings();
+  __setClientSettingsForTests({ ...settings, scrollingWorkspacesEnabled: true });
+  const original = useLayoutStore.getState().layout;
+  const tour = localStorage.getItem(TOUR_KEY);
+  localStorage.setItem(TOUR_KEY, "true");
+  useLayoutStore.setState({ layout: createLayoutState() });
+  const store = useLayoutStore.getState();
+  store.openTab(createLayoutLauncherContent(null), { placement: "active-pane", position: "end" });
+  const [t0, t1] = useLayoutStore.getState().layout.workspaces[0]!.columns[0]!.panes[0]!.tabs;
+  store.focusTab(t0!.id);
+
+  const popup = document.createElement("div");
+  popup.dataset.slot = "popover-popup";
+  popup.dataset.open = "";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.textContent = "Popover trigger";
+  let bubbleEscapes = 0;
+  const onBubbleKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") bubbleEscapes += 1;
+  };
+  window.addEventListener("keydown", onBubbleKeyDown);
+  document.body.append(trigger, popup);
+
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      window.removeEventListener("keydown", onBubbleKeyDown);
+      popup.remove();
+      trigger.remove();
+      clearPaneTabSelection();
+      __setClientSettingsForTests(settings);
+      useLayoutStore.setState({ layout: original });
+      if (tour === null) localStorage.removeItem(TOUR_KEY);
+      else localStorage.setItem(TOUR_KEY, tour);
+    },
+  };
+
+  function HostWithCommands() {
+    useLayoutKeyboardCommands();
+    return <Host />;
+  }
+
+  await page.viewport(1200, 600);
+  const container = document.createElement("div");
+  container.style.cssText = "position:fixed;inset:0;display:flex;";
+  await using _screen = await render(<HostWithCommands />, { container });
+  const tabEl = (id: string) =>
+    page.elementLocator(document.querySelector<HTMLElement>(`[data-layout-pane-tab="${id}"]`)!);
+
+  await userEvent.click(tabEl(t1!.id), { modifiers: ["Shift"] });
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("aria-pressed", "true");
+
+  // With focus on a non-editable trigger and an open popover in the DOM, Escape must reach bubble
+  // listeners and leave the tab selection intact.
+  trigger.focus();
+  await userEvent.keyboard("{Escape}");
+  expect(bubbleEscapes).toBe(1);
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("aria-pressed", "true");
+
+  // Once the popover closes, Escape clears the tab selection.
+  popup.remove();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(tabEl(t1!.id)).toHaveAttribute("aria-pressed", "false");
+});
+
+it("handles real right-click context menus on non-launcher tabs and multi-tab drag lifecycle", async () => {
+  const settings = getClientSettings();
+  __setClientSettingsForTests({ ...settings, scrollingWorkspacesEnabled: true });
+  const original = useLayoutStore.getState().layout;
+  const previousPanels = useRightPanelStore.getState().byThreadKey;
+  const tour = localStorage.getItem(TOUR_KEY);
+  localStorage.setItem(TOUR_KEY, "true");
+  useLayoutStore.setState({ layout: createLayoutState() });
+  const threadRef = scopeThreadRef(EnvironmentId.make("local"), ThreadId.make("ctx-menu-thread"));
+  useRightPanelStore.getState().open(threadRef, "diff");
+  useRightPanelStore.getState().openFile(threadRef, "notes.md");
+  const fileSurfaceId = useRightPanelStore
+    .getState()
+    .byThreadKey[scopedThreadKey(threadRef)]!.surfaces.find(
+      (surface) => surface.kind === "file",
+    )!.id;
+
+  const store = useLayoutStore.getState();
+  store.openTab(
+    { kind: "surface", threadRef, surfaceId: "diff" },
+    { placement: "active-pane", position: "end" },
+  );
+  store.openTab(
+    { kind: "surface", threadRef, surfaceId: fileSurfaceId },
+    { placement: "active-pane", position: "end" },
+  );
+  store.openTab({ kind: "issues" }, { placement: "active-pane", position: "end" });
+  store.openTab({ kind: "pull-requests" }, { placement: "active-pane", position: "end" });
+  const pane = useLayoutStore.getState().layout.workspaces[0]!.columns[0]!.panes[0]!;
+  const [diffTab, fileTab, issuesTab, prsTab] = pane.tabs;
+  store.focusTab(diffTab!.id);
+
+  const showMenuSpy = vi.spyOn(readLocalApi()!.contextMenu, "show").mockResolvedValue(null);
+
+  using _cleanup = {
+    [Symbol.dispose]: () => {
+      showMenuSpy.mockRestore();
+      clearPaneTabSelection();
+      __setClientSettingsForTests(settings);
+      useLayoutStore.setState({ layout: original });
+      useRightPanelStore.setState({ byThreadKey: previousPanels });
+      if (tour === null) localStorage.removeItem(TOUR_KEY);
+      else localStorage.setItem(TOUR_KEY, tour);
+    },
+  };
+
+  await page.viewport(1200, 600);
+  const container = document.createElement("div");
+  container.style.cssText = "position:fixed;inset:0;display:flex;";
+  await using _screen = await render(
+    <>
+      <Host />
+      <LayoutDropZones />
+    </>,
+    { container },
+  );
+  const tabEl = (id: string) =>
+    document.querySelector<HTMLElement>(`[data-layout-pane-tab="${id}"]`)!;
+  await vi.waitFor(() => expect(tabEl(issuesTab!.id)).not.toBeNull());
+
+  // Shift-select [diffTab, fileTab, issuesTab] (all non-launcher tabs).
+  await userEvent.click(page.elementLocator(tabEl(issuesTab!.id)), { modifiers: ["Shift"] });
+  await expect
+    .element(page.elementLocator(tabEl(fileTab!.id)))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect
+    .element(page.elementLocator(tabEl(issuesTab!.id)))
+    .toHaveAttribute("aria-pressed", "true");
+
+  // Real right-click on selected tab offers "Close selected tabs" (not "Close").
+  tabEl(issuesTab!.id).dispatchEvent(
+    new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 16 }),
+  );
+  await vi.waitFor(() => expect(showMenuSpy).toHaveBeenCalledTimes(1));
+  const selectedItems = showMenuSpy.mock.calls[0]![0];
+  expect(selectedItems.some((item) => item.id === "layout:close-selected-tabs")).toBe(true);
+  expect(selectedItems.some((item) => item.id === "layout:close-tab")).toBe(false);
+
+  // Real right-click on unselected tab offers "Close" (not "Close selected tabs").
+  tabEl(prsTab!.id).dispatchEvent(
+    new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 80, clientY: 16 }),
+  );
+  await vi.waitFor(() => expect(showMenuSpy).toHaveBeenCalledTimes(2));
+  const unselectedItems = showMenuSpy.mock.calls[1]![0];
+  expect(unselectedItems.some((item) => item.id === "layout:close-tab")).toBe(true);
+  expect(unselectedItems.some((item) => item.id === "layout:close-selected-tabs")).toBe(false);
+
+  // Dragging a selected tab exercises beginLayoutTabDrag (multi-tab badge) and Escape cancels.
+  const issuesRect = tabEl(issuesTab!.id).getBoundingClientRect();
+  tabEl(issuesTab!.id).dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      pointerId: 11,
+      clientX: issuesRect.left + 8,
+      clientY: issuesRect.top + 8,
+    }),
+  );
+  window.dispatchEvent(
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      pointerId: 11,
+      clientX: issuesRect.left + 40,
+      clientY: issuesRect.top + 8,
+    }),
+  );
+  await vi.waitFor(() => expect(isLayoutDragActive()).toBe(true));
+  expect(document.querySelector("[data-layout-drag-overlay]")?.textContent).toContain("3");
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+  );
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 11 }));
+  expect(isLayoutDragActive()).toBe(false);
+  expect(
+    useLayoutStore.getState().layout.workspaces[0]!.columns[0]!.panes[0]!.tabs.map((tab) => tab.id),
+  ).toEqual([diffTab!.id, fileTab!.id, issuesTab!.id, prsTab!.id]);
+
+  // Dragging an unselected tab clears the multi-selection once past the drag threshold.
+  expect(hasPaneTabSelection(pane.id)).toBe(true);
+  const prsRect = tabEl(prsTab!.id).getBoundingClientRect();
+  tabEl(prsTab!.id).dispatchEvent(
+    new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      pointerId: 12,
+      clientX: prsRect.left + 8,
+      clientY: prsRect.top + 8,
+    }),
+  );
+  window.dispatchEvent(
+    new PointerEvent("pointermove", {
+      bubbles: true,
+      pointerId: 12,
+      clientX: prsRect.left + 40,
+      clientY: prsRect.top + 8,
+    }),
+  );
+  await vi.waitFor(() => expect(hasPaneTabSelection(pane.id)).toBe(false));
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+  );
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerId: 12 }));
+
+  // Re-select [issuesTab, prsTab] (starting from diffTab? select fileTab + issuesTab via Cmd-click)
+  // and choose "Close selected tabs" from the real right-click menu.
+  await userEvent.click(page.elementLocator(tabEl(issuesTab!.id)), { modifiers: ["Shift"] });
+  showMenuSpy.mockResolvedValueOnce("layout:close-selected-tabs");
+  tabEl(issuesTab!.id).dispatchEvent(
+    new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 16 }),
+  );
+  await vi.waitFor(() => {
+    const remaining = useLayoutStore
+      .getState()
+      .layout.workspaces[0]!.columns[0]!.panes[0]!.tabs.map((tab) => tab.id);
+    // diffTab + fileTab closed in rightPanelStore (and issuesTab closed in layoutStore); only prsTab remains in layout
+    // (diffTab/fileTab also leave layout when surfaceSync is mounted; here issuesTab leaves layout and both surfaces leave rightPanelStore).
+    expect(remaining).not.toContain(issuesTab!.id);
+    expect(useRightPanelStore.getState().byThreadKey[scopedThreadKey(threadRef)]).toBeUndefined();
+  });
 });

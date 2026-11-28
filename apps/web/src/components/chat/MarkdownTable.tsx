@@ -4,6 +4,7 @@ import { useRef, type ComponentProps } from "react";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
+  serializeTableElementForChat,
   serializeTableElementToCsv,
   serializeTableElementToHtml,
   serializeTableElementToMarkdown,
@@ -11,10 +12,10 @@ import {
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { reportMarkdownActionFailure, type TableCopyFormat } from "./markdownActionFailure";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
-type TableTextFormat = Exclude<TableCopyFormat, "png">;
+type TableTextFormat = Exclude<TableCopyFormat, "png" | "chat">;
 
 const TABLE_COPY_SERIALIZERS: Record<TableTextFormat, (table: Element) => string> = {
   markdown: serializeTableElementToMarkdown,
@@ -56,6 +57,13 @@ export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
     );
   };
 
+  const handleCopyForChat = () => {
+    const table = containerRef.current?.querySelector("table");
+    if (!table) return;
+    const { text, html } = serializeTableElementForChat(table);
+    copyToClipboard(text, "chat", { "text/html": html });
+  };
+
   const handleCopyPng = () => {
     const table = containerRef.current?.querySelector("table");
     if (!table) return;
@@ -75,25 +83,23 @@ export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
       {/* Stays within the row's px-1: the chat lane clips sideways overflow. */}
       <div className="mt-0.5 -mx-1 flex items-center justify-end select-none">
         <Menu>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <MenuTrigger
-                  render={
-                    <Button
-                      type="button"
-                      variant="ghost-muted"
-                      size="icon-xs"
-                      aria-label={copyLabel}
-                    />
-                  }
-                />
-              }
-            >
-              {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
-            </TooltipTrigger>
-            <TooltipPopup side="top">{copyLabel}</TooltipPopup>
-          </Tooltip>
+          <SharedTooltipTrigger
+            render={
+              <MenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost-muted"
+                    size="icon-xs"
+                    aria-label={copyLabel}
+                  />
+                }
+              />
+            }
+            label={copyLabel}
+          >
+            {copied ? <CheckIcon className="size-3" /> : <CopyIcon className="size-3" />}
+          </SharedTooltipTrigger>
           <MenuPopup align="end">
             <MenuItem onClick={() => handleCopy("markdown")}>
               <T>Copy as Markdown</T>
@@ -103,6 +109,9 @@ export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
             </MenuItem>
             <MenuItem onClick={() => handleCopy("html")}>
               <T>Copy as HTML</T>
+            </MenuItem>
+            <MenuItem onClick={handleCopyForChat}>
+              <T>Copy for chat apps</T>
             </MenuItem>
             {canCopyPng ? (
               <MenuItem onClick={handleCopyPng}>

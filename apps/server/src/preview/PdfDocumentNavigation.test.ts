@@ -61,7 +61,7 @@ function fixture(nativePdfViewer = false) {
 describe("PDF document navigation", () => {
   it("escapes filenames in the browser document", async () => {
     const test = fixture();
-    await installPdfDocumentNavigation(test.cdp);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: false });
     const result = await test.navigate(
       "https://environment.test/api/assets/token/%3Cscript%3E.pdf",
     );
@@ -72,7 +72,7 @@ describe("PDF document navigation", () => {
 
   it("resumes navigation when committing the document fails", async () => {
     const test = fixture();
-    await installPdfDocumentNavigation(test.cdp);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: false });
     test.send.mockRejectedValueOnce(new Error("Tab closed"));
     expect(await test.navigate()).toEqual({
       method: "Fetch.continueRequest",
@@ -150,7 +150,7 @@ function routingFixture(options: {
 describe("local asset routing", () => {
   it("loads this server's PDF from its listener and commits the client document", async () => {
     const test = routingFixture({});
-    await installPdfDocumentNavigation(test.cdp, test.routing);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: true }, test.routing);
     const result = await test.request({});
     expect(String(test.fetch.mock.calls[0]?.[0])).toBe(
       "http://10.0.0.5:4141/api/assets/payload.sig/files/Quote.pdf",
@@ -160,7 +160,9 @@ describe("local asset routing", () => {
       "<title>Quote.pdf</title>",
     );
     expect(test.send).toHaveBeenCalledWith("Fetch.enable", {
+      handleAuthRequests: true,
       patterns: [
+        { urlPattern: "*", resourceType: "Document", requestStage: "Request" },
         { urlPattern: "*/api/assets/*", requestStage: "Request" },
         { urlPattern: "*/api/assets/*", resourceType: "Document", requestStage: "Response" },
       ],
@@ -174,7 +176,7 @@ describe("local asset routing", () => {
         headers: { "content-type": "video/mp4", "content-range": "bytes 0-2/3" },
       }),
     });
-    await installPdfDocumentNavigation(test.cdp, test.routing);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: true }, test.routing);
     const result = await test.request({
       url: "https://t3.example.com/api/assets/payload.sig/clip.mp4",
       resourceType: "Media",
@@ -191,7 +193,7 @@ describe("local asset routing", () => {
 
   it("leaves assets signed by another server untouched", async () => {
     const test = routingFixture({ localToken: false });
-    await installPdfDocumentNavigation(test.cdp, test.routing);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: true }, test.routing);
     expect(await test.request({})).toEqual({
       method: "Fetch.continueRequest",
       params: { requestId: "request-1" },
@@ -201,25 +203,29 @@ describe("local asset routing", () => {
 
   it("leaves requests already on the local origin untouched", async () => {
     const test = routingFixture({});
-    await installPdfDocumentNavigation(test.cdp, test.routing);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: true }, test.routing);
     await test.request({ url: "http://10.0.0.5:4141/api/assets/payload.sig/Quote.pdf" });
     expect(test.fetch).not.toHaveBeenCalled();
   });
 
   it("fails a PDF navigation the local server rejects", async () => {
     const test = routingFixture({ response: new Response("Not Found", { status: 404 }) });
-    await installPdfDocumentNavigation(test.cdp, test.routing);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: true }, test.routing);
     expect((await test.request({})).method).toBe("Fetch.failRequest");
   });
 
   it("routes assets even when the browser renders PDFs itself", async () => {
     const test = routingFixture({ nativePdfViewer: true });
-    await installPdfDocumentNavigation(test.cdp, test.routing);
+    await installPdfDocumentNavigation(test.cdp, { handleAuthRequests: true }, test.routing);
     const result = await test.request({});
     expect(result.method).toBe("Fetch.fulfillRequest");
     expect(result.params.responseCode).toBe(200);
     expect(test.send).toHaveBeenCalledWith("Fetch.enable", {
-      patterns: [{ urlPattern: "*/api/assets/*", requestStage: "Request" }],
+      handleAuthRequests: true,
+      patterns: [
+        { urlPattern: "*", resourceType: "Document", requestStage: "Request" },
+        { urlPattern: "*/api/assets/*", requestStage: "Request" },
+      ],
     });
   });
 });

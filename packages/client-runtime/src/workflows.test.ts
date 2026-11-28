@@ -19,6 +19,7 @@ import {
   workflowAgentSummary,
   isOwnWorkflowAnswer,
   workflowAnswer,
+  workflowWithdrawal,
   workflowChip,
   workflowFlowFocus,
   workflowPausedBeat,
@@ -692,18 +693,25 @@ describe("workflow references", () => {
     expect(workflowReferenceIssue(machine)).toBeNull();
   });
 
-  it("opens a thread subject as its thread, and names a web address by its host", () => {
+  it("opens a thread subject as its thread, and names a web address by its host even where URL.canParse is missing", () => {
     expect(
       workflowReferenceThreadId(
         reference({ kind: "thread", key: "t1", address: { threadId: "t1" } }),
       ),
     ).toBe("t1");
     expect(workflowReferenceThreadId(issue("412"))).toBeNull();
-    expect(
-      workflowReferenceLabel(
-        reference({ kind: "url", key: "u", url: "https://status.example.com/incidents/9" }),
-      ),
-    ).toBe("status.example.com");
+    const canParse = URL.canParse;
+    Reflect.deleteProperty(URL, "canParse");
+    try {
+      expect(
+        workflowReferenceLabel(
+          reference({ kind: "url", key: "u", url: "https://status.example.com/incidents/9" }),
+        ),
+      ).toBe("status.example.com");
+      expect(workflowReferenceLabel(reference({ kind: "url", url: "not a url" }))).toBe("url");
+    } finally {
+      URL.canParse = canParse;
+    }
   });
 
   it("gives a step the things it touched", () => {
@@ -735,6 +743,14 @@ describe("workflowOneLine", () => {
     expect(workflowOneLine("- See [the issue](https://x.test/2) first")).toBe(
       "See the issue first",
     );
+    expect(workflowOneLine("See [the issue](https://example.com/file(test)). Fixed.")).toBe(
+      "See the issue.",
+    );
+    expect(
+      workflowOneLine(
+        'Check [docs](<https://example.com/a(b)>) and [fn](https://example.com/foo(bar(1)) "title"). Next.',
+      ),
+    ).toBe("Check docs and fn.");
     expect(workflowOneLine("_italic_ __bold__ *italic* **bold** (_nested_) **yes**_now_.")).toBe(
       "italic bold italic bold (nested) yesnow.",
     );
@@ -790,5 +806,19 @@ describe("workflowOneLine", () => {
       "Deployment succeeded.",
     );
     expect(workflowOneLine("## Summary\n\n    - Nested bullet item.")).toBe("Nested bullet item.");
+  });
+});
+
+describe("workflowWithdrawal", () => {
+  it("reads who withdrew a question, and why, off its result", () => {
+    expect(
+      workflowWithdrawal({ withdrawn: { by: "t3 CLI", reason: "settled elsewhere" } }),
+    ).toEqual({ by: "t3 CLI", reason: "settled elsewhere" });
+    expect(workflowWithdrawal({ withdrawn: { by: "run r1", reason: null } })).toEqual({
+      by: "run r1",
+      reason: null,
+    });
+    expect(workflowWithdrawal({ choice: "Ship" })).toBeNull();
+    expect(workflowWithdrawal(null)).toBeNull();
   });
 });

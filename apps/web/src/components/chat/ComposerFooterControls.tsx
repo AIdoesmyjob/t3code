@@ -1,11 +1,11 @@
 import type { ModelSelection, ProviderInstanceId, RuntimeMode } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { T, useGT, useMessages } from "gt-react";
-import { type ComponentProps, memo, useId, useRef, useState } from "react";
+import { type ComponentProps, memo, use, useId, useRef, useState } from "react";
 
 import { Menu as MenuPrimitive } from "@base-ui/react/menu";
 import { Menu, MenuGroup, MenuGroupLabel, MenuPopup, MenuTrigger } from "../ui/menu";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { ComposerControl, ComposerControlIcon } from "./ComposerControl";
 import { focusRequestedPermission, useComposerMenuProps } from "./composerEventScope";
 import { ComposerPrimaryActions } from "./ComposerPrimaryActions";
@@ -13,6 +13,11 @@ import { resolveModelPickerSelectedModel } from "./ModelPickerContent";
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import { resolveRuntimeModeOption, runtimeModeConfig } from "./runtimeModeConfig";
 import { useComposerMenuState } from "./useComposerMenuState";
+import { HiddenThreadContext } from "./backgroundThread";
+import {
+  RuntimeModeLimitsTargetContext,
+  useProviderRuntimeModeLimits,
+} from "../../state/runtimeModeLimits";
 
 export type RuntimeModeOption = {
   mode: RuntimeMode;
@@ -34,7 +39,8 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
   const size = props.size ?? "sm";
   const accessDisplay = props.accessDisplay ?? "label";
   const composerFloatingLayerProps = useComposerMenuProps();
-  const [open, setOpen] = useComposerMenuState(props.hidden);
+  const hiddenThread = use(HiddenThreadContext);
+  const [open, setOpen] = useComposerMenuState(props.hidden || hiddenThread);
   const permissionsChipRef = useRef<HTMLButtonElement>(null);
   const runtimeModeOption =
     props.runtimeModeOptions.find((option) => option.mode === props.runtimeMode) ??
@@ -53,36 +59,34 @@ export const ComposerFooterModeControls = memo(function ComposerFooterModeContro
         focusRequestedPermission(isOpen, permissionsChipRef.current)
       }
     >
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <MenuTrigger
-              render={
-                <ComposerControl
-                  ref={permissionsChipRef}
-                  data-composer-shortcut="composer.mode"
-                  size={size}
-                  aria-label={gt("Permissions: {mode}", { mode: runtimeModeOption.label })}
-                />
-              }
-            />
-          }
-        >
-          <ComposerControlIcon
-            icon={RuntimeModeIcon}
-            size={size}
-            // Match the label, not full foreground: the chip's presence already marks the mode.
-            className={props.emphasized ? "size-3 text-current" : "size-3"}
+      <SharedTooltipTrigger
+        render={
+          <MenuTrigger
+            render={
+              <ComposerControl
+                ref={permissionsChipRef}
+                data-composer-shortcut="composer.mode"
+                size={size}
+                aria-label={gt("Permissions: {mode}", { mode: runtimeModeOption.label })}
+              />
+            }
           />
-          <span
-            data-composer-control-label
-            className={accessDisplay === "icon" ? "sr-only" : undefined}
-          >
-            {runtimeModeOption.label}
-          </span>
-        </TooltipTrigger>
-        <TooltipPopup side="top">{permissionsTooltip}</TooltipPopup>
-      </Tooltip>
+        }
+        label={permissionsTooltip}
+      >
+        <ComposerControlIcon
+          icon={RuntimeModeIcon}
+          size={size}
+          // Match the label, not full foreground: the chip's presence already marks the mode.
+          className={props.emphasized ? "size-3 text-current" : "size-3"}
+        />
+        <span
+          data-composer-control-label
+          className={accessDisplay === "icon" ? "sr-only" : undefined}
+        >
+          {runtimeModeOption.label}
+        </span>
+      </SharedTooltipTrigger>
       <MenuPopup spacing="relaxed" align="start" {...composerFloatingLayerProps}>
         <ComposerPermissionsSection
           runtimeMode={props.runtimeMode}
@@ -116,6 +120,8 @@ export function ComposerPermissionsSection(props: {
     props.runtimeModeOptions.find((option) => option.mode === shownMode) ??
     resolveRuntimeModeOption("approval-required", messages);
   const descriptionId = useId();
+  // Mounted only while a picker is open, so this asks the server again each time one opens.
+  useProviderRuntimeModeLimits(use(RuntimeModeLimitsTargetContext), "picker");
   return (
     <MenuGroup data-composer-permissions className="w-72">
       <MenuGroupLabel>

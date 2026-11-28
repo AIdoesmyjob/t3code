@@ -1,8 +1,10 @@
-import type {
-  ProviderInstanceId,
-  ServerProvider,
-  ServerProviderUsageWindow,
-  UsageLimitSourceSnapshots,
+import {
+  AuthProvidersManageScope,
+  type EnvironmentId,
+  type ProviderInstanceId,
+  type ServerProvider,
+  type ServerProviderUsageWindow,
+  type UsageLimitSourceSnapshots,
 } from "@t3tools/contracts";
 import {
   type LimitPace,
@@ -18,10 +20,11 @@ import { Link } from "@tanstack/react-router";
 import { msg, T, useGT, useLocale, useMessages, Var } from "gt-react";
 import { GaugeIcon, Minimize2Icon, TimerIcon, TrendingUpIcon } from "lucide-react";
 import * as Schema from "effect/Schema";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { useNowMinute } from "../../hooks/useNowMinute";
+import { useEnvironmentScope } from "../../state/session";
 import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
 import { formatContextWindowTokens } from "../../lib/contextWindow";
 import { cn } from "../../lib/utils";
@@ -31,6 +34,7 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Text } from "../ui/text";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { UsageAccessDialog } from "../usage/UsageAccessDialog";
 import { ContextWindowSegments } from "./ContextWindowMeter";
 import { contextWindowSegments } from "./compaction.logic";
 import { ProviderInstanceIcon } from "./ProviderInstanceIcon";
@@ -44,6 +48,7 @@ import {
   nextPoolReset,
   poolSources,
   resolveThreadDetailsLimits,
+  resolveThreadHttpQuotas,
 } from "./ThreadDetailsUsage.logic";
 
 const PACE_LABEL: Record<LimitPace, string> = {
@@ -62,17 +67,19 @@ export interface ThreadDetailsUsageInput {
 
 /** Provider limits grouped by provider as plain numbers with tints for low or fast-burning windows. */
 export function ThreadDetailsUsage({
+  environmentId,
   providerInstanceId,
   model,
   providers,
   sources,
-}: Omit<ThreadDetailsUsageInput, "contextWindow">) {
+}: Omit<ThreadDetailsUsageInput, "contextWindow"> & { readonly environmentId: EnvironmentId }) {
   const gt = useGT();
   const m = useMessages();
   const nowMinute = useNowMinute();
   const now = Date.parse(`${nowMinute}:00Z`);
   // The hub a model routes to pools the accounts it spends, when the instance reads none of its own.
   const resolved = resolveThreadDetailsLimits(providerInstanceId, model, providers, sources, now);
+  const quotas = resolveThreadHttpQuotas(providerInstanceId, sources);
   const limits = resolved?.kind === "instance" ? resolved.limits : undefined;
   const ownNotice =
     resolved === null
@@ -88,7 +95,7 @@ export function ThreadDetailsUsage({
     true,
     Schema.Boolean,
   );
-  const rows = pool
+  const baseRows = pool
     ? pool.map((pooled) => {
         const from = poolSources(pooled);
         const window = pooledWindow(pooled, now);
@@ -98,22 +105,40 @@ export function ThreadDetailsUsage({
           (pooled.members.length === 1 || pace === "ahead") &&
           projectRunOut(window, now) !== null;
         return {
+          key: window.id,
           driver: pooled.members[0]?.account.driver ?? driver,
           window,
           pace,
+          paceTimeLeft: pooled.paceRemainingPercent ?? paceRemainingPercent(window, now),
           runsOutBeforeReset,
           accounts: pooled.members.length,
           sources: [...from.hubs, ...(from.signedIn ? [gt("Signed-in accounts")] : [])],
+          accountLabel: undefined as string | undefined,
         };
       })
     : (limits?.windows ?? []).map((window) => ({
+        key: window.id,
         driver,
         window,
         pace: paceOf(window, now),
+        paceTimeLeft: paceRemainingPercent(window, now),
         runsOutBeforeReset: remainingPercent(window) > 0 && projectRunOut(window, now) !== null,
         accounts: 1,
-        sources: [],
+        sources: [] as ReadonlyArray<string>,
+        accountLabel: undefined as string | undefined,
       }));
+  const quotaRows = quotas.map(({ key, accountLabel, window }) => ({
+    key,
+    driver,
+    window,
+    pace: paceOf(window, now),
+    paceTimeLeft: paceRemainingPercent(window, now),
+    runsOutBeforeReset: remainingPercent(window) > 0 && projectRunOut(window, now) !== null,
+    accounts: 1,
+    sources: [] as ReadonlyArray<string>,
+    accountLabel,
+  }));
+  const rows = [...baseRows, ...quotaRows];
   const fold = foldLimitRows(rows, model);
   const shown = folded ? fold.shown : rows;
   const groups = groupLimitRows(shown);
@@ -121,10 +146,16 @@ export function ThreadDetailsUsage({
     providerInstanceId !== null && ownNotice !== null && !pool
       ? limitPoolNotice(providerInstanceId, providers, sources)
       : null;
-  const notice = pool ? null : (poolNotice ?? ownNotice);
+  const notice = pool || quotaRows.length > 0 ? null : (poolNotice ?? ownNotice);
   return (
     <ThreadDetailsSection title={gt("Usage limits")} variant="usage">
-      {notice || !rows.length ? (
+      {limits?.needsUsageAccess && providerInstanceId !== null && quotaRows.length === 0 ? (
+        <UsageAccessRow
+          environmentId={environmentId}
+          instanceId={providerInstanceId}
+          providers={providers}
+        />
+      ) : notice || !rows.length ? (
         <StatusRow
           label={gt("Limits", { $context: "usage limits row label" })}
           icon={<TimerIcon className="size-4 shrink-0" aria-hidden />}
@@ -177,18 +208,31 @@ export function ThreadDetailsUsage({
                   ) : null}
                 </div>
                 <div className="grid grid-cols-2 gap-x-3.5 gap-y-0.5 ps-1 -me-0.5">
-                  {group.rows.map(({ window, pace, runsOutBeforeReset, accounts, sources }) => (
-                    <LimitTile
-                      key={window.id}
-                      window={window}
-                      pace={pace}
-                      runsOutBeforeReset={runsOutBeforeReset}
-                      now={now}
-                      pooledAccounts={accounts}
-                      sources={sources}
-                      fullWidth={group.rows.length === 1}
-                    />
-                  ))}
+                  {group.rows.map(
+                    ({
+                      key,
+                      window,
+                      pace,
+                      paceTimeLeft,
+                      runsOutBeforeReset,
+                      accounts,
+                      sources,
+                      accountLabel,
+                    }) => (
+                      <LimitTile
+                        key={key}
+                        window={window}
+                        pace={pace}
+                        paceTimeLeft={paceTimeLeft}
+                        runsOutBeforeReset={runsOutBeforeReset}
+                        now={now}
+                        pooledAccounts={accounts}
+                        sources={sources}
+                        accountLabel={accountLabel}
+                        fullWidth={group.rows.length === 1}
+                      />
+                    ),
+                  )}
                 </div>
               </div>
             );
@@ -207,6 +251,53 @@ export function ThreadDetailsUsage({
         </div>
       )}
     </ThreadDetailsSection>
+  );
+}
+
+/** Limits that need T3 to read the agent's sign-in, which the user has not allowed yet. */
+function UsageAccessRow({
+  environmentId,
+  instanceId,
+  providers,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly instanceId: ProviderInstanceId;
+  readonly providers: readonly ServerProvider[];
+}) {
+  const gt = useGT();
+  const [open, setOpen] = useState(false);
+  const canAnswer = useEnvironmentScope(environmentId, AuthProvidersManageScope);
+  const provider = providers.find((entry) => entry.instanceId === instanceId);
+  if (provider === undefined) return null;
+  return (
+    <>
+      <div className="flex h-7 min-w-0 items-center gap-2.5 ps-2.5 pe-1 text-meta">
+        <TimerIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">
+          {gt("Limits", { $context: "usage limits row label" })}
+        </span>
+        {canAnswer ? (
+          <Button size="xs" variant="secondary" onClick={() => setOpen(true)}>
+            {gt("Set up", { $context: "allow reading an agent's usage limits" })}
+          </Button>
+        ) : (
+          <span className="shrink-0 text-muted-foreground">{gt("Unavailable")}</span>
+        )}
+      </div>
+      {open ? (
+        <UsageAccessDialog
+          prompts={[
+            {
+              environmentId,
+              environmentLabel: "",
+              instanceId,
+              driver: provider.driver,
+            },
+          ]}
+          onOpenChange={setOpen}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -374,25 +465,29 @@ function isWeeklyWindow(window: ServerProviderUsageWindow): boolean {
 function LimitTile({
   window,
   pace,
+  paceTimeLeft,
   runsOutBeforeReset,
   now,
   pooledAccounts,
   sources,
+  accountLabel,
   fullWidth,
 }: {
   readonly window: ServerProviderUsageWindow;
   readonly pace: LimitPace | null;
+  readonly paceTimeLeft?: number | null | undefined;
   readonly runsOutBeforeReset: boolean;
   readonly now: number;
   readonly pooledAccounts: number;
   readonly sources: ReadonlyArray<string>;
+  readonly accountLabel?: string | undefined;
   readonly fullWidth: boolean;
 }) {
   const gt = useGT();
   const m = useMessages();
   const timestampFormat = usePrimarySettings((settings) => settings.timestampFormat);
   const left = remainingPercent(window);
-  const timeLeft = paceRemainingPercent(window, now);
+  const timeLeft = paceTimeLeft !== undefined ? paceTimeLeft : paceRemainingPercent(window, now);
   const runsOutText = runsOutBeforeReset ? formatRunsOutIn(window, now, m) : null;
   const tone = limitTone(left, runsOutBeforeReset);
   const resetsAt = window.resetsAt ? Date.parse(window.resetsAt) : Number.NaN;
@@ -412,6 +507,7 @@ function LimitTile({
   const wide = fullWidth || isWideLimitLabel(displayLabel);
   const ariaLabel = [
     gt("{label}: {left}% left", { label: window.label, left }),
+    accountLabel,
     runsOutText,
     !runsOutText && pace ? m(PACE_LABEL[pace]) : null,
     resetText,
@@ -461,6 +557,7 @@ function LimitTile({
             <span className="text-foreground">
               {gt("{label}: {left}% left", { label: window.label, left })}
             </span>
+            {accountLabel ? <span>{accountLabel}</span> : null}
             {runsOutText ? (
               <span
                 className={cn(

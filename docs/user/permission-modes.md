@@ -13,6 +13,8 @@ Configure the default for new threads in **Settings → Threads → New threads 
 
 Permission modes never stop an agent from asking clarifying questions. Subagent approval requests appear in the parent conversation with the subagent's name so you can approve without switching threads.
 
+Approval requests appear as a card in the conversation. Choose **Approve** or **Decline** to let the agent continue. For an actionable approval, press `Enter` with an empty message box to approve, or send a non-empty message to decline it and redirect the agent.
+
 ## Git push hooks below Full access
 
 When an agent below **Full access** opens a PR using T3 Code's built-in pull request tool and the push would execute local Git hooks (`pre-push`, `reference-transaction`, or `hook.<name>.command`), T3 Code prompts you every time—naming the branch and hook files/commands—before pushing.

@@ -16,6 +16,7 @@ import { create } from "zustand";
 import { useAtomValue } from "@effect/atom-react";
 import { resolvePathLinkTarget } from "@t3tools/shared/fileLinks";
 import {
+  ArrowLeftIcon,
   ChartNoAxesColumnIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -89,12 +90,15 @@ import {
   isLayoutGhostTabShown,
   isLayoutPageContent,
   THREAD_TERMINAL_SURFACE_ID,
+  type LayoutPageContent,
   type LayoutState,
   type LayoutTab,
   canCloseLayoutTab,
 } from "./layoutModel";
 import {
   closeLayoutTabByUser,
+  closeLayoutTabOrSelectionByUser,
+  closeLayoutTabsByUser,
   closeOtherLayoutTabsByUser,
   createLayoutNewTabContent,
   openLayoutNewTab,
@@ -104,7 +108,17 @@ import { beginLayoutContentDrag, beginLayoutTabDrag } from "./layoutDrag";
 import { useLayoutPane } from "./layoutPaneContext";
 import { isScrollingWorkspacesEnabled } from "./layoutBehavior";
 import { useLayoutStore } from "./layoutStore";
-import { followLayoutCompanions } from "./openRules";
+import {
+  clearPaneTabSelection,
+  handlePaneTabClick,
+  hasPaneTabSelection,
+  isLayoutTabSelected,
+  isTabToggleModifier,
+  readSelectedLayoutTabIds,
+  subscribePaneTabSelection,
+  useIsLayoutTabSelected,
+} from "./paneTabSelection";
+import { followLayoutCompanions, isLayoutSwitching, isThreadSwitch } from "./openRules";
 import {
   scrollLeftByWheel,
   scrollTabStripFromRow,
@@ -184,7 +198,10 @@ function schedulePlacement(strip: HTMLElement, motionMs: number): void {
     placementFrame = null;
     const placements = [...pendingPlacements];
     pendingPlacements.clear();
-    for (const [pending, motion] of placements) stripPlacers.get(pending)?.(motion);
+    const switching = isLayoutSwitching();
+    for (const [pending, motion] of placements) {
+      stripPlacers.get(pending)?.(switching ? 0 : motion);
+    }
   });
 }
 
@@ -468,6 +485,12 @@ function createPaneStrip(role?: "panel"): PaneStrip {
     markHoverAtStart(entry, hoveredOutlineTab(strip, event.target)),
   );
   strip.addEventListener("pointerleave", () => markHoverAtStart(entry, null));
+  strip.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || !hasPaneTabSelection()) return;
+    event.preventDefault();
+    event.stopPropagation();
+    clearPaneTabSelection();
+  });
   setWheelScroller(strip, () => strip.scrollWidth > strip.clientWidth);
   // A tab opening, closing or changing size moves the others without a render here.
   // Not observeResize: no React state changes, and its flushSync would force the
@@ -580,6 +603,16 @@ function markPaneJoinedAtStart(pane: HTMLElement | null): void {
 
 /** What a strip's hovered tab last marked. The strip moves between its pane's headers. */
 const hoverStartMarks = new WeakMap<HTMLElement, readonly [name: string, element: HTMLElement][]>();
+const hoveredStrips = new Set<PaneStrip>();
+
+subscribePaneTabSelection(() => {
+  if (hoveredStrips.size === 0 || typeof requestAnimationFrame !== "function") return;
+  requestAnimationFrame(() => {
+    for (const entry of hoveredStrips) {
+      if (entry.hoveredTab) markHoverAtStart(entry, entry.hoveredTab, true);
+    }
+  });
+});
 
 function hoveredOutlineTab(strip: HTMLElement, target: EventTarget | null): HTMLElement | null {
   if (!(target instanceof Element)) return null;
@@ -599,10 +632,18 @@ function hoveredOutlineTab(strip: HTMLElement, target: EventTarget | null): HTML
 function markHoverAtStart(entry: PaneStrip, tab: HTMLElement | null, force = false): void {
   if (!force && tab === entry.hoveredTab) return;
   entry.hoveredTab = tab;
+  if (tab) hoveredStrips.add(entry);
+  else hoveredStrips.delete(entry);
   const { strip } = entry;
   const next: [name: string, element: HTMLElement][] = [];
   // A scrolled strip fades its start, and the outline with it.
-  if (tab && !tab.hasAttribute("data-joined") && !entry.canStart && entry.atPaneEdge) {
+  if (
+    tab &&
+    !tab.hasAttribute("data-joined") &&
+    !tab.hasAttribute("data-selected-tab") &&
+    !entry.canStart &&
+    entry.atPaneEdge
+  ) {
     const row = strip.closest<HTMLElement>("[data-pane-header]");
     if (
       row &&
@@ -1020,6 +1061,9 @@ function slideOnPress(entry: PaneStrip, event: PointerEvent): void {
   if (!tab || !entry.strip.contains(tab)) return;
   const tabId = stripTabId(tab);
   if (tabId === null || tabId === entry.shown?.tabId) return;
+  const { layout } = useLayoutStore.getState();
+  const pressed = findLayoutTab(layout, (candidate) => candidate.id === tabId);
+  if (isThreadSwitch(layout, pressed?.pane.id, pressed?.tab.content)) return;
   const box = stripBoxOf(entry.strip, tab);
   if (!box) return;
   moveJoin(entry, { tabId, ...box }, entry.motionMs);
@@ -1310,6 +1354,7 @@ export type LayoutTabMenuId =
   | "layout:fill"
   | "layout:copy-link"
   | "layout:close-tab"
+  | "layout:close-selected-tabs"
   | "layout:close-other-tabs";
 
 /** Layout actions for a tab's context menu (pen lLm7Y 3). */
@@ -1374,7 +1419,17 @@ export function buildLayoutTabMenuItems(
       separatorBefore: true,
     });
   }
-  if (canCloseLayoutTab(layout, tabId)) {
+  const selectedInPane =
+    isLayoutTabSelected(tabId) && readSelectedLayoutTabIds(location.pane.id).length >= 2;
+  if (selectedInPane) {
+    items.push({
+      id: "layout:close-selected-tabs",
+      label: m(msg("Close selected tabs")),
+      icon: "x",
+      ...keys("tab.close"),
+      separatorBefore: !items.some((item) => item.id === "layout:copy-link"),
+    });
+  } else if (canCloseLayoutTab(layout, tabId)) {
     items.push({
       id: "layout:close-tab",
       label: m(msg("Close")),
@@ -1448,6 +1503,9 @@ export function runLayoutTabMenuAction(action: LayoutTabMenuId, tabId: string): 
     }
     case "layout:close-tab":
       closeLayoutTabByUser(tabId);
+      return;
+    case "layout:close-selected-tabs":
+      closeLayoutTabsByUser(readSelectedLayoutTabIds(location.pane.id));
       return;
     case "layout:close-other-tabs":
       closeOtherLayoutTabsByUser(tabId);
@@ -1631,7 +1689,7 @@ export function LayoutTabCloseButton({ tabId, title }: { tabId: string; title: s
             aria-label={gt("Close {title}", { title })}
             className="absolute start-2.25 top-1/2 -translate-y-1/2"
             data-tab-close=""
-            onClick={() => closeLayoutTabByUser(tabId)}
+            onClick={() => closeLayoutTabOrSelectionByUser(tabId)}
           />
         }
       >
@@ -1681,14 +1739,40 @@ export function LayoutNewTabButton({ tabId }: { tabId: string | null }) {
 }
 
 /**
- * A pane tab that is not the pane's active one (pen W6VyO): the same 28px
- * notch tab with its label in the muted tier. Click shows it, middle click
- * or its close button closes it, right click opens the tab's own menu without
- * showing it, dragging moves or splits it.
+ * The way back from a child thread to its parent, ahead of the child tabs: a
+ * muted arrow and the parent's title, so it reads as navigation, not a tab.
  */
-export const LayoutPaneTab = memo(function LayoutPaneTab({ tab }: { tab: LayoutTab }) {
+export function ParentThreadLinkLabel({ title }: { title: string }) {
+  return (
+    <>
+      <ArrowLeftIcon aria-hidden className="size-3.5 shrink-0" />
+      <span className={PANE_INACTIVE_TAB_TITLE_CLASS} dir={textDirection(title)}>
+        {title}
+      </span>
+    </>
+  );
+}
+
+/**
+ * An inactive pane tab (pen W6VyO): click shows it, middle click or its close
+ * button closes it, right click opens its menu, dragging moves or splits it.
+ * As the active thread's parent (`parentLink`) it draws as a back link and keeps every handler.
+ */
+export const LayoutPaneTab = memo(function LayoutPaneTab({
+  tab,
+  parentLink = false,
+}: {
+  tab: LayoutTab;
+  parentLink?: boolean;
+}) {
   if (tab.content.kind === "chat" && tab.content.target.kind === "server") {
-    return <ThreadLayoutPaneTab tab={tab} threadRef={tab.content.target.threadRef} />;
+    return (
+      <ThreadLayoutPaneTab
+        tab={tab}
+        threadRef={tab.content.target.threadRef}
+        parentLink={parentLink}
+      />
+    );
   }
   return <PlainLayoutPaneTab tab={tab} />;
 });
@@ -1698,6 +1782,7 @@ function PlainLayoutPaneTab({ tab }: { tab: LayoutTab }) {
   return (
     <LayoutPaneTabButton
       tab={tab}
+      parentLink={false}
       onOpenMenu={(position, source) =>
         void showLayoutTabMenu(tab.id, position, keybindings, undefined, source)
       }
@@ -1705,7 +1790,15 @@ function PlainLayoutPaneTab({ tab }: { tab: LayoutTab }) {
   );
 }
 
-function ThreadLayoutPaneTab({ tab, threadRef }: { tab: LayoutTab; threadRef: ScopedThreadRef }) {
+function ThreadLayoutPaneTab({
+  tab,
+  threadRef,
+  parentLink,
+}: {
+  tab: LayoutTab;
+  threadRef: ScopedThreadRef;
+  parentLink: boolean;
+}) {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const canShareWithGuest = useAtomValue(canShareWithGuestAtom(threadRef.environmentId));
   const thread = useQuietThreadShell(threadRef);
@@ -1723,16 +1816,21 @@ function ThreadLayoutPaneTab({ tab, threadRef }: { tab: LayoutTab; threadRef: Sc
       if (isLayoutTabMenuId(id)) runLayoutTabMenuAction(id, tab.id);
     },
   });
-  return <LayoutPaneTabButton tab={tab} onOpenMenu={openMenu} />;
+  return <LayoutPaneTabButton tab={tab} parentLink={parentLink} onOpenMenu={openMenu} />;
 }
 
 function LayoutPaneTabButton({
   tab,
+  parentLink,
   onOpenMenu,
 }: {
   tab: LayoutTab;
+  parentLink: boolean;
   onOpenMenu: (position: { x: number; y: number }, source?: ContextMenuSource) => void;
 }) {
+  const gt = useGT();
+  const { paneId } = useLayoutPane();
+  const selected = useIsLayoutTabSelected(paneId, tab.id);
   const label = useLayoutTabLabel(tab);
   const focusTab = () => {
     followLayoutCompanions(() => useLayoutStore.getState().focusTab(tab.id));
@@ -1767,8 +1865,20 @@ function LayoutPaneTabButton({
               variant="tab"
               type="button"
               data-layout-pane-tab={tab.id}
-              onClick={focusTab}
-              onDoubleClick={() => useLayoutStore.getState().keepTab(tab.id)}
+              aria-label={
+                parentLink ? gt("Open parent thread: {title}", { title: label.title }) : undefined
+              }
+              data-selected-tab={selected ? "" : undefined}
+              aria-pressed={selected}
+              onClick={(event) => {
+                if (handlePaneTabClick(event, tab.id)) return;
+                focusTab();
+              }}
+              onDoubleClick={(event) => {
+                if (!event.shiftKey && !isTabToggleModifier(event)) {
+                  useLayoutStore.getState().keepTab(tab.id);
+                }
+              }}
               onAuxClick={(event) => closeLayoutTabOnMiddleClick(event, tab.id)}
               onPointerDown={(event) => beginLayoutTabDrag(event, tab.id)}
               onMouseDown={(event) => {
@@ -1779,24 +1889,56 @@ function LayoutPaneTabButton({
             />
           }
         >
-          <span className={LAYOUT_TAB_ICON_CLASS}>{label.icon}</span>
-          <span
-            className={cn(
-              PANE_INACTIVE_TAB_TITLE_CLASS,
-              isLayoutGhostTab(tab) && PANE_GHOST_TAB_TITLE_CLASS,
-            )}
-            dir={textDirection(label.title)}
-          >
-            {label.title}
-          </span>
+          {parentLink ? (
+            <ParentThreadLinkLabel title={label.title} />
+          ) : (
+            <>
+              <span className={LAYOUT_TAB_ICON_CLASS}>{label.icon}</span>
+              <span
+                className={cn(
+                  PANE_INACTIVE_TAB_TITLE_CLASS,
+                  isLayoutGhostTab(tab) && PANE_GHOST_TAB_TITLE_CLASS,
+                )}
+                dir={textDirection(label.title)}
+              >
+                {label.title}
+              </span>
+            </>
+          )}
         </TooltipTrigger>
         <TooltipPopup side="bottom" className="whitespace-pre-line">
-          {label.tooltip}
+          {parentLink ? `${label.title}\n${gt("Parent thread")}` : label.tooltip}
         </TooltipPopup>
       </Tooltip>
-      <LayoutTabCloseButton tabId={tab.id} title={label.title} />
+      {/* A back link has no close button; middle click and its menu still close the tab. */}
+      {parentLink ? null : <LayoutTabCloseButton tabId={tab.id} title={label.title} />}
     </span>
   );
+}
+
+/** A page tab's name and glyph, shared by its tab and its page's own notch. */
+export function layoutPageTabLabel(kind: LayoutPageContent["kind"], gt: ReturnType<typeof useGT>) {
+  const title =
+    kind === "settings"
+      ? gt("Settings")
+      : kind === "usage"
+        ? gt("Usage")
+        : kind === "issues"
+          ? gt("Issues", { $context: "sidebar link to the list of issues" })
+          : kind === "workflows"
+            ? gt("Workflows")
+            : gt("Pull requests");
+  const Icon =
+    kind === "settings"
+      ? SettingsIcon
+      : kind === "usage"
+        ? ChartNoAxesColumnIcon
+        : kind === "issues"
+          ? IssueGlyph.issue
+          : kind === "workflows"
+            ? WorkflowIcon
+            : PullRequestGlyph.pullRequest;
+  return { title, Icon };
 }
 
 export function useLayoutTabLabel(tab: LayoutTab): {
@@ -1873,26 +2015,7 @@ export function useLayoutTabLabel(tab: LayoutTab): {
   })();
   const project = useProject(projectRef);
   if (isLayoutPageContent(tab.content)) {
-    const title =
-      tab.content.kind === "settings"
-        ? gt("Settings")
-        : tab.content.kind === "usage"
-          ? gt("Usage")
-          : tab.content.kind === "issues"
-            ? gt("Issues", { $context: "sidebar link to the list of issues" })
-            : tab.content.kind === "workflows"
-              ? gt("Workflows")
-              : gt("Pull requests");
-    const Icon =
-      tab.content.kind === "settings"
-        ? SettingsIcon
-        : tab.content.kind === "usage"
-          ? ChartNoAxesColumnIcon
-          : tab.content.kind === "issues"
-            ? IssueGlyph.issue
-            : tab.content.kind === "workflows"
-              ? WorkflowIcon
-              : PullRequestGlyph.pullRequest;
+    const { title, Icon } = layoutPageTabLabel(tab.content.kind, gt);
     return {
       icon: <Icon aria-hidden className="size-3.5 shrink-0" />,
       title,
@@ -1974,15 +2097,19 @@ export function useLayoutTabLabel(tab: LayoutTab): {
     };
   }
   const title = thread?.title ?? gt("New thread");
+  const lineageIcon = <GitForkIcon aria-hidden className="size-3.5 shrink-0" />;
   if (tab.ghostOf) {
     return {
-      icon: <GitForkIcon aria-hidden className="size-3.5 shrink-0" />,
+      icon: lineageIcon,
       title,
       tooltip: ghostTabTooltip(title, ghostParent?.title, messages),
     };
   }
+  // A subagent opened any other way (a thread mention, a kept tab) keeps the same icon.
   const icon =
-    draftId !== null ? (
+    thread?.lineage.relationshipToParent === "subagent" ? (
+      lineageIcon
+    ) : draftId !== null ? (
       <SquarePenIcon aria-hidden className="size-3.5 shrink-0" />
     ) : project ? (
       <ProjectFavicon project={project} className="size-3.5 shrink-0" />

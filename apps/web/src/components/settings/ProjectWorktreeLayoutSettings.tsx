@@ -138,7 +138,7 @@ function CheckoutWorktreeLayout({
             <span className="flex min-w-0 items-center gap-2">
               <span className="min-w-0 truncate">{m(COMMAND_TITLES[command.kind])}</span>
               {policyDenial !== undefined ? (
-                <Badge size="sm" variant="outline">
+                <Badge size="sm" variant="secondary">
                   <T>Off</T>
                 </Badge>
               ) : command.approved ? (
@@ -175,7 +175,7 @@ function CheckoutWorktreeLayout({
             </Button>
           }
         >
-          <pre className="mb-2 max-h-48 overflow-auto whitespace-pre-wrap wrap-anywhere rounded-control surface-well px-3 py-2 font-mono text-meta">
+          <pre className="mb-2 max-h-48 overflow-auto whitespace-pre-wrap wrap-anywhere rounded-control surface-well px-3 py-2 font-mono text-caption">
             {command.command}
           </pre>
         </SettingsRow>

@@ -10,7 +10,7 @@ import { useOpenLink } from "~/browser/useOpenLink";
 import { cn } from "~/lib/utils";
 import { Badge } from "../ui/badge";
 import { Button, InlineButton } from "../ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 import { openOnHostLabel, showPullRequestLinkContextMenu } from "./pullRequestLinkContextMenu";
 
 import { changeRequestTermKind } from "./changeRequestTerm";
@@ -58,22 +58,20 @@ function BackButton({
   tooltip: string;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            size="icon-xs"
-            variant="ghost-muted"
-            onClick={onBack}
-            className="-ms-1.25"
-            aria-label={label}
-          >
-            <ArrowLeftIcon aria-hidden className="size-3.5" />
-          </Button>
-        }
-      />
-      <TooltipPopup side="top">{tooltip}</TooltipPopup>
-    </Tooltip>
+    <SharedTooltipTrigger
+      render={
+        <Button
+          size="icon-xs"
+          variant="ghost-muted"
+          onClick={onBack}
+          className="-ms-1.25"
+          aria-label={label}
+        >
+          <ArrowLeftIcon aria-hidden className="size-3.5" />
+        </Button>
+      }
+      label={tooltip}
+    />
   );
 }
 
@@ -91,25 +89,23 @@ function KeyLink({
   const openLink = useOpenLink(threadRef);
   return (
     <span className={cn("inline-flex shrink-0", toneClassName)}>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <InlineButton
-              tone={null}
-              onClick={(event) => void openLink(subject.url, { event }).catch(console.error)}
-              onAuxClick={(event) => {
-                if (event.button === 1) void openLink(subject.url, { event }).catch(console.error);
-              }}
-              onContextMenu={(event) => openKeyContextMenu(event, subject)}
-              aria-label={subject.keyAriaLabel}
-            >
-              {subject.keyLabel}
-              <ExternalLinkIcon aria-hidden className="size-[13px]" />
-            </InlineButton>
-          }
-        />
-        <TooltipPopup side="top">{openOnHostText}</TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <InlineButton
+            tone={null}
+            onClick={(event) => void openLink(subject.url, { event }).catch(console.error)}
+            onAuxClick={(event) => {
+              if (event.button === 1) void openLink(subject.url, { event }).catch(console.error);
+            }}
+            onContextMenu={(event) => openKeyContextMenu(event, subject)}
+            aria-label={subject.keyAriaLabel}
+          >
+            {subject.keyLabel}
+            <ExternalLinkIcon aria-hidden className="size-[13px]" />
+          </InlineButton>
+        }
+        label={openOnHostText}
+      />
     </span>
   );
 }
@@ -142,13 +138,15 @@ export function WorkItemDetailCrumbs({
       {subject && toneClassName ? (
         <>
           {back ? <BackButton {...back} /> : null}
-          <Tooltip>
-            <TooltipTrigger
+          {/* Reversed, key first: once the scope no longer fits at its minimum width beside the key
+              and what follows it, it wraps onto a clipped second line. */}
+          <div className="flex h-6 min-w-0 grow flex-row-reverse flex-wrap items-center gap-x-1.5 gap-y-1 overflow-clip [overflow-clip-margin:2px]">
+            <SharedTooltipTrigger
               render={
                 subject.scopeUrl ? (
                   <InlineButton
                     tone="muted"
-                    className="min-w-16 shrink @max-sm/pr-header:hidden"
+                    className="min-w-16 max-w-max grow-1000 basis-16"
                     onClick={(event) => {
                       if (subject.scopeUrl)
                         void openLink(subject.scopeUrl, { event }).catch(console.error);
@@ -161,26 +159,28 @@ export function WorkItemDetailCrumbs({
                     <span className="truncate">{subject.scope}</span>
                   </InlineButton>
                 ) : (
-                  <span className="min-w-16 truncate @max-sm/pr-header:hidden">
+                  <span className="min-w-16 max-w-max grow-1000 basis-16 truncate">
                     {subject.scope}
                   </span>
                 )
               }
+              label={
+                subject.scopeUrl
+                  ? gt("Open {repository} repository", { repository: subject.scope })
+                  : subject.scope
+              }
             />
-            <TooltipPopup side="top">
-              {subject.scopeUrl
-                ? gt("Open {repository} repository", { repository: subject.scope })
-                : subject.scope}
-            </TooltipPopup>
-          </Tooltip>
-          <KeyLink
-            subject={subject}
-            threadRef={threadRef}
-            toneClassName={toneClassName}
-            openOnHostText={openOnHostText}
-          />
-          {badge}
-          {children}
+            <span className="order-first flex h-full min-w-0 grow items-center gap-1.5">
+              <KeyLink
+                subject={subject}
+                threadRef={threadRef}
+                toneClassName={toneClassName}
+                openOnHostText={openOnHostText}
+              />
+              {badge}
+              {children}
+            </span>
+          </div>
         </>
       ) : null}
     </div>

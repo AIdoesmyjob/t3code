@@ -43,6 +43,7 @@ import { Input } from "~/components/ui/input";
 import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem } from "~/components/ui/menu";
 import { toastManager } from "~/components/ui/toast";
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
+import { useStableCallback } from "~/hooks/useStableCallback";
 import { m } from "~/i18n/messages";
 import { cn } from "~/lib/utils";
 import { setWheelScroller } from "~/motion/gesture";
@@ -220,6 +221,7 @@ export function ServerBrowserSurface(props: {
   const controlRef = useRef<PreviewStreamControl | null>(null);
   const [control, setControl] = useState<PreviewStreamControl | null>(null);
   const [promptText, setPromptText] = useState("");
+  const [password, setPassword] = useState("");
   const [fileChooser, setFileChooser] = useState<PreviewStreamFileChooser | null>(null);
   const [agentCursor, setAgentCursor] = useState<AgentCursorPlacement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -369,6 +371,11 @@ export function ServerBrowserSurface(props: {
   };
 
   const focusInput = () => inputRef.current?.focus({ preventScroll: true });
+  const focusAuthUsername = useStableCallback((field: HTMLInputElement | null) => {
+    if (field && document.activeElement === inputRef.current) {
+      field.focus({ preventScroll: true });
+    }
+  });
 
   useImperativeHandle(
     ref,
@@ -498,10 +505,14 @@ export function ServerBrowserSurface(props: {
           setControl(next);
           controlChanged(next);
           if (
+            next.dialog?.type !== previous?.dialog?.type ||
+            next.dialog?.authChallengeId !== previous?.dialog?.authChallengeId ||
             next.dialog?.message !== previous?.dialog?.message ||
             next.dialog?.defaultValue !== previous?.dialog?.defaultValue
-          )
+          ) {
             setPromptText(next.dialog?.defaultValue ?? "");
+            setPassword("");
+          }
           if (next.controller !== "you") {
             setSelectMenu(null);
             clearInput();
@@ -962,7 +973,7 @@ export function ServerBrowserSurface(props: {
             </MenuPopup>
           </Menu>
         ) : null}
-        {visible && framesStalled && !pdfUrl ? (
+        {visible && framesStalled && !pdfUrl && control?.dialog?.type !== "auth" ? (
           <div className="absolute inset-0 flex items-center justify-center bg-background p-4 text-center">
             <p role="alert" className="max-w-sm text-body text-muted-foreground">
               <T>
@@ -1023,11 +1034,38 @@ export function ServerBrowserSurface(props: {
                     onChange={(event) => setPromptText(event.target.value)}
                   />
                 ) : null}
+                {control.dialog.type === "auth" ? (
+                  <>
+                    <Input
+                      key={control.dialog.authChallengeId}
+                      ref={focusAuthUsername}
+                      aria-label={gt("Username")}
+                      placeholder={gt("Username")}
+                      autoComplete="off"
+                      value={promptText}
+                      onChange={(event) => setPromptText(event.target.value)}
+                    />
+                    <Input
+                      aria-label={gt("Password")}
+                      placeholder={gt("Password")}
+                      type="password"
+                      autoComplete="off"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                    />
+                  </>
+                ) : null}
                 <div className="flex justify-end gap-2">
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => send({ type: "dialog", accept: false })}
+                    onClick={() =>
+                      send({
+                        type: "dialog",
+                        accept: false,
+                        authChallengeId: control.dialog?.authChallengeId,
+                      })
+                    }
                   >
                     <T>Dismiss</T>
                   </Button>
@@ -1038,6 +1076,13 @@ export function ServerBrowserSurface(props: {
                         type: "dialog",
                         accept: true,
                         ...(control.dialog?.type === "prompt" ? { promptText } : {}),
+                        ...(control.dialog?.type === "auth"
+                          ? {
+                              authChallengeId: control.dialog.authChallengeId,
+                              username: promptText,
+                              password,
+                            }
+                          : {}),
                       })
                     }
                   >

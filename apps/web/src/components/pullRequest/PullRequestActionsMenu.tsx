@@ -57,8 +57,11 @@ import {
 } from "../ui/menu";
 import { RefreshIcon } from "../ui/refresh-icon";
 import { toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { ActOnEnvironmentPicker, type PerformPullRequestAction } from "./PullRequestDetailActions";
+import {
+  ActOnEnvironmentPicker,
+  PullRequestCloseMenuItem,
+  type PerformPullRequestAction,
+} from "./PullRequestDetailActions";
 import {
   PULL_REQUEST_MERGE_METHOD_LABELS,
   pullRequestActionMenuHasGroup,
@@ -71,6 +74,7 @@ import { useInlineActionConfirm } from "./useInlineActionConfirm";
 import { canEditPullRequestChangeRequest } from "@t3tools/client-runtime/pull-request-editing";
 
 import { changeRequestTermKind } from "./changeRequestTerm";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 /** Everything else the reader can do with the pull request, behind the header's overflow button. */
 export function PullRequestActionsMenu({
@@ -78,6 +82,7 @@ export function PullRequestActionsMenu({
   reference,
   pullRequestKey,
   detail,
+  observedAt,
   terminology,
   threadRef,
   linkThreadRef,
@@ -130,6 +135,8 @@ export function PullRequestActionsMenu({
   reference: PullRequestRef;
   pullRequestKey: string;
   detail: PullRequestDetail;
+  /** When the detail was last read; the detail itself keeps its older stamp across refreshes. */
+  observedAt: number | undefined;
   terminology: ChangeRequestTerminology;
   threadRef: ScopedThreadRef | null;
   linkThreadRef: ScopedThreadRef | null;
@@ -194,7 +201,7 @@ export function PullRequestActionsMenu({
   const maintainerEditsChoiceKept = maintainerEditsChoiceInForce(
     maintainerEditsChoice,
     pullRequestKey,
-    detail.observedAt,
+    observedAt,
     maintainerEditsSaving,
   );
   if (maintainerEditsChoiceKept !== maintainerEditsChoice) {
@@ -206,7 +213,7 @@ export function PullRequestActionsMenu({
   const saveMaintainerEdits = async (value: boolean) => {
     if (!canSaveMaintainerEdits) return;
     const previousChoice = maintainerEditsChoice;
-    setMaintainerEditsChoice({ key: pullRequestKey, observedAt: detail.observedAt, value });
+    setMaintainerEditsChoice({ key: pullRequestKey, observedAt, value });
     setMaintainerEditsSaving(true);
     const result = await updatePullRequest({
       environmentId,
@@ -226,38 +233,36 @@ export function PullRequestActionsMenu({
   };
   return (
     <Menu>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <MenuTrigger
-              render={
-                <Button
-                  aria-label={
-                    refreshing
-                      ? gt(
-                          "Refreshing {term, select, mr {merge request} cr {change request} other {pull request}}",
-                          { term: changeRequestTermKind(terminology) },
-                        )
-                      : gt(
-                          "More {term, select, mr {merge request} cr {change request} other {pull request}} actions",
-                          { term: changeRequestTermKind(terminology) },
-                        )
-                  }
-                  size="icon-xs"
-                  variant="ghost-muted"
-                />
-              }
-            >
-              {refreshing ? (
-                <RefreshIcon refreshing size="md" />
-              ) : (
-                <MoreHorizontalIcon className="size-4" />
-              )}
-            </MenuTrigger>
-          }
-        />
-        <TooltipPopup>
-          {refreshing
+      <SharedTooltipTrigger
+        render={
+          <MenuTrigger
+            render={
+              <Button
+                aria-label={
+                  refreshing
+                    ? gt(
+                        "Refreshing {term, select, mr {merge request} cr {change request} other {pull request}}",
+                        { term: changeRequestTermKind(terminology) },
+                      )
+                    : gt(
+                        "More {term, select, mr {merge request} cr {change request} other {pull request}} actions",
+                        { term: changeRequestTermKind(terminology) },
+                      )
+                }
+                size="icon-xs"
+                variant="ghost-muted"
+              />
+            }
+          >
+            {refreshing ? (
+              <RefreshIcon refreshing size="md" />
+            ) : (
+              <MoreHorizontalIcon className="size-4" />
+            )}
+          </MenuTrigger>
+        }
+        label={
+          refreshing
             ? gt(
                 "Refreshing {term, select, mr {merge request} cr {change request} other {pull request}}",
                 { term: changeRequestTermKind(terminology) },
@@ -265,9 +270,9 @@ export function PullRequestActionsMenu({
             : gt(
                 "More {term, select, mr {merge request} cr {change request} other {pull request}} actions",
                 { term: changeRequestTermKind(terminology) },
-              )}
-        </TooltipPopup>
-      </Tooltip>
+              )
+        }
+      />
       <MenuPopup align="end" side="bottom">
         <PullRequestThreadLinks
           display="menu-item"
@@ -557,28 +562,12 @@ export function PullRequestActionsMenu({
         {detail.state === "open" && can("close") ? (
           <>
             <MenuSeparator />
-            <MenuItem
-              closeOnClick={inlineConfirm.isArmed("close")}
-              aria-label={
-                inlineConfirm.isArmed("close")
-                  ? gt("Confirm close?")
-                  : gt(
-                      "Close {term, select, mr {merge request} cr {change request} other {pull request}}",
-                      { term: changeRequestTermKind(terminology) },
-                    )
-              }
-              variant="destructive"
-              disabled={actionPending}
-              {...inlineConfirm.props("close", () => void perform("close"))}
-            >
-              <PullRequestGlyph.closed className="size-3.5" />
-              {inlineConfirm.isArmed("close")
-                ? gt("Confirm close?")
-                : gt(
-                    "Close {term, select, mr {merge request} cr {change request} other {pull request}}",
-                    { term: changeRequestTermKind(terminology) },
-                  )}
-            </MenuItem>
+            <PullRequestCloseMenuItem
+              singular={terminology.singular}
+              actionPending={actionPending}
+              perform={perform}
+              inlineConfirm={inlineConfirm}
+            />
           </>
         ) : detail.state === "closed" && can("reopen") ? (
           <>

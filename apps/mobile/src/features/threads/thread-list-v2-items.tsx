@@ -1,7 +1,7 @@
+import { useAtomValue } from "@effect/atom-react";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
-  THREAD_LIST_V2_MONO_FONT as MONO_FONT,
   THREAD_LIST_V2_ROW_CONTENT_CLASS_NAME,
   THREAD_LIST_V2_ROW_DIVIDERS,
   selectedThreadRowColors,
@@ -47,17 +47,13 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Menu } from "../../components/ui/Menu";
 import { EnvironmentMachineSymbol } from "../../components/EnvironmentMachineSymbol";
 import { ProjectFavicon } from "../../components/ProjectFavicon";
-import {
-  ProviderIcon,
-  ProviderInstanceIcon,
-  providerInstanceNameLabel,
-} from "../../components/ProviderIcon";
+import { ProviderInstanceIcon, providerInstanceNameLabel } from "../../components/ProviderIcon";
 import { useNowAfter } from "../../lib/clock";
 import { cn } from "../../lib/cn";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { copyThreadReference } from "../../lib/copyThreadReference";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
-import { useEnvironmentScope } from "../../state/session";
+import { useEnvironmentScope, useEnvironmentScopeDenied } from "../../state/session";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   pendingDraftBranchNeedsRefs,
@@ -84,7 +80,6 @@ import {
   threadHasUnseenCompletion,
   resolveThreadListV2RowStatus,
   resolveThreadListV2Status,
-  resolveThreadListV2ProviderDrivers,
   resolveThreadListV2SwipeActions,
   layoutThreadListV2RowMenuActions,
   threadListV2RowAccessibilityLabel,
@@ -93,6 +88,11 @@ import {
 import { QueuedMessageIcon } from "./queued-message-icon";
 import { shouldRecedeThreadRow } from "./thread-row-emphasis";
 import { ThreadSearchMatchExcerpt } from "./thread-search-match";
+import {
+  ThreadHostPressureIcon,
+  showThreadHostPressureNote,
+  useThreadHostPressureNote,
+} from "./ThreadHostPressureIcon";
 import { useScaledTextRole } from "../settings/appearance/useScaledTextRole";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 
@@ -112,6 +112,27 @@ const STATUS_PILL_BY_KIND: Record<
     readonly fillClassName: string;
   }
 > = {
+  connecting: {
+    label: msg("Connecting", { $context: "connection status" }),
+    symbol: "wifi.slash",
+    textClassName: "text-foreground-muted",
+    tintClassName: "accent-foreground-muted",
+    fillClassName: "bg-subtle",
+  },
+  reconnecting: {
+    label: msg("Reconnecting", { $context: "connection status" }),
+    symbol: "wifi.slash",
+    textClassName: "text-foreground-muted",
+    tintClassName: "accent-foreground-muted",
+    fillClassName: "bg-subtle",
+  },
+  offline: {
+    label: msg("Offline", { $context: "connection status" }),
+    symbol: "wifi.slash",
+    textClassName: "text-foreground-muted",
+    tintClassName: "accent-foreground-muted",
+    fillClassName: "bg-subtle",
+  },
   approval: {
     label: msg("Approval", { $context: "thread status, waiting for approval" }),
     symbol: "exclamationmark.shield",
@@ -191,8 +212,7 @@ function WorkingPillTimer(props: {
   const nowMs = useVisibleSecondClock(Number.isFinite(startedMs));
   return (
     <Text
-      className={cn("text-xs opacity-75 tabular-nums", props.className)}
-      style={{ fontFamily: MONO_FONT }}
+      className={cn("font-mono text-xs opacity-75 tabular-nums", props.className)}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     >
@@ -381,6 +401,8 @@ type ThreadListV2ShelfHeaderProps = {
   readonly onToggle: () => void;
   readonly pane?: "screen" | "sidebar";
 };
+
+const TRIAGE_MENU_ACTION_IDS = new Set(["settle", "snooze", "unsettle", "unsnooze"]);
 
 const SHELF_COPY = {
   working: {
@@ -694,12 +716,11 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
             {branch ? (
               <Text
                 className={cn(
-                  "text-xs",
+                  "font-mono text-xs",
                   selected
                     ? selectedThreadRowColors.mutedForegroundClassName
                     : rowAppearance.mutedForegroundClassName,
                 )}
-                style={{ fontFamily: MONO_FONT }}
               >
                 {branch}
               </Text>
@@ -889,17 +910,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const dormant = useSwipeRowDormant(props.activationKey);
 
   const selectThread = () => onSelectThread(thread);
-  const { providerDrivers, providerIconUrl } = useMemo(() => {
-    const provider = props.providers?.find(
-      (candidate) =>
-        candidate.instanceId ===
-        (thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId),
-    );
-    return {
-      providerDrivers: resolveThreadListV2ProviderDrivers(thread, props.providers),
-      providerIconUrl: provider?.iconUrl,
-    };
-  }, [thread, props.providers]);
+  const providerIconUrl = props.providers?.find(
+    (candidate) =>
+      candidate.instanceId ===
+      (thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId),
+  )?.iconUrl;
 
   const providerInstance = props.providerInstance;
   const providerNameLabel = providerInstance
@@ -944,12 +959,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         ? (thread.latestRun?.completedAt ?? null)
         : null;
   const recede = shouldRecedeThreadRow({ status, selected });
+  const pendingSync = useAtomValue(
+    threadEnvironment.pendingSyncAtom(thread.environmentId),
+    (threads) => threads.has(thread.id),
+  );
   const isRegeneratingTitle = thread.titleRegeneration != null;
   // List items keep marked text so they stay the same objects across a language switch.
-  const timeLabel = props.timeLabel && m(props.timeLabel);
+  const timeLabel = pendingSync ? gt("Waiting to sync") : props.timeLabel && m(props.timeLabel);
   const snoozeWakeLabelText =
     props.snoozeWakeLabelText === undefined ? undefined : m(props.snoozeWakeLabelText);
-  const rowAccessibilityLabel = threadListV2RowAccessibilityLabel(
+  const hostPressure = useThreadHostPressureNote(thread.environmentId, thread.id);
+  const baseAccessibilityLabel = threadListV2RowAccessibilityLabel(
     {
       title: thread.title,
       variant,
@@ -957,13 +977,17 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       statusLabel:
         pillKind === null ? undefined : (pillLabel ?? m(STATUS_PILL_BY_KIND[pillKind].label)),
       timeLabel,
-      snoozeWakeLabel: snoozedRow ? snoozeWakeLabelText : undefined,
+      snoozeWakeLabel: snoozedRow && !pendingSync ? snoozeWakeLabelText : undefined,
       providerNameLabel,
       hasQueuedMessages: props.hasQueuedMessages === true,
       regeneratingTitle: isRegeneratingTitle,
     },
     m,
   );
+  const rowAccessibilityLabel =
+    hostPressure === null
+      ? baseAccessibilityLabel
+      : `${baseAccessibilityLabel}, ${hostPressure.title}`;
 
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const markThreadUnread = useAtomCommand(threadEnvironment.markUnread, { reportFailure: false });
@@ -978,11 +1002,16 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const rowAccessibilityActions = [
     ...(prBadgeLabel ? [{ name: "openPullRequests", label: prBadgeLabel }] : []),
     ...(showsWoke ? [{ name: "dismissWoke", label: gt("Dismiss Woke notification") }] : []),
+    ...(hostPressure ? [{ name: "hostPressure", label: hostPressure.title }] : []),
   ];
 
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
+  // Until the host answers, only settle, snooze and their undo are offered: they can queue.
+  const triageOnly =
+    !useEnvironmentScopeDenied(thread.environmentId, AuthOrchestrationOperateScope) &&
+    !canOperateThread;
   const canShareWithGuest = useCanShareWithGuest(thread.environmentId);
   const navigation = useNavigation();
   const handleRegenerateTitle = useCallback(
@@ -1412,7 +1441,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : null,
     [gt, handleMenuAction, snoozePresetActions, swipeActions.secondary, thread.title],
   );
-  const swipeAccessibilityHint = !canOperateThread
+  const canSwipe =
+    canOperateThread || (triageOnly && TRIAGE_MENU_ACTION_IDS.has(swipeActions.primary));
+  const swipeAccessibilityHint = !canSwipe
     ? gt("Opens the thread")
     : secondaryAction === null
       ? primaryAction.swipeHint
@@ -1465,6 +1496,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
               size={11}
               tintColorClassName={rowAppearance.mutedIconTintClassName}
               type="monochrome"
+            />
+          ) : null}
+          {hostPressure ? (
+            <ThreadHostPressureIcon
+              note={hostPressure}
+              tintColorClassName={
+                selected ? selectedThreadRowColors.iconTintClassName : "accent-warning-foreground"
+              }
             />
           ) : null}
           {showsWoke ? (
@@ -1583,17 +1622,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
             onLongPress={() => undefined}
             style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
           >
-            <Text
-              className={cn("text-xs tabular-nums", pr.textClassName)}
-              style={{ fontFamily: MONO_FONT }}
-            >
+            <Text className={cn("font-mono text-xs tabular-nums", pr.textClassName)}>
               #{pr.number}
             </Text>
             {threadPrMoreCount(pr) > 0 ? (
-              <Text
-                className={cn("text-xs tabular-nums opacity-60", pr.textClassName)}
-                style={{ fontFamily: MONO_FONT }}
-              >
+              <Text className={cn("font-mono text-xs tabular-nums opacity-60", pr.textClassName)}>
                 +{threadPrMoreCount(pr)}
               </Text>
             ) : null}
@@ -1601,16 +1634,6 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         ) : null}
         {providerInstance ? (
           <View className="flex-row items-center">
-            {providerDrivers.slice(0, -1).map(
-              (driver, index) => (
-                /* oxlint-disable react/no-array-index-key -- Provider history can repeat a driver; these decorative icons have no local state. */ <View
-                  key={`${driver}:${index}`}
-                  className="-mr-1 opacity-30"
-                >
-                  <ProviderIcon provider={driver} size={12} />
-                </View>
-              ) /* oxlint-enable react/no-array-index-key */,
-            )}
             <ProviderInstanceIcon
               iconUrl={providerIconUrl}
               provider={providerInstance.driverKind}
@@ -1662,6 +1685,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         onAccessibilityAction={(event) => {
           if (event.nativeEvent.actionName === "openPullRequests") handleOpenPullRequests();
           if (event.nativeEvent.actionName === "dismissWoke") handleAcknowledgeWoke();
+          if (event.nativeEvent.actionName === "hostPressure" && hostPressure) {
+            showThreadHostPressureNote(hostPressure);
+          }
         }}
         onPress={() => {
           close();
@@ -1754,22 +1780,23 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           {props.hasQueuedMessages ? <QueuedMessageIcon selected={selected} /> : null}
           <Text
             className={cn(
-              "text-sm tabular-nums",
+              "font-mono text-sm tabular-nums",
               selected
                 ? selectedThreadRowColors.mutedForegroundClassName
                 : snoozedRow
                   ? rowAppearance.mutedForegroundClassName
                   : rowAppearance.tertiaryForegroundClassName,
             )}
-            style={{ fontFamily: MONO_FONT }}
           >
-            {snoozedRow && snoozeWakeLabelText !== undefined ? snoozeWakeLabelText : timeLabel}
+            {!pendingSync && snoozedRow && snoozeWakeLabelText !== undefined
+              ? snoozeWakeLabelText
+              : timeLabel}
           </Text>
         </View>
       </RowPressable>
     );
 
-  if (!canOperateThread)
+  if (!canSwipe)
     return <View style={rowAppearance.swipeContainerStyle}>{rowContent(() => {})}</View>;
 
   return (
@@ -1799,7 +1826,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         {(close) => (
           <Menu
             accessibilityLabel={rowAccessibilityLabel}
-            actions={menuActions}
+            actions={
+              triageOnly
+                ? menuActions.filter((action) => TRIAGE_MENU_ACTION_IDS.has(action.id ?? ""))
+                : menuActions
+            }
             onPressAction={handleMenuAction}
             shouldOpenOnLongPress
           >

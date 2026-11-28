@@ -25,6 +25,7 @@ import WorkflowThreadPane, {
   useOpenThreadPage,
   WorkflowThreadTabLabel,
 } from "./WorkflowThreadPane";
+import { useWorkflowThreadOpen } from "./useWorkflowThreadOpen";
 
 /**
  * The pane beside a run: a tab per transcript or reference opened from it. Only the tab that
@@ -35,11 +36,13 @@ export default function WorkflowPane({
   runId,
   state,
   onChange,
+  electron = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly runId: string | null;
   readonly state: WorkflowPaneState;
   readonly onChange: (next: WorkflowPaneState) => void;
+  readonly electron?: boolean;
 }) {
   const gt = useGT();
   const detail = useEnvironmentQuery(
@@ -60,92 +63,117 @@ export default function WorkflowPane({
       (reference) => reference.kind === tab.kind && reference.key === tab.key,
     ) ?? null;
   const activeReference = active === undefined || "thread" in active ? null : referenceOf(active);
+  const activeThread = active !== undefined && "thread" in active ? threadOf(active) : null;
+  const activeThreadOpen = useWorkflowThreadOpen(
+    environmentId,
+    activeThread?.environmentId ?? environmentId,
+  ).open;
   const openFull =
     active === undefined
       ? null
       : "thread" in active
-        ? () => openThreadPage(threadOf(active))
+        ? // Nowhere to go while this client neither knows the environment nor reads it through the run's.
+          activeThreadOpen === "unavailable"
+          ? null
+          : () =>
+              openThreadPage(
+                threadOf(active),
+                activeThreadOpen === "linked" ? environmentId : undefined,
+              )
         : activeReference === null
           ? null
           : openReferencePage(activeReference);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PanelFrame.Toolbar density="compact" className="h-(--workspace-topbar-height)">
-        <div
-          role="tablist"
-          aria-label={gt("Open beside the run")}
-          className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
-        >
-          {tabs.map((tab, index) => (
-            <div
-              key={
-                "thread" in tab ? `thread:${tab.env ?? ""}:${tab.thread}` : `${tab.kind}:${tab.key}`
-              }
-              className={cn(
-                "flex max-w-56 min-w-0 shrink-0 items-center rounded-control text-meta",
-                index === activeIndex
-                  ? "surface-selected text-foreground"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Button
-                variant="ghost"
-                size="xs"
-                role="tab"
-                aria-selected={index === activeIndex}
-                className="min-w-0"
-                onClick={() => onChange(openWorkflowPaneTab(state, tab))}
-              >
-                {"thread" in tab ? (
-                  <>
-                    <BotIcon aria-hidden className="size-3 shrink-0" />
-                    <span className="truncate">
-                      <WorkflowThreadTabLabel threadRef={threadOf(tab)} />
-                    </span>
-                  </>
-                ) : (
-                  <ReferenceTabLabel reference={referenceOf(tab)} fallback={tab.kind} />
+      <header
+        className={cn(
+          "shrink-0",
+          electron && "drag-region wco:pr-(--workspace-native-controls-inset)",
+        )}
+      >
+        <PanelFrame.Toolbar density="compact" className="h-(--workspace-topbar-height)">
+          <div
+            role="tablist"
+            aria-label={gt("Open beside the run")}
+            className={cn(
+              "me-auto flex min-w-0 gap-1 overflow-x-auto",
+              electron && "[-webkit-app-region:no-drag]",
+            )}
+          >
+            {tabs.map((tab, index) => (
+              <div
+                key={
+                  "thread" in tab
+                    ? `thread:${tab.env ?? ""}:${tab.thread}`
+                    : `${tab.kind}:${tab.key}`
+                }
+                className={cn(
+                  "flex max-w-56 min-w-0 shrink-0 items-center rounded-control text-meta",
+                  index === activeIndex
+                    ? "surface-selected text-foreground"
+                    : "text-muted-foreground hover:text-foreground",
                 )}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                aria-label={gt("Close tab")}
-                onClick={() => onChange(closeWorkflowPaneTab(state, index))}
               >
-                <XIcon />
-              </Button>
-            </div>
-          ))}
-        </div>
-        {openFull === null ? null : (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  role="tab"
+                  aria-selected={index === activeIndex}
+                  className="min-w-0"
+                  onClick={() => onChange(openWorkflowPaneTab(state, tab))}
+                >
+                  {"thread" in tab ? (
+                    <>
+                      <BotIcon aria-hidden className="size-3 shrink-0" />
+                      <span className="truncate">
+                        <WorkflowThreadTabLabel threadRef={threadOf(tab)} />
+                      </span>
+                    </>
+                  ) : (
+                    <ReferenceTabLabel reference={referenceOf(tab)} fallback={tab.kind} />
+                  )}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={gt("Close tab")}
+                  onClick={() => onChange(closeWorkflowPaneTab(state, index))}
+                >
+                  <XIcon />
+                </Button>
+              </div>
+            ))}
+          </div>
+          {openFull === null ? null : (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label={
+                active !== undefined && "thread" in active
+                  ? gt("Open as a full thread")
+                  : gt("Open on its own page")
+              }
+              onClick={openFull}
+            >
+              <Maximize2Icon />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-xs"
-            aria-label={
-              active !== undefined && "thread" in active
-                ? gt("Open as a full thread")
-                : gt("Open on its own page")
-            }
-            onClick={openFull}
+            aria-label={gt("Close the pane")}
+            onClick={() => onChange({})}
           >
-            <Maximize2Icon />
+            <XIcon />
           </Button>
-        )}
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label={gt("Close the pane")}
-          onClick={() => onChange({})}
-        >
-          <XIcon />
-        </Button>
-      </PanelFrame.Toolbar>
+        </PanelFrame.Toolbar>
+      </header>
       <div role="tabpanel" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {active === undefined ? null : "thread" in active ? (
           <WorkflowThreadPane
             key={`${active.env ?? ""}:${active.thread}`}
+            viaEnvironmentId={environmentId}
             threadRef={threadOf(active)}
           />
         ) : activeReference !== null ? (

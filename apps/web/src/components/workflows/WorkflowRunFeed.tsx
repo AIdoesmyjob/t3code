@@ -13,7 +13,7 @@ import {
   type WorkflowRunReference,
 } from "@t3tools/contracts";
 import { formatModelSlugName } from "@t3tools/shared/model";
-import { formatDuration } from "@t3tools/shared/orchestrationTiming";
+import { formatDuration } from "@t3tools/shared/orchestrationTimingCopy";
 import { msg, T, useGT, useMessages, Var } from "gt-react";
 import {
   ArrowLeftIcon,
@@ -41,7 +41,7 @@ import { requestConfirmDialog } from "../../confirmDialog";
 import { useNowMinute } from "../../hooks/useNowMinute";
 import { cn } from "../../lib/utils";
 import { useQuietThreadShell } from "../../state/entities";
-import { useEnvironment, useEnvironmentProviders } from "../../state/environments";
+import { useEnvironmentProviders } from "../../state/environments";
 import { type MessageResolver } from "../../i18n/messages";
 import { useEnvironmentQuery } from "../../state/query";
 import { serverEnvironment } from "../../state/server";
@@ -67,6 +67,7 @@ import {
   workflowResultLines,
   workflowRunNow,
   workflowRunState,
+  workflowWithdrawal,
   workflowSaidStart,
   workflowStepReferences,
   workflowStepTime,
@@ -80,6 +81,7 @@ import {
 } from "@t3tools/client-runtime/workflows";
 import type { WorkflowPaneTab } from "./workflowPane.logic";
 import { WorkflowReferenceChip } from "./WorkflowReferences";
+import { useWorkflowThreadOpen } from "./useWorkflowThreadOpen";
 
 /** An agent's thread, as a step names it: the linked environment it is in, or null for this one. */
 export interface WorkflowThreadTarget {
@@ -231,6 +233,7 @@ export function WorkflowRunFeed({
 }) {
   const { run } = node;
   const gt = useGT();
+  const m = useMessages();
   const clockMs = useRunNowMs(node.run.endedAt === null);
   // An ended run's last step can still read as running for a moment; it ran until the run ended.
   const nowMs = node.run.endedAt === null ? clockMs : Date.parse(node.run.endedAt);
@@ -509,8 +512,8 @@ export function WorkflowRunFeed({
             {run.status === "paused" ? null : (
               <span>
                 {ended
-                  ? gt("took {duration}", { duration: formatDuration(ranMs) })
-                  : gt("{duration} so far", { duration: formatDuration(ranMs) })}
+                  ? gt("took {duration}", { duration: formatDuration(ranMs, m) })
+                  : gt("{duration} so far", { duration: formatDuration(ranMs, m) })}
               </span>
             )}
             {run.retired ? (
@@ -971,6 +974,7 @@ function WorkflowTimeline({
   readonly current: string | null;
 }) {
   const gt = useGT();
+  const m = useMessages();
   const completed = node.run.status === "completed";
   const ask = (asked: WorkflowQuestion) => (
     <div className="ms-8 mt-1 mb-2">
@@ -1024,7 +1028,7 @@ function WorkflowTimeline({
                     count: names.length - 2,
                   })
             }
-            duration={workflowStepTime(Math.max(0, row.endMs - row.startMs))}
+            duration={workflowStepTime(Math.max(0, row.endMs - row.startMs), m)}
             selected={focus === key}
             current={current === key}
             onPick={() => onPick(key)}
@@ -1085,7 +1089,7 @@ function WorkflowTimeline({
                 </span>
               ) : null}
               <span className="min-w-12 shrink-0 text-right text-meta text-muted-foreground tabular-nums">
-                {workflowStepTime(running > 0 ? wholeSeconds(endMs - startMs) : endMs - startMs)}
+                {workflowStepTime(running > 0 ? wholeSeconds(endMs - startMs) : endMs - startMs, m)}
               </span>
               <span aria-hidden className="hidden w-3 shrink-0 @2xl/feed:block" />
             </div>
@@ -1285,7 +1289,7 @@ function WorkflowBeatRow({
           : null;
       case "sleep":
         return Number.isFinite(wakes) && wakes > nowMs
-          ? gt("wakes in {duration}", { duration: formatDuration(wholeSeconds(wakes - nowMs)) })
+          ? gt("wakes in {duration}", { duration: formatDuration(wholeSeconds(wakes - nowMs), m) })
           : gt("about to wake");
       case "wait":
         return gt("waiting");
@@ -1304,11 +1308,14 @@ function WorkflowBeatRow({
       case "agent":
         return said === null ? null : workflowOneLine(said);
       case "ask":
-        return answer === null
-          ? gt("nobody answered")
-          : answer.answeredBy === null || isOwnWorkflowAnswer(answer, sessionId)
+        if (answer !== null)
+          return answer.answeredBy === null || isOwnWorkflowAnswer(answer, sessionId)
             ? gt("You said {choice}", { choice: answer.choice })
             : gt("{who} said {choice}", { who: answer.answeredBy, choice: answer.choice });
+        const withdrawal = workflowWithdrawal(beat.result);
+        return withdrawal === null
+          ? gt("nobody answered")
+          : gt("withdrawn by {by}", { by: withdrawal.by });
       case "sleep":
       case "wait":
       case "queue":
@@ -1365,7 +1372,7 @@ function WorkflowBeatRow({
       }
       aside={aside}
       {...(failed ? { asideTone: "failed" as const } : {})}
-      duration={workflowStepTime(elapsedOf(beat))}
+      duration={workflowStepTime(elapsedOf(beat), m)}
       selected={selected}
       current={current}
       onPick={onPick}
@@ -1530,7 +1537,7 @@ function WorkflowBeatCard({
   const m = useMessages();
   const sessionId = useEnvironmentSessionId(environmentId);
   const under = beat.status === "running";
-  const length = formatDuration(elapsedOf(beat));
+  const length = formatDuration(elapsedOf(beat), m);
   const tries = beat.attempts > 1 ? <span>{nthTry(beat.attempts, m)}</span> : null;
   switch (beat.kind) {
     case "agent":
@@ -1544,6 +1551,26 @@ function WorkflowBeatCard({
       );
     case "ask": {
       const answer = workflowAnswer(beat.result);
+      const withdrawal = answer === null ? workflowWithdrawal(beat.result) : null;
+      if (withdrawal !== null)
+        return (
+          <Note
+            label={beat.name}
+            detail={
+              <p className="mt-3 text-body">
+                {withdrawal.reason === null
+                  ? gt("Withdrawn by {by}.", { by: withdrawal.by })
+                  : gt("Withdrawn by {by}: {reason}", {
+                      by: withdrawal.by,
+                      reason: withdrawal.reason,
+                    })}
+              </p>
+            }
+          >
+            <span>{gt("withdrawn")}</span>
+            <span>{length}</span>
+          </Note>
+        );
       if (answer === null)
         return (
           <Note label={beat.name}>
@@ -1559,11 +1586,19 @@ function WorkflowBeatCard({
           <p className="mt-3 text-body">
             {who !== null && answer.reason === null ? (
               <T>
-                <Var>{who}</Var> said <Var>{answer.choice}</Var>.
+                <Var>{who}</Var> said{" "}
+                <span className="text-label">
+                  <Var>{answer.choice}</Var>
+                </span>
+                .
               </T>
             ) : who !== null ? (
               <T>
-                <Var>{who}</Var> said <Var>{answer.choice}</Var>: <Var>{answer.reason}</Var>
+                <Var>{who}</Var> said{" "}
+                <span className="text-label">
+                  <Var>{answer.choice}</Var>
+                </span>
+                : <Var>{answer.reason}</Var>
               </T>
             ) : answer.reason === null ? (
               <T>
@@ -1613,7 +1648,7 @@ function WorkflowBeatCard({
             sub={
               Number.isFinite(wakes) && wakes > nowMs
                 ? gt("wakes in {duration}", {
-                    duration: formatDuration(wholeSeconds(wakes - nowMs)),
+                    duration: formatDuration(wholeSeconds(wakes - nowMs), m),
                   })
                 : gt("about to wake")
             }
@@ -1652,10 +1687,10 @@ function WorkflowBeatCard({
             mark={<HourglassIcon className="size-3.5 text-muted-foreground" />}
             name={beat.name}
             sub={
-              <span className="flex gap-2">
+              <>
                 <span>{queuedText(beat, m)}</span>
                 <span>{length}</span>
-              </span>
+              </>
             }
           />
         </FeedCard>
@@ -1744,8 +1779,7 @@ function WorkflowAgentCard({
     beat.thread?.environmentId == null
       ? environmentId
       : EnvironmentId.make(beat.thread.environmentId);
-  // This client can only show a thread on an environment it is itself connected to.
-  const threadEnvironment = useEnvironment(threadEnvironmentId);
+  const threadOpen = useWorkflowThreadOpen(environmentId, threadEnvironmentId);
   const shell = useQuietThreadShell(
     beat.thread === null
       ? null
@@ -1755,7 +1789,7 @@ function WorkflowAgentCard({
     .get(threadEnvironmentId)
     ?.find((candidate) => candidate.instanceId === shell?.modelSelection.instanceId);
   const under = beat.status === "running";
-  const length = formatDuration(elapsedOf(beat));
+  const length = formatDuration(elapsedOf(beat), m);
   const summary = workflowAgentSummary(beat);
   const start = summary.said === null ? null : workflowSaidStart(summary.said, SAID_SHOWN);
   const liveWord = !under
@@ -1773,7 +1807,7 @@ function WorkflowAgentCard({
     length,
     beat.attempts > 1 ? nthTry(beat.attempts, m) : null,
     elsewhere
-      ? gt("on {environment}", { environment: threadEnvironment?.label ?? threadEnvironmentId })
+      ? gt("on {environment}", { environment: threadOpen.label ?? threadEnvironmentId })
       : null,
   ].filter((part): part is string => part !== null);
   return (
@@ -1799,7 +1833,7 @@ function WorkflowAgentCard({
           <span key={part}>{part}</span>
         ))}
         action={
-          beat.thread === null ? null : threadEnvironment === null ? (
+          beat.thread === null ? null : threadOpen.open === "unavailable" ? (
             <span className="text-meta text-muted-foreground">
               <T>
                 Thread on <Var>{threadEnvironmentId}</Var>
@@ -1877,7 +1911,9 @@ function WorkflowPauseCard({
     : !Number.isFinite(resumes)
       ? gt("waits for you to resume it")
       : resumes > nowMs
-        ? gt("tries again by itself in {duration}", { duration: formatDuration(resumes - nowMs) })
+        ? gt("tries again by itself in {duration}", {
+            duration: formatDuration(resumes - nowMs, m),
+          })
         : gt("about to try again by itself");
   return (
     <FeedCard tone="failed" label={gt("Why it paused")} reveal>
@@ -1944,7 +1980,8 @@ function WorkflowQuestionCard({
     question.thread?.environmentId == null
       ? environmentId
       : EnvironmentId.make(question.thread.environmentId);
-  const reachable = useEnvironment(threadEnvironmentId) !== null;
+  const reachable =
+    useWorkflowThreadOpen(environmentId, threadEnvironmentId).open !== "unavailable";
   const [reasonFor, setReasonFor] = useState<string | null>(null);
   const choose = async (choice: WorkflowQuestionChoice) => {
     if (busy) return;

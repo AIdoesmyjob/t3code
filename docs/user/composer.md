@@ -28,6 +28,11 @@ Files upload to the environment's machine as soon as you attach them, and all up
 - **Web and desktop**: Drag, paste, or pick files. Reloading before an upload finishes requires re-attaching.
 - **Mobile**: Pick files, share into T3 Code via the system share sheet, or drag images in Android split screen.
 
+In the desktop app, when the thread's environment runs on this computer, drag a
+folder onto the composer or choose **Folder…** from the attach button to add its
+path. Nothing is uploaded, so there is no size limit; the agent reads the folder
+in place.
+
 See [images and videos](#images-and-videos-in-messages) for previewing and saving media.
 
 ## Send while the agent is working
@@ -54,6 +59,12 @@ Shortcuts while a turn is running:
 
 Slash commands (such as `/compact` or `/context`) wait for the current turn to finish rather than steering into it. [Goal](#goals) commands are the exception.
 
+## Retry a failed run
+
+On web and desktop, when a run fails its error appears above the composer. Choose
+**Retry** to send the same message again, with its attachments, using the model
+selected in the composer.
+
 ## Queue messages offline on mobile
 
 Mobile keeps local copies of draft attachments so you can preview them and queue messages offline. Uploads resume on reconnect, and drafts/queued messages survive app restarts and T3 Connect sign-out (restored when signing back into the same account).
@@ -77,10 +88,10 @@ Mobile keeps local copies of draft attachments so you can preview them and queue
 
 ## Quote an assistant response
 
-- **Web and desktop**: Select text in an assistant message and click **Cite in composer**. Click the pencil on the chip to add or edit a comment; click the chip to jump back to the source.
-- **Mobile**: Long-press an assistant response, select text, and tap **Cite**. Tap a quote chip to edit its comment, remove it, or jump to the source message.
+- **Web and desktop**: Select text in an assistant message and choose **Cite in composer**, or press `Mod+Shift+L`. Click the comment button on the chip to add or edit a comment (`Esc` closes it); click the chip to jump back to the source. To remove the citation, place the caret beside its chip and delete it like other inline context.
+- **Mobile**: Long-press an assistant response, select text, and tap **Cite**. Tap a quote chip to edit its comment, remove it, or choose **Go to message** to jump to the source message.
 
-Quoted text and comments count toward the message length limit and are preserved across copy/paste and [stashed prompts](#prompt-stash).
+Quoted text and comments count toward the message length limit and are preserved across copy/paste, reloading, and [stashed prompts](#prompt-stash). If the source is unavailable or has changed, the saved quote remains readable.
 
 ## Recall a sent prompt
 
@@ -105,7 +116,7 @@ Rewinding removes later messages from the active thread and provider history (re
 
 ## Prompt stash
 
-On web and desktop, press `Cmd+S` (macOS) or `Ctrl+S` (Windows/Linux) to stash the current draft and its attachments (wait for uploads to finish first). Press the same shortcut in an empty composer to restore the stash (or open the stash menu if you have multiple).
+On web and desktop, press `Cmd+S` (macOS) or `Ctrl+S` (Windows/Linux) to stash the current draft and its attachments (wait for uploads to finish first). Press the same shortcut in an empty composer to restore the stash (or open the stash menu if you have multiple). The **Stash** chip under the composer opens the menu too.
 
 - Holds up to 100 prompts in browser storage; stashes are never auto-deleted.
 - Stashes with uploaded files must be restored in their original environment. Uploads expire after 24 hours; use **Attach again** or remove expired files before sending.
@@ -149,13 +160,15 @@ With Codex, Claude, and OpenCode 2.2.5+, send `/goal <criteria>` (for example, `
 Attached context—files, terminal excerpts, diff/file review comments, preview annotations, pull requests, and threads—appears as inline chips at your cursor. Click a chip to inspect or open its source; copy/paste and [Prompt stash](#prompt-stash) preserve chips across drafts.
 
 - **Pull requests (`#`)**: On web and desktop, type `#` to browse recent PRs in the current repository (linked PRs appear first), type digits to match by number, or type a word to search by text.
-- **Threads (`@`)**: Type `@` and part of a thread title to reference a thread on the same server (or on a linked machine when Linked environments is enabled). You can also drag threads from the sidebar onto the composer, or paste a copied thread link. The prompt carries only a reference—the agent reads the thread on demand. Dropping a thread from an unlinked environment attaches a snapshot transcript file instead.
+- **Threads (`@` or `#`)**: Type `@` and part of a thread title to reference a thread on the same server (or on a linked machine when Linked environments is enabled). On web and desktop, type `#` to list recent threads below pull requests. You can also drag threads from the sidebar onto the composer, or paste a copied thread link. The prompt carries only a reference—the agent reads the thread on demand. Dropping a thread from an unlinked environment attaches a snapshot transcript file instead.
 - **Models (`@`)**: Type `@` and part of a model or provider name (e.g. `@opus` or `@opus:opencode`) to reference a model in your prompt (such as for delegation) without changing the thread's model.
-- **Images vs. files**: Images keep a thumbnail shelf above the composer plus optional inline chips; files live only as inline chips (deleting the last chip removes the file).
+- **Images vs. files**: Images keep a thumbnail shelf above the composer plus optional inline chips; files live only as inline chips (deleting the last chip removes the file). Chips whose context is still fetching or no longer available show a dashed outline. On mobile, tap a chip to inspect its content.
 
 ## Attached files
 
 Select any file chip in a draft or sent message to preview it (syntax-highlighted code/JSON, rendered/raw Markdown/HTML/CSV/TSV, audio playback, and ZIP folder browsing up to 50 MB). Large text files show a truncated preview—save the file to read it in full.
+
+When a preview asks for a file password, enter it and select **Unlock**. T3 Code uses the password on your device. Web and desktop can unlock supported PDF, ZIP, Office, and OpenDocument files. The mobile app can unlock ZIP attachments, and Android can unlock PDFs. Ebooks protected by DRM need a compatible reader.
 
 ## Images and videos in messages
 

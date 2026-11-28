@@ -36,13 +36,13 @@ import { useTurnItemDetail } from "../../state/queries";
 import { Button, InlineButton } from "../ui/button";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { ApprovalText } from "./ApprovalText";
 import { BackgroundThreadContext } from "./backgroundThread";
 import {
   ComposerPendingApprovalActions,
   DEFAULT_APPROVAL_OPTIONS,
   resolveApprovalPrimaryDecision,
 } from "./ComposerPendingApprovalActions";
-import { ApprovalText } from "./ApprovalText";
 import { PushHooksApprovalDetails } from "./PushHooksApprovalDetails";
 import { TimelineApprovalCtx, TimelineRowCtx } from "./timelineRowContext";
 import { WorkLogRow, WorkLogTarget, WorkLogVerb } from "./WorkLog";
@@ -245,7 +245,6 @@ export function TimelineApprovalCard({
     return () => document.removeEventListener("keydown", handler);
   }, [canUseShortcuts, primary, decline, paneFocusedRef]);
 
-  // T3 Code's own question reads as the app asking: a plain sentence, then what it names.
   const { pushHooks } = approval;
   const label = pushHooks ? PUSH_HOOKS_APPROVAL_LABEL : presentation.label;
   const cardTitle = title ?? m(label);
@@ -295,7 +294,14 @@ export function TimelineApprovalCard({
       </div>
 
       <div className="flex min-w-0 flex-col rounded-control surface-well">
-        {files.length > 0 ? (
+        {pushHooks ? (
+          <div className="flex min-w-0 flex-col gap-2 p-2.5">
+            <span className="block min-w-0 text-meta text-foreground select-text! wrap-anywhere">
+              {m(PUSH_HOOKS_APPROVAL_QUESTION)}
+            </span>
+            <PushHooksApprovalDetails pushHooks={pushHooks} />
+          </div>
+        ) : files.length > 0 ? (
           <>
             {detail ? (
               <div
@@ -364,27 +370,19 @@ export function TimelineApprovalCard({
               </div>
             ) : null}
           </>
-        ) : pushHooks ? (
-          <div
-            className="min-w-0 p-2.5 text-meta leading-5 text-foreground select-text! wrap-anywhere"
-            data-approval-detail="complete"
-          >
-            {m(PUSH_HOOKS_APPROVAL_QUESTION)}
-          </div>
         ) : (
-          // Shows characters a screen would not draw, and both ends of text too long to show whole.
-          <ApprovalText
-            text={detail || m(presentation.label)}
-            label={m(presentation.detailLabel)}
-            className={cn(
-              "max-h-40 min-w-0 overflow-auto whitespace-pre-wrap p-2.5 text-meta leading-5 select-text! wrap-anywhere [scrollbar-width:thin] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70",
-              approval.requestKind === "command"
-                ? "font-mono text-foreground"
-                : "font-sans text-muted-foreground",
-            )}
-          />
+          <div className="flex min-w-0 flex-col gap-1.5 p-2.5">
+            <ApprovalText
+              text={detail || m(presentation.label)}
+              label={m(presentation.detailLabel)}
+              className={
+                approval.requestKind === "command"
+                  ? "text-meta"
+                  : "font-sans text-meta text-muted-foreground"
+              }
+            />
+          </div>
         )}
-        {pushHooks ? <PushHooksApprovalDetails pushHooks={pushHooks} /> : null}
       </div>
 
       {approval.reason ? (

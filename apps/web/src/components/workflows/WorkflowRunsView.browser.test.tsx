@@ -7,10 +7,12 @@ import {
   type WorkflowRunsSnapshot,
   type WorkflowStep,
 } from "@t3tools/contracts";
+import { getTranslationsSnapshot, GTProvider } from "gt-react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page as browserPage, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
+import { initializeI18n } from "~/i18n/initializeI18n";
 import { render } from "../../../test/render";
 import type { WorkflowPaneTab } from "./workflowPane.logic";
 import { WorkflowRunsView } from "./WorkflowRunsView";
@@ -60,6 +62,7 @@ const state = vi.hoisted(() => ({
   commands: [] as Array<readonly [label: string | undefined, input: unknown]>,
   permitted: true,
   detailError: null as string | null,
+  linked: [] as ReadonlyArray<string>,
   sessionId: null as string | null,
 }));
 const canOperate = Atom.make(true);
@@ -76,6 +79,7 @@ function setup(
   state.commands = [];
   state.permitted = true;
   state.detailError = null;
+  state.linked = [];
   state.sessionId = null;
 }
 
@@ -130,6 +134,15 @@ vi.mock(import("../../state/use-atom-command"), async (original) => ({
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   useEnvironmentSessionId: () => state.sessionId,
+}));
+vi.mock(import("../../state/peerLinks"), async (original) => ({
+  ...(await original()),
+  useLinkedEnvironments: ((id: EnvironmentId | null) =>
+    new Map(
+      id === environmentId
+        ? state.linked.map((link) => [EnvironmentId.make(link), "Build box"])
+        : [],
+    )) as never,
 }));
 vi.mock(import("../../state/environments"), async (original) => ({
   ...(await original()),
@@ -573,6 +586,69 @@ describe("WorkflowRunsView", () => {
     await expect.element(await card("old")).toMatchTextContent("Chrome on Linux said Yes: Fine");
   });
 
+  it("says who withdrew a question that ended unanswered, and why", async () => {
+    setup(
+      {
+        runs: [run({ runId: "ship", title: "Ship", status: "completed", endedAt: at(2) })],
+        questions: [],
+      },
+      {
+        ship: [
+          step({
+            name: "wanted",
+            kind: "ask",
+            endedAt: at(1),
+            detail: "withdrawn by t3 CLI: settled elsewhere",
+            result: { withdrawn: { by: "t3 CLI", reason: "settled elsewhere" } },
+          }),
+        ],
+      },
+    );
+    await using screen = await render(page("ship"));
+
+    const flow = screen.getByRole("navigation", { name: "Steps so far" });
+    await expect.element(flow).toMatchTextContent(/wanted.*withdrawn by t3 CLI/);
+    await flow.getByRole("button", { name: /wanted/ }).click();
+    await expect
+      .element(screen.getByRole("region", { name: "wanted" }))
+      .toMatchTextContent(/withdrawn1m 0s.*Withdrawn by t3 CLI: settled elsewhere/);
+  });
+
+  it("opens an agent's thread on an environment this server links to", async () => {
+    setup(
+      {
+        runs: [run({ runId: "fix", title: "Fix", status: "completed", endedAt: at(12) })],
+        questions: [],
+      },
+      {
+        fix: [
+          step({
+            name: "implement",
+            kind: "agent",
+            threadId: "thread-2",
+            environmentId: "build-box",
+          }),
+        ],
+      },
+    );
+    state.linked = ["build-box"];
+    const thread = vi.fn();
+    await using screen = await render(page("fix", { thread }));
+
+    await screen
+      .getByRole("navigation", { name: "Steps so far" })
+      .getByRole("button", { name: /implement/ })
+      .click();
+    const implement = screen.getByRole("region", { name: "implement" });
+    await expect.element(implement).toMatchTextContent(/on Build box/);
+    await expect.element(implement).not.toMatchTextContent(/Thread on build-box/);
+    await implement.getByRole("button", { name: "Transcript" }).click();
+    expect(thread).toHaveBeenCalledWith("fix", {
+      threadId: "thread-2",
+      environmentId: "build-box",
+    });
+  });
+
   it("opens an invoked run from its parent's story", async () => {
     setup(
       {
@@ -736,9 +812,9 @@ describe("WorkflowRunsView", () => {
     await using screen = await render(page("dark"));
 
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
-    await expect
-      .element(screen.getByText("Feature wanted? 1 Bug or intended? 1 Other 1"))
-      .toBeVisible();
+    await expect.element(screen.getByText("Feature wanted? 1")).toBeVisible();
+    await expect.element(screen.getByText("Bug or intended? 1")).toBeVisible();
+    await expect.element(screen.getByText("Other 1")).toBeVisible();
     await expect.element(runs.getByRole("button", { name: /Sticky header/ })).toBeVisible();
 
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
@@ -777,7 +853,8 @@ describe("WorkflowRunsView", () => {
     await using screen = await render(page());
 
     const runs = screen.getByRole("navigation", { name: "Workflow runs" });
-    await expect.element(screen.getByText("Bug or intended? 1 Other 2")).toBeVisible();
+    await expect.element(screen.getByText("Bug or intended? 1")).toBeVisible();
+    await expect.element(screen.getByText("Other 2")).toBeVisible();
     await screen.getByRole("combobox", { name: "Kind of question" }).click();
     await expect
       .element(browserPage.getByRole("option", { name: /feture/ }))
@@ -908,5 +985,27 @@ describe("WorkflowRunsView", () => {
       .element(screen.getByRole("combobox", { name: "Kind of question" }))
       .not.toBeInTheDocument();
     localStorage.removeItem(KIND_KEY);
+  });
+
+  it("says how long a finished run and its steps took in the UI language", async () => {
+    // GTProvider leaves its locale in a cookie; this sets it back to English.
+    initializeI18n(() => {});
+    setup(
+      {
+        runs: [run({ runId: "fix", title: "Fix", status: "completed", endedAt: at(2) })],
+        questions: [],
+      },
+      { fix: [step({ name: "build", kind: "step", endedAt: at(2) })] },
+    );
+    const translations = await getTranslationsSnapshot("ja");
+    await using screen = await render(
+      <GTProvider locale="ja" translations={translations}>
+        {page("fix")}
+      </GTProvider>,
+    );
+
+    await expect.element(screen.getByText("所要時間 2分0秒")).toBeVisible();
+    await expect.element(screen.getByText("2分0秒", { exact: true })).toBeVisible();
+    initializeI18n(() => {});
   });
 });

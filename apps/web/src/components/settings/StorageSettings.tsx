@@ -275,7 +275,9 @@ function RetentionControl({
               }
             }}
           />
-          <InputGroupUnit>days</InputGroupUnit>
+          <InputGroupUnit>
+            {gt("{count, plural, one {day} other {days}}", { count: Number(draft) || 0 })}
+          </InputGroupUnit>
         </InputGroup>
       ) : null}
     </div>
@@ -931,17 +933,17 @@ export function StorageCleanupSections() {
   if (!supportsStorageCleanup(connectedEnvironments)) {
     return (
       <>
-        {databaseStorageNotice}
         <SettingsSection id="storage-artifacts" title={gt("Artifacts and logs")} variant="plain">
           <StorageCleanupScopeNotice />
         </SettingsSection>
+        {databaseStorageNotice}
       </>
     );
   }
 
+  // Machines report their databases after the page renders, so the notice goes last to push nothing down.
   return (
     <>
-      {databaseStorageNotice}
       <SettingsSection id="storage-artifacts" title={gt("Artifacts and logs")}>
         <AnimatedHeight>
           <SettingsRow
@@ -979,6 +981,7 @@ export function StorageCleanupSections() {
         </AnimatedHeight>
       </SettingsSection>
       <CleanupSection />
+      {databaseStorageNotice}
     </>
   );
 }

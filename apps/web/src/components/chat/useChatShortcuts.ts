@@ -20,7 +20,7 @@ import { isModalDialogOpen } from "../../lib/modalDialog";
 import { shouldTypeToFocusComposer } from "./composerFocusRedirect";
 import { composerShortcutCommands } from "./composerShortcuts";
 
-/** Returning false lets the key event through untouched. */
+/** Returning false lets the key through, except for cycling while a terminal owns focus. */
 type ChatShortcutHandler = (context: {
   readonly event: KeyboardEvent;
   readonly terminalFocusOwner: TerminalFocusOwner | null;
@@ -32,7 +32,6 @@ export type ChatShortcutCommands = Partial<Record<KeybindingCommand, ChatShortcu
 const SIDE_CHAT_PANE_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
   "rightPanel.toggle",
   "rightPanel.close",
-  "rightPanel.toggleMaximized",
 ]);
 
 const PANEL_TOGGLE_COMMANDS: ReadonlySet<KeybindingCommand> = new Set([
@@ -79,6 +78,9 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
   const paneOwnsThreadRef = useLayoutPaneOwnsThreadRef();
   const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
     if (!paneOwnsThreadRef.current) return;
+    if (event.target instanceof Element && event.target.closest("[data-keybinding-capture]")) {
+      return;
+    }
     const focused = paneFocusedRef.current;
     const { keybindings } = input;
     if (focused && preventRepeatedTerminalCloseShortcut(event, keybindings)) {
@@ -126,8 +128,17 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
       input.commands[command] ??
       composerShortcutCommands(input.composerRef, input.branchToolbarRef)[command] ??
       input.fallback(command);
+    if (!run) return;
     const held = event.repeat && PANEL_TOGGLE_COMMANDS.has(command);
-    if (!run || (!held && run({ event, terminalFocusOwner }) === false)) return;
+    if (!held) {
+      const handled = run({ event, terminalFocusOwner });
+      if (
+        handled === false &&
+        (terminalFocusOwner === null ||
+          (command !== "terminal.previous" && command !== "terminal.next"))
+      )
+        return;
+    }
     event.preventDefault();
     event.stopPropagation();
   });

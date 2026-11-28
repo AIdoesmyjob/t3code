@@ -14,6 +14,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { useClosedViewStore } from "./closedViewStore";
 import { m } from "./i18n/messages";
 import { resolveStorage } from "./lib/storage";
+import { nextActiveIdAfterBulkClose, reorderTabGroup } from "./lib/tabSelection";
 import type { LinkedThreadTarget } from "@t3tools/client-runtime/linked-thread";
 import {
   decodeLinkedThreadSurface,
@@ -269,10 +270,12 @@ interface RightPanelStoreState {
   /** Agent-driven activation. Not a user action, so it does not move keyboard focus. */
   revealSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurface: (ref: ScopedThreadRef, surfaceId: string) => void;
+  closeSurfaces: (ref: ScopedThreadRef, surfaceIds: readonly string[]) => void;
   closeOtherSurfaces: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeSurfacesToRight: (ref: ScopedThreadRef, surfaceId: string) => void;
   closeAllSurfaces: (ref: ScopedThreadRef) => void;
   moveSurface: (ref: ScopedThreadRef, surfaceId: string, toIndex: number) => void;
+  moveSurfaces: (ref: ScopedThreadRef, surfaceIds: readonly string[], targetId: string) => void;
   /** Surfaces of an earlier server run than `serverEpoch` stay, to reopen; other missing ones close. */
   reconcileBrowserSurfaces: (
     ref: ScopedThreadRef,
@@ -818,6 +821,9 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
   return { byThreadKey, threadPanelVisibilityByThreadKey };
 }
 
+// One counter for every file tab, so a reopened tab never reuses a request a viewer already handled.
+let lastFileRevealRequestId = 0;
+
 export const useRightPanelStore = create<RightPanelStoreState>()(
   persist(
     (set, get) => ({
@@ -1149,7 +1155,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             const surface = fileSurface(
               relativePath,
               normalizeRevealLine(line),
-              (existing?.revealRequestId ?? 0) + 1,
+              ++lastFileRevealRequestId,
             );
             return {
               ...current,
@@ -1285,7 +1291,12 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
                       terminalIds,
                       activeTerminalId:
                         entry.activeTerminalId === terminalId
-                          ? (terminalIds.at(-1) ?? terminalIds[0]!)
+                          ? terminalIds[
+                              Math.min(
+                                entry.terminalIds.indexOf(terminalId),
+                                terminalIds.length - 1,
+                              )
+                            ]!
                           : entry.activeTerminalId,
                     }
                   : entry,
@@ -1301,27 +1312,28 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set((state) =>
           automaticUpdate(state, scopedThreadKey(ref), (current) => activated(current, surfaceId)),
         ),
-      closeSurface: (ref, surfaceId) =>
+      closeSurface: (ref, surfaceId) => get().closeSurfaces(ref, [surfaceId]),
+      closeSurfaces: (ref, surfaceIds) => {
+        const closing = new Set(surfaceIds);
         set((state) =>
           closeAction(state, scopedThreadKey(ref), (current) => {
-            const index = current.surfaces.findIndex((surface) => surface.id === surfaceId);
-            if (index < 0) return current;
-            const surfaces = current.surfaces.filter((surface) => surface.id !== surfaceId);
-            const next = {
+            const surfaces = current.surfaces.filter((surface) => !closing.has(surface.id));
+            if (surfaces.length === current.surfaces.length) return current;
+            const activeSurfaceId = nextActiveIdAfterBulkClose(
+              current.surfaces,
+              (surface) => surface.id,
+              current.activeSurfaceId,
+              closing,
+            );
+            return {
               ...current,
               isOpen: surfaces.length > 0 && current.isOpen,
               surfaces,
-            };
-            if (current.activeSurfaceId !== surfaceId) {
-              return next;
-            }
-            const fallback = surfaces[Math.min(index, surfaces.length - 1)] ?? null;
-            return {
-              ...next,
-              activeSurfaceId: fallback?.id ?? null,
+              activeSurfaceId,
             };
           }),
-        ),
+        );
+      },
       closeOtherSurfaces: (ref, surfaceId) =>
         set((state) =>
           closeAction(state, scopedThreadKey(ref), (current) => {
@@ -1366,6 +1378,26 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
             if (fromIndex < 0 || fromIndex === toIndex) return current;
             const surfaces = [...current.surfaces];
             surfaces.splice(toIndex, 0, ...surfaces.splice(fromIndex, 1));
+            return { ...current, surfaces };
+          }),
+        ),
+      moveSurfaces: (ref, surfaceIds, targetId) =>
+        set((state) =>
+          updateThread(state, scopedThreadKey(ref), (current) => {
+            const movingIds = new Set(surfaceIds);
+            if (movingIds.has(targetId)) return current;
+            const firstIndex = current.surfaces.findIndex((surface) => movingIds.has(surface.id));
+            const targetIndex = current.surfaces.findIndex((surface) => surface.id === targetId);
+            if (firstIndex < 0 || targetIndex < 0) return current;
+            const remainingTargetIndex = current.surfaces
+              .filter((surface) => !movingIds.has(surface.id))
+              .findIndex((surface) => surface.id === targetId);
+            const surfaces = reorderTabGroup(
+              current.surfaces,
+              (surface) => surface.id,
+              movingIds,
+              remainingTargetIndex + Number(firstIndex < targetIndex),
+            );
             return { ...current, surfaces };
           }),
         ),
@@ -1582,6 +1614,15 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         ),
       }),
       migrate: migratePersistedRightPanelState,
+      onRehydrateStorage: () => (state) => {
+        for (const thread of Object.values(state?.byThreadKey ?? {})) {
+          for (const surface of thread.surfaces) {
+            if (surface.kind === "file") {
+              lastFileRevealRequestId = Math.max(lastFileRevealRequestId, surface.revealRequestId);
+            }
+          }
+        }
+      },
     },
   ),
 );

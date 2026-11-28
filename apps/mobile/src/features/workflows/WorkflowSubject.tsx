@@ -4,11 +4,11 @@ import {
   workflowReferencePullRequest,
   workflowReferenceThreadId,
 } from "@t3tools/client-runtime/workflows";
-import { type EnvironmentId, ThreadId, type WorkflowRunSubject } from "@t3tools/contracts";
+import type { EnvironmentId, WorkflowRunSubject } from "@t3tools/contracts";
 import { StackActions, useNavigation } from "@react-navigation/native";
 
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
-import { useCanOpenThread } from "./WorkflowStepCard";
+import { useWorkflowThreadOpener } from "./WorkflowStepCard";
 
 /** What a subject is called in one line: its label, then its title when that says more. */
 export function workflowSubjectLine(subject: WorkflowRunSubject): string {
@@ -19,7 +19,9 @@ export function workflowSubjectLine(subject: WorkflowRunSubject): string {
 /** Opens a run's subject on its own screen, or its web address. Null when it has neither. */
 export function useWorkflowSubjectOpener(environmentId: EnvironmentId) {
   const navigation = useNavigation();
-  const canOpenThread = useCanOpenThread(environmentId);
+  const threadOpener = useWorkflowThreadOpener(environmentId, (thread) =>
+    navigation.dispatch(StackActions.push("Thread", thread)),
+  );
   return (subject: WorkflowRunSubject): (() => void) | null => {
     const issue = workflowReferenceIssue(subject);
     if (issue !== null) {
@@ -49,14 +51,7 @@ export function useWorkflowSubjectOpener(environmentId: EnvironmentId) {
         );
     }
     const threadId = workflowReferenceThreadId(subject);
-    if (threadId !== null) {
-      return canOpenThread({ threadId, environmentId: null })
-        ? () =>
-            navigation.dispatch(
-              StackActions.push("Thread", { environmentId, threadId: ThreadId.make(threadId) }),
-            )
-        : null;
-    }
+    if (threadId !== null) return threadOpener({ threadId, environmentId: null });
     const url = subject.url;
     return url === null ? null : () => void tryOpenExternalUrl(url);
   };

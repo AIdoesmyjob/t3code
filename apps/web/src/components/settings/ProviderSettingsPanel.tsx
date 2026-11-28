@@ -105,6 +105,7 @@ import { ProviderSetupSection, readAntigravityAuthMethod } from "./ProviderSetup
 import { ProviderAuthenticationSection } from "./ProviderAuthenticationSection";
 import { CodexSetupSection, CodexManagedRuntimeFields } from "./CodexSetupSection";
 import { readCodexSetupMode } from "./CodexSetupSection.logic";
+import { getProviderReinstallCommand } from "./providerStatus";
 import { providerClients } from "./providerDriverMeta";
 import { useSearchableSetting } from "./settingsSearch";
 import { CompactIdleThreadsRow } from "./SettingsPanels";
@@ -134,6 +135,7 @@ import {
   resolveRemoteOperateAccess,
   resolveSelectedProviderEnvironmentId,
 } from "./ProviderSettingsPanel.logic";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 function providerInstanceName(instance: ProviderInstanceConfig): string {
   return (
@@ -1063,51 +1065,51 @@ export function EnvironmentProviderSettings({
         title={gt("Providers")}
         headerAction={
           <div className="flex min-w-0 items-center gap-2">
-            <Tooltip>
-              <TooltipTrigger
+            <SharedTooltipTrigger
+              render={
+                <Button
+                  size="xs"
+                  variant="ghost-muted"
+                  disabled={isRefreshingProviders || !canRefreshProviders}
+                  aria-busy={isRefreshingProviders}
+                  aria-label={gt("Refresh provider status")}
+                  onClick={() => void refreshProviders()}
+                >
+                  <RefreshIcon refreshing={isRefreshingProviders} />
+
+                  <span className="hidden min-w-0 truncate sm:inline">
+                    {isRefreshingProviders ? (
+                      gt("Refreshing providers")
+                    ) : (
+                      <ProviderLastChecked environmentId={environmentId} />
+                    )}
+                  </span>
+                </Button>
+              }
+              label={
+                <>
+                  <T>Refresh provider status</T>
+                </>
+              }
+            />
+            {canAddProvider ? (
+              <SharedTooltipTrigger
                 render={
                   <Button
-                    size="xs"
+                    size="icon-xs"
                     variant="ghost-muted"
-                    disabled={isRefreshingProviders || !canRefreshProviders}
-                    aria-busy={isRefreshingProviders}
-                    aria-label={gt("Refresh provider status")}
-                    onClick={() => void refreshProviders()}
+                    onClick={() => setIsAddInstanceDialogOpen(true)}
+                    aria-label={gt("Add provider")}
                   >
-                    <RefreshIcon refreshing={isRefreshingProviders} />
-
-                    <span className="hidden min-w-0 truncate sm:inline">
-                      {isRefreshingProviders ? (
-                        gt("Refreshing providers")
-                      ) : (
-                        <ProviderLastChecked environmentId={environmentId} />
-                      )}
-                    </span>
+                    <PlusIcon />
                   </Button>
                 }
+                label={
+                  <>
+                    <T>Add provider</T>
+                  </>
+                }
               />
-              <TooltipPopup side="top">
-                <T>Refresh provider status</T>
-              </TooltipPopup>
-            </Tooltip>
-            {canAddProvider ? (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      size="icon-xs"
-                      variant="ghost-muted"
-                      onClick={() => setIsAddInstanceDialogOpen(true)}
-                      aria-label={gt("Add provider")}
-                    >
-                      <PlusIcon />
-                    </Button>
-                  }
-                />
-                <TooltipPopup side="top">
-                  <T>Add provider</T>
-                </TooltipPopup>
-              </Tooltip>
             ) : null}
           </div>
         }
@@ -1391,7 +1393,9 @@ function ProviderInstanceRow({
   const instance = explicitInstance ?? { driver };
   const driverOption = providerClients.get(driver);
   const updateCandidate =
-    liveProvider !== undefined && isProviderSettingsUpdateCandidate(liveProvider)
+    liveProvider !== undefined &&
+    (isProviderSettingsUpdateCandidate(liveProvider) ||
+      getProviderReinstallCommand(liveProvider) !== null)
       ? liveProvider
       : undefined;
   const isInstanceUpdateRunning =

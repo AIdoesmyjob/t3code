@@ -1,3 +1,4 @@
+import { isElectron } from "~/env";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   workflowReferenceIssue,
@@ -152,7 +153,7 @@ export function WorkflowsPage() {
 
   const openReferenceBeside = (runId: string, reference: WorkflowRunSubject) => {
     if (environmentId === null) return;
-    // A thread subject opens beside the run, as an agent's thread does.
+    // A thread opens as an agent's does, to the side.
     const threadId = workflowReferenceThreadId(reference);
     if (threadId !== null) {
       openThreadToTheSide(scopeThreadRef(environmentId, ThreadId.make(threadId)));
@@ -419,6 +420,7 @@ export function WorkflowsPage() {
             className="min-h-0 w-full shrink-0 md:w-1/2 md:max-w-2xl md:border-s md:border-divider"
           >
             <WorkflowPane
+              electron={isElectron}
               environmentId={environmentId}
               runId={search.run ?? null}
               state={pane}

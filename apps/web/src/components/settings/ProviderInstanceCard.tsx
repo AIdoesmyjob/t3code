@@ -55,7 +55,6 @@ import { ManagedControl, ManagedNotice } from "../ManagedPolicy";
 import { managedInstanceLocks, useManagedPolicy } from "../../state/managedPolicy";
 import { disallowedProviderMessage, isManagedDriverAllowed } from "@t3tools/contracts";
 import { stackedThreadToast, toastManager } from "../ui/toast";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type {
   ProviderClientDefinition,
   ProviderEnvironmentField,
@@ -70,6 +69,8 @@ import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
 import { RedactedSensitiveText } from "./RedactedSensitiveText";
+import { PROVIDER_PRESENTATION } from "../usage/usageProviders";
+import { UsageAccessReads } from "../usage/UsageAccessReads";
 import { SettingResetButton, SettingsRow, SettingsSection } from "./settingsLayout";
 import { AcpSessionManagementSection } from "./AcpSessionManagementSection";
 import { FoldedSettingsSection } from "./FoldedSettingsSection";
@@ -82,6 +83,7 @@ import {
 } from "./customModelSaves.logic";
 import { getProviderRestartNotice } from "../ProviderUpdateLaunchNotification.logic";
 import {
+  getProviderReinstallCommand,
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
   getProviderStatusKey,
@@ -89,6 +91,7 @@ import {
   getProviderVersionLabel,
   providerAuthLabel,
 } from "./providerStatus";
+import { SharedTooltipTrigger } from "../ui/shared-tooltip";
 
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
@@ -100,12 +103,7 @@ function ProviderStatusDiagnostic({
   children: ReactElement;
 }) {
   if (!detail) return children;
-  return (
-    <Tooltip>
-      <TooltipTrigger render={children} />
-      <TooltipPopup side="top">{detail}</TooltipPopup>
-    </Tooltip>
-  );
+  return <SharedTooltipTrigger render={children} label={detail} />;
 }
 
 const ENVIRONMENT_VARIABLE_NAME_PLACEHOLDER = "VARIABLE_NAME";
@@ -224,6 +222,59 @@ function ProviderAuthEmail(props: { readonly email: string | undefined }) {
       hideTooltip={gt("Click to hide email")}
       className="pointer-events-auto max-w-full truncate"
     />
+  );
+}
+
+type ProviderVersionAdvisory = NonNullable<
+  ReturnType<typeof getProviderVersionAdvisoryPresentation>
+>;
+
+// The popover and the Status row both offer the same update action, so the
+// label, busy state and progress line live in one place.
+function ProviderVersionUpdateAction(props: {
+  readonly advisory: ProviderVersionAdvisory;
+  readonly isReinstall: boolean;
+  readonly isUpdating: boolean;
+  readonly progress: string | null;
+  readonly problem: string | null;
+  readonly stretch: boolean;
+  readonly onRun: () => void;
+}) {
+  const { advisory, isReinstall, isUpdating, progress, problem, stretch, onRun } = props;
+  const gt = useGT();
+  return (
+    <>
+      <Button
+        type="button"
+        size="xs"
+        variant="secondary"
+        className={cn(stretch ? "w-full" : "w-fit")}
+        disabled={isUpdating}
+        onClick={onRun}
+      >
+        {isUpdating ? <Spinner /> : <DownloadIcon />}
+        {isUpdating
+          ? gt("Updating")
+          : advisory.targetVersion
+            ? gt("Install {version}", {
+                version: getProviderVersionLabel(advisory.targetVersion),
+              })
+            : isReinstall
+              ? gt("Reinstall")
+              : gt("Update now")}
+      </Button>
+      {progress || problem ? (
+        <p
+          aria-live="polite"
+          className={cn(
+            "text-xs leading-snug [overflow-wrap:anywhere]",
+            problem ? "text-warning" : "text-muted-foreground",
+          )}
+        >
+          {progress ?? problem}
+        </p>
+      ) : null}
+    </>
   );
 }
 
@@ -508,40 +559,36 @@ export function ProviderEnvironmentSection(props: {
             );
             const sensitiveToggle =
               typeof variable.value === "string" ? (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        type="button"
-                        size="icon-micro"
-                        variant="ghost-muted"
-                        disabled={variable.valueRedacted === true}
-                        onClick={() => {
-                          const sensitive = !variable.sensitive;
-                          updateVariable(variable.id, {
-                            sensitive,
-                            ...(sensitive && variable.valueRedacted === undefined
-                              ? {}
-                              : { valueRedacted: sensitive ? variable.valueRedacted : false }),
-                          });
-                        }}
-                        aria-pressed={variable.sensitive}
-                        aria-label={gt("Mark environment variable {name} as sensitive", {
-                          name: variable.name || index + 1,
-                        })}
-                      >
-                        {variable.sensitive ? (
-                          <LockIcon className="size-3" />
-                        ) : (
-                          <LockOpenIcon className="size-3" />
-                        )}
-                      </Button>
-                    }
-                  />
-                  <TooltipPopup side="top">
-                    {variable.sensitive ? gt("Sensitive, stored separately") : gt("Plain text")}
-                  </TooltipPopup>
-                </Tooltip>
+                <SharedTooltipTrigger
+                  render={
+                    <Button
+                      type="button"
+                      size="icon-micro"
+                      variant="ghost-muted"
+                      disabled={variable.valueRedacted === true}
+                      onClick={() => {
+                        const sensitive = !variable.sensitive;
+                        updateVariable(variable.id, {
+                          sensitive,
+                          ...(sensitive && variable.valueRedacted === undefined
+                            ? {}
+                            : { valueRedacted: sensitive ? variable.valueRedacted : false }),
+                        });
+                      }}
+                      aria-pressed={variable.sensitive}
+                      aria-label={gt("Mark environment variable {name} as sensitive", {
+                        name: variable.name || index + 1,
+                      })}
+                    >
+                      {variable.sensitive ? (
+                        <LockIcon className="size-3" />
+                      ) : (
+                        <LockOpenIcon className="size-3" />
+                      )}
+                    </Button>
+                  }
+                  label={variable.sensitive ? gt("Sensitive, stored separately") : gt("Plain text")}
+                />
               ) : null;
             const layout = (source: ReactNode, value: ReactNode) => (
               <div className="flex min-w-0 flex-col gap-1.5 rounded-control surface-well p-2">
@@ -639,26 +686,26 @@ function ProjectOverrideInheritance({
   ];
   return (
     <Popover>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <PopoverTrigger
-              render={
-                <Button
-                  size="icon-micro"
-                  variant="ghost-muted"
-                  aria-label={gt("Overridden for this project. Show where this value comes from")}
-                />
-              }
-            />
-          }
-        >
-          <LayersIcon className="size-3 text-primary" />
-        </TooltipTrigger>
-        <TooltipPopup side="top">
-          <T>Overridden for this project</T>
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <PopoverTrigger
+            render={
+              <Button
+                size="icon-micro"
+                variant="ghost-muted"
+                aria-label={gt("Overridden for this project. Show where this value comes from")}
+              />
+            }
+          />
+        }
+        label={
+          <>
+            <T>Overridden for this project</T>
+          </>
+        }
+      >
+        <LayersIcon className="size-3 text-primary" />
+      </SharedTooltipTrigger>
       <PopoverPopup align="end" width="md" padding="none">
         <ol role="list" className="px-3 py-2.5 text-sm">
           {layers.map((layer) => (
@@ -832,12 +879,28 @@ export function ProviderInstanceCard({
       ? (providerAuthLabel(liveProvider.auth, m) ?? null)
       : null;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
-  const versionAdvisory = getProviderVersionAdvisoryPresentation(
+  const updateAdvisory = getProviderVersionAdvisoryPresentation(
     liveProvider?.versionAdvisory,
     liveProvider?.compatibilityAdvisory,
     enabled,
     m,
   );
+  const reinstallCommand =
+    enabled && !updateAdvisory ? getProviderReinstallCommand(liveProvider) : null;
+  const isReinstall = reinstallCommand !== null;
+  const versionAdvisory =
+    updateAdvisory ??
+    (isReinstall
+      ? {
+          title: gt("Reinstall needed"),
+          detail: gt(
+            "This installation is missing files it needs to start. Reinstall it to fix it.",
+          ),
+          updateCommand: reinstallCommand,
+          emphasis: "strong" as const,
+          targetVersion: null,
+        }
+      : null);
   const updateCommand = versionAdvisory?.updateCommand ?? null;
   const updateState = liveProvider?.updateState;
   const updateProgress = isUpdating
@@ -855,7 +918,8 @@ export function ProviderInstanceCard({
     compatibility !== undefined &&
     compatibility.status !== "supported" &&
     compatibility.status !== "unknown";
-  const VersionAdvisoryIcon = hasCompatibilityWarning ? AlertTriangleIcon : ArrowUpCircleIcon;
+  const VersionAdvisoryIcon =
+    hasCompatibilityWarning || isReinstall ? AlertTriangleIcon : ArrowUpCircleIcon;
   // Version warnings never get a banner: the glyph carries the sentence and its popover the fix.
   const versionAdvisoryLabel = versionAdvisory
     ? `${versionAdvisory.title}. ${versionAdvisory.detail}`
@@ -938,6 +1002,12 @@ export function ProviderInstanceCard({
     }
     onUpdate({ ...instance, enabled: value });
   };
+
+  const readsUsage = Object.values(PROVIDER_PRESENTATION).some(
+    (presentation) => presentation.driverKind === instance.driver,
+  );
+  const updateUsageAccess = (allowed: boolean) =>
+    onUpdate({ ...instance, usageAccess: allowed ? "allowed" : "denied" });
 
   const updateAccentColor = (value: string) => {
     const normalized = normalizeProviderAccentColor(value);
@@ -1074,39 +1144,35 @@ export function ProviderInstanceCard({
     );
   const versionAdvisoryNode = versionAdvisory ? (
     <Popover>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <PopoverTrigger
-              render={
-                <Button
-                  type="button"
-                  size={mode === "list" ? "icon-micro" : "icon-xs"}
-                  variant="ghost-muted"
-                  className={mode === "list" ? "pointer-events-auto relative shrink-0" : undefined}
-                  aria-label={gt("{status}, view details", {
-                    status: updateProgress ? gt("Updating") : versionAdvisory.title,
-                  })}
-                >
-                  {updateProgress ? (
-                    <Spinner tone="muted" {...(mode === "list" ? { size: "sm" as const } : {})} />
-                  ) : (
-                    <VersionAdvisoryIcon
-                      className={cn(
-                        mode === "list" && "size-3.5",
-                        hasCompatibilityWarning && "text-warning-foreground",
-                      )}
-                    />
-                  )}
-                </Button>
-              }
-            />
-          }
-        />
-        <TooltipPopup side="top">
-          {updateProgress ? gt("Updating") : versionAdvisoryLabel}
-        </TooltipPopup>
-      </Tooltip>
+      <SharedTooltipTrigger
+        render={
+          <PopoverTrigger
+            render={
+              <Button
+                type="button"
+                size={mode === "list" ? "icon-micro" : "icon-xs"}
+                variant="ghost-muted"
+                className={mode === "list" ? "pointer-events-auto relative shrink-0" : undefined}
+                aria-label={gt("{status}, view details", {
+                  status: updateProgress ? gt("Updating") : versionAdvisory.title,
+                })}
+              >
+                {updateProgress ? (
+                  <Spinner tone="muted" {...(mode === "list" ? { size: "sm" as const } : {})} />
+                ) : (
+                  <VersionAdvisoryIcon
+                    className={cn(
+                      mode === "list" && "size-3.5",
+                      (hasCompatibilityWarning || isReinstall) && "text-warning-foreground",
+                    )}
+                  />
+                )}
+              </Button>
+            }
+          />
+        }
+        label={updateProgress ? gt("Updating") : versionAdvisoryLabel}
+      />
       <PopoverPopup side="bottom" align="end" width="md" aria-label={versionAdvisory.title}>
         <div className="grid min-w-0 gap-3">
           <div className="grid gap-0.5">
@@ -1125,34 +1191,15 @@ export function ProviderInstanceCard({
             </p>
           </div>
           {onRunVersionAction ? (
-            <Button
-              type="button"
-              size="xs"
-              variant="secondary"
-              className="w-full"
-              disabled={isUpdating}
-              onClick={onRunVersionAction}
-            >
-              {isUpdating ? <Spinner /> : <DownloadIcon />}
-              {isUpdating
-                ? gt("Updating")
-                : versionAdvisory.targetVersion
-                  ? gt("Install {version}", {
-                      version: getProviderVersionLabel(versionAdvisory.targetVersion),
-                    })
-                  : gt("Update now")}
-            </Button>
-          ) : null}
-          {updateProgress || updateProblem ? (
-            <p
-              aria-live="polite"
-              className={cn(
-                "text-xs leading-snug [overflow-wrap:anywhere]",
-                updateProblem ? "text-warning" : "text-muted-foreground",
-              )}
-            >
-              {updateProgress ?? updateProblem}
-            </p>
+            <ProviderVersionUpdateAction
+              advisory={versionAdvisory}
+              isReinstall={isReinstall}
+              isUpdating={isUpdating}
+              progress={updateProgress}
+              problem={updateProblem}
+              stretch
+              onRun={onRunVersionAction}
+            />
           ) : null}
           {onRunVersionAction && updateCommand ? (
             <div className="flex items-center gap-2 text-3xs font-medium text-muted-foreground">
@@ -1166,25 +1213,25 @@ export function ProviderInstanceCard({
               <code className="min-w-0 flex-1 truncate font-mono text-2xs text-foreground">
                 {updateCommand}
               </code>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <Button
-                      type="button"
-                      size="icon-xs"
-                      variant="ghost-muted"
-                      className="shrink-0"
-                      onClick={() => copyToClipboard(updateCommand, { providerName: displayName })}
-                      aria-label={gt("Copy update command")}
-                    >
-                      <CopyIcon className="size-3" />
-                    </Button>
-                  }
-                />
-                <TooltipPopup side="top">
-                  <T>Copy command</T>
-                </TooltipPopup>
-              </Tooltip>
+              <SharedTooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="ghost-muted"
+                    className="shrink-0"
+                    onClick={() => copyToClipboard(updateCommand, { providerName: displayName })}
+                    aria-label={gt("Copy update command")}
+                  >
+                    <CopyIcon className="size-3" />
+                  </Button>
+                }
+                label={
+                  <>
+                    <T>Copy command</T>
+                  </>
+                }
+              />
             </div>
           ) : null}
         </div>
@@ -1358,6 +1405,19 @@ export function ProviderInstanceCard({
           {restartNotice}
         </p>
       ) : null}
+      {versionAdvisory && onRunVersionAction ? (
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          <ProviderVersionUpdateAction
+            advisory={versionAdvisory}
+            isReinstall={isReinstall}
+            isUpdating={isUpdating}
+            progress={updateProgress}
+            problem={updateProblem}
+            stretch={false}
+            onRun={onRunVersionAction}
+          />
+        </div>
+      ) : null}
       {urlAuthAction && onAcceptUrlAuth ? (
         <div className="grid max-w-xl gap-1.5 pt-1 text-meta">
           <p>{urlAuthAction.message}</p>
@@ -1454,6 +1514,20 @@ export function ProviderInstanceCard({
               </div>
             }
           />
+          {readsUsage ? (
+            <SettingsRow
+              title={gt("Usage access")}
+              description={<UsageAccessReads driver={instance.driver} />}
+              control={
+                <Switch
+                  checked={instance.usageAccess === "allowed"}
+                  disabled={readOnly}
+                  onCheckedChange={(checked) => updateUsageAccess(Boolean(checked))}
+                  aria-label={gt("Usage access for {provider}", { provider: displayName })}
+                />
+              }
+            />
+          ) : null}
         </SettingsGroup>
       </div>
 

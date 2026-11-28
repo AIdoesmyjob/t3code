@@ -1,7 +1,6 @@
 import { resolveTimelineIsAtEnd } from "./MessagesTimeline.logic";
 import { injectHtmlRenderBootstrap } from "@t3tools/shared/htmlRender";
 import { HtmlRenderDocument } from "../files/BrowserDocumentFrame";
-import { flushSync } from "react-dom";
 import { AudioPreview } from "../files/AudioPreview";
 import { cdp, page, userEvent } from "vite-plus/test/browser";
 import {
@@ -21,9 +20,7 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ProjectedTurnItem,
 } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
-import { __setClientSettingsForTests } from "~/hooks/useSettings";
-import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { type LegendListRef } from "@legendapp/list/react";
 import {
   createRef,
   Profiler,
@@ -36,12 +33,12 @@ import {
 import * as DateTime from "effect/DateTime";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 
 import "~/index.css";
 
 import { environmentThreadDetails } from "../../state/threads";
 import { act, fakeTimers, render, stubGlobal } from "../../../test/render";
-import { ChangedFilesCard } from "./ChangedFilesTree";
 import { MessagesTimeline } from "./MessagesTimeline";
 import { timelineGapDevApi } from "./TimelineGapRecorder";
 import { createWorkspaceFocusController, workspaceAreaProps } from "../../lib/workspaceFocus";
@@ -52,12 +49,17 @@ import {
   type PendingApproval,
   deriveTimelineEntriesFromVisibleTurnItems,
 } from "../../session-logic";
-import { THOUGHT_PREVIEW_MAX_LENGTH, thoughtPreviewMarkdown } from "./TimelineWorkEntryRow.logic";
+import {
+  THOUGHT_PREVIEW_MAX_LENGTH,
+  THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
+  thoughtPreviewMarkdown,
+} from "./TimelineWorkEntryRow.logic";
 import { wordsHast } from "~/markdown/wordsHast";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
 import { collectThreadFindRanges } from "./threadFindHighlights";
 import { toastManager } from "../ui/toast";
+import { __setClientSettingsForTests } from "../../hooks/useSettings";
 import type { CitedHistory } from "./citationProcedure";
 import type { TimelineNavigation, TimelineViewport } from "./timelineViewport";
 import { rememberTimelinePosition } from "./timelineScrollAnchoring";
@@ -90,11 +92,13 @@ vi.mock(import("~/assets/assetUrls"), async (original) => {
   return {
     ...actual,
     useAssetUrlState: ((...args: Parameters<typeof actual.useAssetUrlState>) =>
-      stubbedAsset.failed
-        ? { _tag: "Failure" }
-        : stubbedAsset.url
-          ? { _tag: "Success", url: stubbedAsset.url }
-          : actual.useAssetUrlState(...args)) as typeof actual.useAssetUrlState,
+      args[1] === null
+        ? { _tag: "Loading" }
+        : stubbedAsset.failed
+          ? { _tag: "Failure" }
+          : stubbedAsset.url
+            ? { _tag: "Success", url: stubbedAsset.url }
+            : actual.useAssetUrlState(...args)) as typeof actual.useAssetUrlState,
     useAssetUrls: ((...args: Parameters<typeof actual.useAssetUrls>) =>
       stubbedAsset.url
         ? args[1].map(() => stubbedAsset.url)
@@ -138,7 +142,6 @@ function baseProps(): Omit<TimelineProps, "timelineEntries"> {
     turnDiffSummaries: [],
     runs: [],
     routeThreadKey: `environment-local:thread-${Math.random().toString(36).slice(2)}`,
-    onOpenTurnDiff: () => {},
     onOpenThread: () => {},
     onForkFromRun: async () => {},
     supportsConversationRollback: false,
@@ -1117,6 +1120,46 @@ describe("MessagesTimeline messages", () => {
     expect(snapshot().findings).toEqual([]);
   });
 
+  it("reports a blank stretch that heals before the delayed gap checks look", async () => {
+    setup();
+    localStorage.removeItem("t3dev:timeline-gap-reports");
+    using _timers = fakeTimers();
+    const props = baseProps();
+    const entries = Array.from({ length: 120 }, (_, index) =>
+      message(`Turn ${index}:\n\n${"x ".repeat(200)}`, {}, `flash-${index}`),
+    );
+    await using screen = await renderElement(
+      <MessagesTimeline {...props} timelineEntries={entries} />,
+    );
+    const blankReports = () =>
+      timelineGapDevApi
+        .gapReports()
+        .filter(
+          (report): report is { phase: string; durationMs: number; missingRows: unknown[] } =>
+            (report as { phase?: string }).phase === "blank stretch",
+        );
+    await vi.waitFor(() => expect(screen.text()).toContain("Turn 119:"));
+    // The recorder is a lazy chunk; it samples once it has mounted.
+    await vi.waitFor(() => expect(timelineGapDevApi.checkGapsNow()).not.toEqual([]));
+    const state = props.listRef.current!.getState();
+    const slots = Array.from({ length: state.endBuffered - state.startBuffered + 1 }, (_, i) => {
+      const slot = state.elementAtIndex(state.startBuffered + i)!;
+      return { slot, parent: slot.parentNode!, next: slot.nextSibling };
+    });
+    try {
+      for (const { slot } of slots) slot.remove();
+      await act(() => vi.advanceTimersByTimeAsync(400));
+    } finally {
+      for (const { slot, parent, next } of slots.toReversed()) parent.insertBefore(slot, next);
+    }
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(blankReports()).toHaveLength(1);
+    const [report] = blankReports();
+    expect(report!.durationMs).toBeGreaterThanOrEqual(100);
+    expect(report!.durationMs).toBeLessThan(2000);
+    expect(report!.missingRows).toHaveLength(slots.length);
+  });
+
   it("scrolls from the keyboard once F6 moves into the conversation", async () => {
     setup();
     const props = baseProps();
@@ -1257,6 +1300,100 @@ describe("MessagesTimeline messages", () => {
     });
   });
 
+  it("keeps minimap marks apart in a thread with many user messages", async () => {
+    setup();
+    const entries = Array.from({ length: 400 }, (_, index) =>
+      message(`Question ${index}`, {}, `user-${index}`),
+    );
+    await using screen = await renderTimeline(entries);
+    const tops = () =>
+      [...screen.container.querySelectorAll<HTMLElement>("[data-minimap-strip]")]
+        .map((strip) => strip.getBoundingClientRect().top)
+        .sort((a, b) => a - b);
+    await vi.waitFor(() => expect(tops().length).toBeGreaterThan(1));
+    const markTops = tops();
+    const gaps = markTops.slice(1).map((top, index) => top - markTops[index]!);
+    // A mark is 2px tall; closer than 4px apart and neighbours read as one bar.
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(4);
+  });
+
+  it("keeps the minimap off the copy button when the chat lane is shifted left", async () => {
+    setup();
+    const pageSize = { width: window.innerWidth, height: window.innerHeight };
+    await page.viewport(1280, 800);
+    await using _pageSize = {
+      [Symbol.asyncDispose]: () => page.viewport(pageSize.width, pageSize.height),
+    };
+    const props = baseProps();
+    const entries = Array.from({ length: 6 }, (_, index) => [
+      message(`Question ${index}`, {}, `user-${index}`),
+      message(`Answer ${index}`, { role: "assistant" }, `assistant-${index}`),
+    ]).flat();
+    // ChatCanvas at 1024px with the details card open: a 48px left gutter, not a centered one.
+    await using screen = await renderElement(
+      <div
+        data-chat-canvas
+        style={{ display: "flex", flexDirection: "column", height: 800, width: 1024 }}
+        className="[--chat-lane-inset-end:276px]"
+      >
+        <MessagesTimeline {...props} timelineEntries={entries} />
+      </div>,
+    );
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    const lane = screen.container.querySelector<HTMLElement>("[data-timeline-root]")!;
+    await vi.waitFor(() => {
+      expect(screen.container.querySelector("[data-minimap-strip]")).not.toBeNull();
+      const laneRect = lane.getBoundingClientRect();
+      const viewportRect = viewport.getBoundingClientRect();
+      expect(laneRect.left - viewportRect.left).toBeLessThan(viewportRect.right - laneRect.right);
+    });
+
+    const jump = screen.buttons(/^Jump to message/)[0]!;
+    await vi.waitFor(() =>
+      expect(jump.getBoundingClientRect().right).toBeLessThanOrEqual(
+        lane.getBoundingClientRect().left,
+      ),
+    );
+  });
+
+  it("moves the minimap off the chat lane when the lane shifts left without resizing", async () => {
+    setup();
+    const pageSize = { width: window.innerWidth, height: window.innerHeight };
+    await page.viewport(1600, 800);
+    await using _pageSize = {
+      [Symbol.asyncDispose]: () => page.viewport(pageSize.width, pageSize.height),
+    };
+    const props = baseProps();
+    const entries = Array.from({ length: 6 }, (_, index) => [
+      message(`Question ${index}`, {}, `user-${index}`),
+      message(`Answer ${index}`, { role: "assistant" }, `assistant-${index}`),
+    ]).flat();
+    await using screen = await renderElement(
+      <div
+        data-chat-canvas
+        style={{ display: "flex", flexDirection: "column", height: 800, width: 1600 }}
+      >
+        <MessagesTimeline {...props} timelineEntries={entries} />
+      </div>,
+    );
+    const canvas = screen.container.querySelector<HTMLElement>("[data-chat-canvas]")!;
+    const lane = screen.container.querySelector<HTMLElement>("[data-timeline-root]")!;
+    await vi.waitFor(() =>
+      expect(screen.container.querySelector("[data-minimap-strip]")).not.toBeNull(),
+    );
+    const laneWidth = lane.getBoundingClientRect().width;
+
+    // Opening the details card on a wide canvas moves the lane left at full width.
+    canvas.style.setProperty("--chat-lane-inset-end", "740px");
+    const jump = screen.buttons(/^Jump to message/)[0]!;
+    await vi.waitFor(() => {
+      expect(lane.getBoundingClientRect().width).toBe(laneWidth);
+      expect(jump.getBoundingClientRect().right).toBeLessThanOrEqual(
+        lane.getBoundingClientRect().left,
+      );
+    });
+  });
+
   it("enables the minimap's next turn button on a thread restored above its bottom", async () => {
     setup();
     const base = baseProps();
@@ -1337,6 +1474,51 @@ describe("MessagesTimeline messages", () => {
     expect(screen.text()).toContain("B turn 118:");
     expect(screen.text()).not.toContain("A turn");
     expectItemOrder();
+  });
+
+  it("opens a working parent thread at its end without landing short", async () => {
+    setup();
+    const props = baseProps();
+    const parent = Array.from({ length: 30 }, (_, index) =>
+      message(
+        `Parent turn ${index}:\n\n${"x ".repeat(200)}`,
+        { role: index % 2 === 0 ? "user" : "assistant" },
+        `parent-${index}`,
+      ),
+    );
+    await using screen = await renderElement(
+      <MessagesTimeline
+        {...props}
+        parentThreadLink={{ title: "Parent thread", open: () => {} }}
+        timelineEntries={[message("Short child reply.", { role: "assistant" }, "child-0")]}
+      />,
+    );
+    expect(screen.text()).toContain("Subagent of");
+    const viewport = props.listRef.current!.getScrollableNode()!;
+    const end = () => viewport.scrollHeight - viewport.clientHeight;
+    // Distance from the end as each scroll lands, against the content height at that moment.
+    const shortfalls: number[] = [];
+    viewport.addEventListener("scroll", () =>
+      shortfalls.push(Math.round(end() - viewport.scrollTop)),
+    );
+
+    // A working parent's footer (queued turns, its subagents) is taller than the child's.
+    await screen.rerender(
+      <MessagesTimeline
+        {...props}
+        routeThreadKey={`${props.routeThreadKey}-parent`}
+        timelineEntries={parent}
+        footer={<div style={{ height: 300 }}>Waiting on 4 subagents</div>}
+        isWorking
+      />,
+    );
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain("Parent turn 29:");
+      expect(end() - viewport.scrollTop).toBeLessThanOrEqual(1);
+    });
+
+    expect(shortfalls.length).toBeGreaterThan(0);
+    expect(shortfalls).toEqual(shortfalls.map(() => 0));
   });
 
   it("puts rows back in item order soon after a continuous scroll stops", async () => {
@@ -1843,20 +2025,16 @@ describe("MessagesTimeline citations", () => {
       .toBeVisible();
   });
 
-  it.each(["passage", "response"] as const)("lands a %s target under StrictMode", async (scope) => {
+  it("lands a citation present at mount under StrictMode", async () => {
     await using _screen = await renderElement(
       <StrictMode>
         <MessagesTimeline
           {...baseProps()}
           timelineEntries={[
             message("A question", {}, "question"),
-            message(
-              "the cited answer\n\nAnother paragraph.\n\n- A list item\n\n```ts\nconst value = 1;\n```\n\n| header |\n| --- |\n| cell |",
-              { role: "assistant" },
-              "cited",
-            ),
+            message("the cited answer", { role: "assistant" }, "cited"),
           ]}
-          citationRequest={{ ...CITATION_REQUEST, scope }}
+          citationRequest={CITATION_REQUEST}
           citationHistory={{ _tag: "found" }}
         />
       </StrictMode>,
@@ -1869,20 +2047,6 @@ describe("MessagesTimeline citations", () => {
         "the cited answer",
       ),
     );
-    const source = document.querySelector<HTMLElement>("[data-citation-highlighted]")!;
-    if (scope === "response") {
-      expect(source.dataset.citationHighlighted).toBe("response");
-      expect(getComputedStyle(source, "::after").content).toBe('""');
-      expect(source.querySelector("p")?.textContent).toBe("the cited answer");
-      expect(source.querySelector("li")?.textContent).toBe("A list item");
-      expect(source.querySelector("pre")?.textContent).toContain("const value = 1;");
-      expect(source.querySelector("td")?.textContent).toBe("cell");
-    } else {
-      expect([...CSS.highlights.get("t3-assistant-citation")!][0]?.toString()).toBe(
-        "the cited answer",
-      );
-      expect(getComputedStyle(source, "::after").content).toBe("none");
-    }
   });
 
   it("moves focus to the cited response so screen readers follow it", async () => {
@@ -1900,7 +2064,38 @@ describe("MessagesTimeline citations", () => {
     });
   });
 
-  it("opens the superseded attempt that folds the replied-to response", async () => {
+  it("keeps the citation highlight through an IME Escape", async () => {
+    await using _screen = await renderTimeline(
+      [
+        message("A question", {}, "question"),
+        message("the cited answer", { role: "assistant" }, "cited"),
+      ],
+      { citationRequest: CITATION_REQUEST, citationHistory: { _tag: "found" } },
+    );
+    const highlighted = () => document.querySelector("[data-citation-highlighted]");
+    await vi.waitFor(() => expect(highlighted()).not.toBeNull());
+    const pressEscape = (init: KeyboardEventInit, prevented = false) =>
+      act(() => {
+        const event = new KeyboardEvent("keydown", {
+          key: "Escape",
+          ...init,
+          bubbles: true,
+          cancelable: true,
+        });
+        // The composer's editor prevents every plain Escape before it reaches the document.
+        if (prevented) event.preventDefault();
+        document.body.dispatchEvent(event);
+      });
+
+    for (const init of [{ isComposing: true }, { keyCode: 229 }]) {
+      await pressEscape(init);
+      expect(highlighted()).not.toBeNull();
+    }
+    await pressEscape({ keyCode: 27 }, true);
+    expect(highlighted()).toBeNull();
+  });
+
+  it("opens the superseded attempt that folds the cited response", async () => {
     const runId = RunId.make("run-steered");
     const attempt = (id: string, ordinal: number, status: "superseded" | "running") => ({
       id: RunAttemptId.make(id),
@@ -1926,7 +2121,7 @@ describe("MessagesTimeline citations", () => {
       ],
       {
         latestRun: { runId, status: "running", startedAt: CREATED_AT, completedAt: null },
-        citationRequest: { ...CITATION_REQUEST, scope: "response" },
+        citationRequest: CITATION_REQUEST,
         citationHistory: { _tag: "found" },
       },
     );
@@ -2453,6 +2648,47 @@ describe("MessagesTimeline attachments", () => {
     expect(size.width).toBeLessThanOrEqual(456);
     expect(Math.abs(size.width / size.height - 16 / 9)).toBeLessThan(0.02);
   });
+
+  it("shows no unavailable image while a Read is opening it, then shows the image", async () => {
+    // The file does not exist yet, so asking for it would fail.
+    stubbedAsset.failed = true;
+    onTestFinished(() => {
+      stubbedAsset.failed = false;
+      stubbedAsset.url = "";
+    });
+    const base = baseProps();
+    const timeline = (pending: boolean) => (
+      <MessagesTimeline
+        {...base}
+        workspaceRoot="/repo"
+        timelineEntries={[
+          work("read-later", {
+            label: "Read later.png",
+            toolTitle: "Read",
+            tone: "tool",
+            itemType: "dynamic_tool",
+            toolLifecycleStatus: pending ? "inProgress" : "completed",
+            viewedImagePath: "/repo/later.png",
+          }),
+        ]}
+      />
+    );
+    // A running Read has no expandable row here, so nothing asks for the image until it ends.
+    await using screen = await renderElement(timeline(true));
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+    expect(screen.text()).not.toContain("Image unavailable");
+
+    stubbedAsset.failed = false;
+    stubbedAsset.url =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+    await screen.rerender(timeline(false));
+    await click(screen.button(/Read/));
+    await vi.waitFor(() =>
+      expect(
+        screen.container.querySelector<HTMLImageElement>('img[alt="later.png"]')?.className,
+      ).not.toContain("invisible"),
+    );
+  });
 });
 
 describe("MessagesTimeline thread find", () => {
@@ -2757,6 +2993,28 @@ describe("compact reasoning math", () => {
       ),
     ).toEqual(expected);
   });
+
+  it("does not split a surrogate pair at the reasoning preview source limit", async () => {
+    setup();
+    const prefix = `[l](${"u".repeat(8_100)}) `;
+    const filler = "c".repeat(THOUGHT_PREVIEW_SOURCE_MAX_LENGTH - 1 - prefix.length);
+    await using screen = await renderTimeline(
+      [
+        work("thought-1", {
+          label: "Thinking",
+          tone: "thinking",
+          itemType: "reasoning",
+          toolLifecycleStatus: "inProgress",
+          detail: `${prefix}${filler}😀 tail`,
+        }),
+      ],
+      { isWorking: true },
+    );
+    await vi.waitFor(() => {
+      expect(screen.text()).toContain(`l ${filler}`);
+    });
+    expect(screen.text()).not.toContain("\uFFFD");
+  });
 });
 
 it("renders automatic compaction as one live divider that finishes with its reason and token delta", async () => {
@@ -2942,72 +3200,89 @@ it("shows a character a screen would not draw at the very end of an approval", a
   }
 });
 
-function TimelineChangedFilesCard() {
-  const [expanded, setExpanded] = useState(true);
-  return (
-    <ChangedFilesCard
-      threadRef={null}
-      runId={RunId.make("run-1")}
-      files={["src/a.ts", "src/b.ts", "src/c.ts"].map((path) => ({
-        path,
-        kind: "modified",
-        additions: 1,
-        deletions: 0,
-      }))}
-      totals={{ count: 3, additions: 3, deletions: 0 }}
-      allDirectoriesExpanded={expanded}
-      resolvedTheme="light"
-      onToggleAllDirectories={() => setExpanded((value) => !value)}
-      onOpenTurnDiff={() => {}}
-    />
-  );
-}
-
-function ChangedFilesTimeline() {
-  return (
-    <LegendList
-      data={["files", "after"]}
-      keyExtractor={(item) => item}
-      estimatedItemSize={100}
-      recycleItems={false}
-      className="h-[600px]"
-      renderItem={({ item }) =>
-        item === "files" ? <TimelineChangedFilesCard /> : <div data-testid="after">After</div>
-      }
-    />
-  );
-}
-
-describe("ChangedFilesCard", () => {
-  it.each(["folder", "all folders"])(
-    "measures %s collapse and expansion in the same commit",
-    async (toggle) => {
-      await using screen = await render(<ChangedFilesTimeline />);
-      const after = () =>
-        screen.container.querySelector('[data-testid="after"]')!.getBoundingClientRect().top;
-      const cardBottom = () =>
-        screen.container.querySelector("[data-changed-files-state]")!.getBoundingClientRect()
-          .bottom;
-      await vi.waitFor(() => expect(after()).toBe(cardBottom()));
-      const topBefore = after();
-      const button = () =>
-        screen.container.querySelector<HTMLButtonElement>(
-          toggle === "folder"
-            ? '[data-changed-file-row="src"] button'
-            : 'button[aria-label$="all folders"]',
-        )!;
-      await act(() => {
-        flushSync(() => button().click());
-        expect(screen.container.textContent).not.toContain("a.ts");
-        expect(after()).toBe(topBefore - 3 * 28);
-      });
-      await act(() => {
-        flushSync(() => button().click());
-        expect(screen.container.textContent).toContain("a.ts");
-        expect(after()).toBe(topBefore);
-      });
+it("shows T3 Code's push hooks approval as its own question and another server's as before", async () => {
+  setup();
+  const fixture = makeStreamingTimelineFixture();
+  const sentence =
+    'Push feature/greeting and run this repository\'s hook file .husky/pre-push and its configured hook checks ("pnpm run checks") (contents 7b6cd23a)?';
+  const options = [
+    { decision: "cancel" as const, label: "Cancel" },
+    { decision: "decline" as const, label: "Decline" },
+    { decision: "acceptForSession" as const, label: "Always allow this session" },
+    { decision: "accept" as const, label: "Approve" },
+  ];
+  const ownRequest = RuntimeRequestId.make("own-approval");
+  const otherRequest = RuntimeRequestId.make("other-approval");
+  const approvals: PendingApproval[] = [
+    {
+      requestId: ownRequest,
+      requestKind: "mcp-elicitation",
+      createdAt: fixture.time(6),
+      detail: sentence,
+      pushHooks: {
+        branch: "feature/greeting",
+        files: [".husky/pre-push"],
+        commands: [{ name: "checks", command: "pnpm run checks" }],
+      },
+      options,
+      responseCapability: "live",
     },
+    {
+      requestId: otherRequest,
+      requestKind: "mcp-elicitation",
+      createdAt: fixture.time(6),
+      detail: "Deploy web to production?",
+      appName: "t3-code",
+      options,
+      responseCapability: "live",
+    },
+  ];
+  const onRespondToApproval = vi.fn(async () => {});
+  await using screen = await renderElement(
+    <MessagesTimeline
+      {...baseProps()}
+      timelineEntries={[]}
+      pendingApprovals={approvals}
+      canOperateThread
+      onRespondToApproval={onRespondToApproval}
+    />,
   );
+
+  const own = screen.getByRole("group", { name: "Push hooks approval" });
+  await expect.element(own).toBeVisible();
+  await expect
+    .element(own.getByText("Run this repository's push hooks?", { exact: true }))
+    .toBeVisible();
+  // The sentence another client would show, the digest and a server name are not on the card.
+  expect(own.element().textContent).not.toMatch(/contents|7b6cd23a|t3-code|Push feature/);
+  const details = own.element().querySelector('[data-approval-detail="push-hooks"]')!;
+  expect(
+    [...details.querySelectorAll("dt")].map((term, index) => [
+      term.textContent,
+      details.querySelectorAll("dd")[index]!.textContent,
+    ]),
+  ).toEqual([
+    ["Branch", "feature/greeting"],
+    ["Hook file", ".husky/pre-push"],
+    ["Configured hook", "checkspnpm run checks"],
+  ]);
+  expect([...details.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
+    "feature/greeting",
+    ".husky/pre-push",
+    "pnpm run checks",
+  ]);
+  await own.getByRole("button", { name: "Approve", exact: true }).click();
+  expect(onRespondToApproval).toHaveBeenLastCalledWith(ownRequest, "accept");
+
+  // Any other server keeps the whole message in code style and its name beneath.
+  const other = screen.getByRole("group", { name: "App access approval" });
+  await expect
+    .element(other.getByLabelText("App access request", { exact: true }))
+    .toHaveTextContent("Deploy web to production?");
+  await expect.element(other.getByText("t3-code", { exact: true })).toBeVisible();
+  expect(other.element().querySelector('[data-approval-detail="push-hooks"]')).toBeNull();
+  await other.getByRole("button", { name: "Decline", exact: true }).click();
+  expect(onRespondToApproval).toHaveBeenLastCalledWith(otherRequest, "decline");
 });
 
 it("keeps concurrent approvals actionable outside collapsed work and restores settled rows", async () => {
@@ -3417,7 +3692,7 @@ describe("MessagesTimeline work rows", () => {
     expect(screen.buttons("Snooze")).toHaveLength(0);
   });
 
-  it("expands every background group for a replied-to run and allows collapsing them again", async () => {
+  it("expands every background group for a cited run and allows collapsing them again", async () => {
     using _turnWorkFold = withTurnWorkFold();
     const fixture = makeStreamingTimelineFixture("Cited response after the second update.");
     const entries = deriveTimelineEntriesFromVisibleTurnItems({
@@ -3453,7 +3728,6 @@ describe("MessagesTimeline work rows", () => {
     const props = { ...baseProps(), timelineEntries };
     const citationRequest = {
       key: "second-background-group",
-      scope: "response" as const,
       citation: {
         version: 1 as const,
         environmentId: ENVIRONMENT_ID,

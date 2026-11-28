@@ -202,9 +202,9 @@ export function pullRequestPanelContext(
   },
 ): "page" | "thread" {
   if (thread.projectId !== surface.projectId) return "page";
+  const repository = surface.repository.toLowerCase();
   const links = visibleThreadPullRequests(thread.pullRequests ?? []);
   if (links.length > 0) {
-    const repository = surface.repository.toLowerCase();
     const target =
       surface.host === undefined
         ? null
@@ -219,7 +219,7 @@ export function pullRequestPanelContext(
   }
   const legacy = thread.linkedPullRequest ?? thread.branchPullRequest ?? null;
   return legacy !== null &&
-    legacy.repository === surface.repository &&
+    legacy.repository.toLowerCase() === repository &&
     legacy.number === surface.number
     ? "thread"
     : "page";
@@ -762,6 +762,12 @@ function markdownExcerpt(body: string): string | null {
   const visit = (node: Nodes) => {
     if (node.type === "text") words.push(node.value);
     if (node.type === "element" && node.tagName === "pre") return;
+    // Footnote markers and the footnote list are not part of the comment's prose.
+    if (
+      node.type === "element" &&
+      (node.properties.dataFootnotes !== undefined || node.properties.dataFootnoteRef !== undefined)
+    )
+      return;
     if (node.type === "element" && node.tagName === "blockquote") {
       const paragraph = node.children.find((child) => child.type === "element");
       const first = paragraph?.tagName === "p" ? paragraph.children[0] : undefined;
@@ -790,8 +796,8 @@ export function pullRequestLinkSubject(
   url: string,
   activity: Pick<PullRequestActivity, "comments" | "reviewThreads" | "commits">,
 ): PullRequestLinkSubject | null {
-  const oid = pullRequestLinkCommit(url)?.toLowerCase();
-  if (oid !== undefined) {
+  const oid = pullRequestLinkCommit(url);
+  if (oid !== null) {
     const commit = activity.commits.find((candidate) => candidate.oid.toLowerCase() === oid);
     return commit === undefined ? null : { kind: "commit", commit };
   }
@@ -1534,6 +1540,27 @@ const TOOL_NOISE = [
 
 const FAILURE_DETAIL_MAX_LENGTH = 320;
 
+/**
+ * The head a reader was first shown. A background refresh does not move it, so a merge or review
+ * keeps applying to the commits they read until they load the newer ones.
+ */
+export function seenPullRequestHead(
+  seen: { readonly key: string; readonly sha: string | undefined } | null,
+  key: string,
+  settledHead: string | undefined,
+) {
+  return seen !== null && seen.key === key && (seen.sha !== undefined || settledHead === undefined)
+    ? seen
+    : { key, sha: settledHead };
+}
+
+/** A merge lands the head the reader was shown, so it refuses a head that moved since. */
+export function mergeHeadPin(action: PullRequestAction, headSha: string | undefined) {
+  return (action === "merge" || action === "enable-auto-merge") && headSha !== undefined
+    ? { expectedHeadSha: headSha }
+    : {};
+}
+
 export function readableFailure(failure: unknown, hint: string): string {
   const raw =
     failure instanceof Error ? failure.message : typeof failure === "string" ? failure : "";
@@ -1720,4 +1747,37 @@ export function resolveDisplayedPullRequestDetail(input: {
   return link !== undefined && (link.authority ?? link.host) === input.reference.host.toLowerCase()
     ? input.cached
     : null;
+}
+
+const OBSERVATION_STAMPS = new Set(["observedAt", "readAt"]);
+
+/**
+ * Whether two reads of a pull request differ only in when they were observed. Every refresh
+ * restamps those, so the panel keeps the detail it shows instead of re-rendering its whole tree.
+ */
+export function samePullRequestReadExceptStamps(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return false;
+  }
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return (
+      left.length === right.length &&
+      left.every((item, index) => samePullRequestReadExceptStamps(item, right[index]))
+    );
+  }
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = (record: Record<string, unknown>) =>
+    Object.keys(record).filter((key) => !OBSERVATION_STAMPS.has(key));
+  const leftKeys = keys(leftRecord);
+  return (
+    leftKeys.length === keys(rightRecord).length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(rightRecord, key) &&
+        samePullRequestReadExceptStamps(leftRecord[key], rightRecord[key]),
+    )
+  );
 }

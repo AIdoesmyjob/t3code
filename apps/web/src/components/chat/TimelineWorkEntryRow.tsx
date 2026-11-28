@@ -1,7 +1,4 @@
-import {
-  thoughtPreviewMarkdown,
-  THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
-} from "./TimelineWorkEntryRow.logic";
+import { sliceThoughtPreviewSource, thoughtPreviewMarkdown } from "./TimelineWorkEntryRow.logic";
 import {
   TimelineAnsweredApprovalRow,
   TimelinePendingApprovalRow,
@@ -43,6 +40,7 @@ import {
   resolveViewedImageAsset,
   resolveWorkEntryToolPresentation,
   toolGroupAction,
+  workEntriesViewedImages,
   workEntryViewedImagePath,
 } from "@t3tools/client-runtime/work-log/presentation";
 import { t3ToolResultIndicatesFailure } from "@t3tools/client-runtime/t3ToolSummary";
@@ -209,6 +207,7 @@ export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<Time
           threadRef={ctx.threadRef ?? undefined}
           skills={ctx.skills}
           isStreaming={isStreaming(entry)}
+          streamingId={entry.id}
           headingLevelOffset={MESSAGE_HEADING_LEVEL}
           onUseArtifactTemplate={ctx.onUseArtifactTemplate}
           onImageExpand={ctx.onImageExpand}
@@ -373,7 +372,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
           </p>
         ) : null}
         {verificationUrl !== undefined ? (
-          <div className="ms-7 pb-1">
+          <div className="ms-7.5 pb-1">
             <Button
               size="xs"
               variant="secondary"
@@ -459,9 +458,10 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
         ? (skill.args ?? null)
         : undefined;
   const viewedImagePath = workEntryViewedImagePath(workEntry);
+  const shownImage = workEntriesViewedImages([workEntry])[0];
   const viewedImage =
-    viewedImagePath && threadRef
-      ? resolveViewedImageAsset(viewedImagePath, { threadId: threadRef.threadId, workspaceRoot })
+    shownImage && threadRef
+      ? resolveViewedImageAsset(shownImage.path, { threadId: threadRef.threadId, workspaceRoot })
       : null;
   const groupViewedImages = groupView?.viewedImages;
   // Images in this entry's expanded body page through the group's viewed images.
@@ -582,10 +582,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               {isReasoning && !expanded ? (
                 <ChatMarkdown
                   inline
-                  text={(workEntry.detail ?? previewText).slice(
-                    0,
-                    THOUGHT_PREVIEW_SOURCE_MAX_LENGTH,
-                  )}
+                  text={sliceThoughtPreviewSource(workEntry.detail ?? previewText)}
                   cwd={ctx.markdownCwd}
                   parseRawHtml={false}
                   extensions={
@@ -693,6 +690,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
             <ChatMarkdownAssetImage
               environmentId={threadRef.environmentId}
               resource={viewedImage.resource}
+              pending={shownImage?.pending}
               alt={viewedImage.alt}
               srcFragment={viewedImage.srcFragment}
               workspaceRoot={workspaceRoot}
@@ -723,7 +721,7 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
                   environmentId={ctx.activeThreadEnvironmentId}
                   onImageExpand={expandImage}
                   source={ctx.turnItemSource}
-                  showImages={toolGroupAction(workEntry) !== "read"}
+                  showImages={viewedImage === null}
                 />
               ) : null}
             </>

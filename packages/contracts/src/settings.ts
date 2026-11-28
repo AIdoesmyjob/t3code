@@ -356,6 +356,10 @@ export const SurfaceStyle = Schema.Literals(SURFACE_STYLES);
 export type SurfaceStyle = typeof SurfaceStyle.Type;
 const DEFAULT_SURFACE_STYLE: SurfaceStyle = "gradient-rim";
 
+/** How wide inline HTML previews grow: "chat" keeps them in the chat column. */
+export const HtmlPreviewWidth = Schema.Literals(["chat", "wide", "full"]);
+export type HtmlPreviewWidth = typeof HtmlPreviewWidth.Type;
+
 /** How the composer shows reasoning effort: the level's name, or rising bars. */
 export const EffortDisplay = Schema.Literals(["label", "bars"]);
 export type EffortDisplay = typeof EffortDisplay.Type;
@@ -519,6 +523,9 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed("red-green" as const)),
   ),
   chatWidth: ChatWidth.pipe(Schema.withDecodingDefault(Effect.succeed("comfortable" as const))),
+  htmlPreviewWidth: HtmlPreviewWidth.pipe(
+    Schema.withDecodingDefault(Effect.succeed("chat" as const)),
+  ),
   effortDisplay: EffortDisplay.pipe(Schema.withDecodingDefault(Effect.succeed("label" as const))),
   loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** macOS desktop: a three-finger swipe moves one column or workspace (needs the system's "Swipe between pages" on three fingers). */
@@ -1069,7 +1076,7 @@ export const AntigravitySettings = makeProviderSettingsSchema(
 export type AntigravitySettings = typeof AntigravitySettings.Type;
 
 export const UsageLimitSourceConfig = Schema.Struct({
-  kind: Schema.Literal("cliproxy"),
+  kind: Schema.Literals(["cliproxy", "http"]),
   label: Schema.optional(TrimmedNonEmptyString),
   url: TrimmedNonEmptyString,
   managementKey: SettingsSecretValue.pipe(
@@ -2238,6 +2245,7 @@ export const ClientSettingsPatch = Schema.Struct({
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),
   chatWidth: Schema.optionalKey(ChatWidth),
+  htmlPreviewWidth: Schema.optionalKey(HtmlPreviewWidth),
   effortDisplay: Schema.optionalKey(EffortDisplay),
   loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
   layoutThreeFingerSwipe: Schema.optionalKey(Schema.Boolean),

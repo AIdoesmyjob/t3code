@@ -11,14 +11,11 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 
 import type { ComposerThreadTarget, DraftId } from "../../composerDraftStore";
-import { useT3ProjectFileScripts } from "../../hooks/useT3ProjectFileScripts";
+import { useT3ProjectFileState } from "../../hooks/useT3ProjectFileScripts";
 import { type EnvMode, type EnvironmentOption } from "../BranchToolbar.logic";
 import { BranchToolbar, type BranchToolbarHandle } from "../BranchToolbar";
 import GitActionsControl from "../GitActionsControl";
-import ProjectScriptsControl, {
-  type NewProjectScriptInput,
-  type ProjectScriptActionResult,
-} from "../ProjectScriptsControl";
+import ProjectScriptsControl, { type ProjectScriptActionResult } from "../ProjectScriptsControl";
 import { T, useGT } from "gt-react";
 import { useImperativeHandle, useRef, useState, type ComponentProps, type Ref } from "react";
 import { flushSync } from "react-dom";
@@ -30,6 +27,7 @@ import {
 import { requestWorkspaceFocus } from "../../lib/workspaceFocus";
 import { ThreadDetailsCard } from "./ThreadDetailsCard";
 import { OpenInPicker } from "./OpenInPicker";
+import { ThreadDetailsMachineLoad } from "./ThreadDetailsMachineLoad";
 import { ThreadAutomationsPanel } from "./ThreadAutomationsPanel";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
 import { ThreadRepositorySections } from "./ThreadRepositorySections";
@@ -39,6 +37,8 @@ import {
   ThreadDetailsUsage,
   type ThreadDetailsUsageInput,
 } from "./ThreadDetailsUsage";
+import { ThreadDetailsTasks } from "./ThreadDetailsTasks";
+import type { TaskListPlan } from "../../session-logic";
 import { ThreadDetailsItemsMenuItems } from "./ThreadDetailsItemsMenu";
 import { resolveThreadDetailsVisibility } from "./threadDetailsItems";
 import { useClientSettings } from "../../hooks/useSettings";
@@ -97,15 +97,13 @@ interface ThreadDetailsPanelProps extends Pick<
   onComposerFocusRequest: () => void;
   onOpenChanges?: () => void;
   onRunProjectScript: (script: ProjectScript) => void;
-  onAddProjectScript: (input: NewProjectScriptInput) => Promise<ProjectScriptActionResult>;
-  onUpdateProjectScript: (
-    scriptId: string,
-    input: NewProjectScriptInput,
-  ) => Promise<ProjectScriptActionResult>;
+  onAddProjectScript: ComponentProps<typeof ProjectScriptsControl>["onAddScript"];
+  onUpdateProjectScript: ComponentProps<typeof ProjectScriptsControl>["onUpdateScript"];
   onDeleteProjectScript: (scriptId: string) => Promise<ProjectScriptActionResult>;
   usage: ThreadDetailsUsageInput;
   onCompactContext?: () => void;
   compactUnavailableReason?: string | null;
+  taskList: TaskListPlan | null;
 }
 
 export function ThreadDetailsPanel({ ref, ...props }: ThreadDetailsPanelProps) {
@@ -148,7 +146,7 @@ export function ThreadDetailsPanel({ ref, ...props }: ThreadDetailsPanelProps) {
     },
   }));
   const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
-  const fileScripts = useT3ProjectFileScripts(
+  const t3File = useT3ProjectFileState(
     props.environmentId,
     props.activeProjectScripts && visible.scripts ? props.gitCwd : null,
   );
@@ -234,10 +232,10 @@ export function ThreadDetailsPanel({ ref, ...props }: ThreadDetailsPanelProps) {
         setMenuPosition({ x: event.clientX, y: event.clientY });
       }}
     >
-      {(density) => {
+      {({ cut, reveal }) => {
         const show = {
-          environment: density === "full" && visible.environment,
-          openIn: density !== "essential" && visible.openIn && props.showOpenInPicker,
+          environment: visible.environment,
+          openIn: visible.openIn && props.showOpenInPicker,
           scripts: visible.scripts && props.activeProjectScripts !== undefined,
           branch: offersGit && folderIsRepo && visible.branch,
           // Without a branch selector, linked pull requests still need somewhere to show.
@@ -249,12 +247,17 @@ export function ThreadDetailsPanel({ ref, ...props }: ThreadDetailsPanelProps) {
             (folderIsRepo || (!tracksFolders && taskFolder === null)) &&
             (visible.gitActions || (visible.changes && folderIsRepo)),
           // Also for a project that tracks nothing: a thread can change a submodule.
-          repositories: offersGit && density !== "essential" && visible.gitActions,
+          repositories: offersGit && visible.gitActions,
         };
+        const workspaceShown =
+          Object.values(show).some(Boolean) ||
+          visible.usage ||
+          visible.context ||
+          visible.machineLoad;
         return (
           <>
             <div className="group/details-items thread-details-stack flex flex-col gap-1">
-              {Object.values(show).some(Boolean) || visible.usage || visible.context ? (
+              {workspaceShown ? (
                 <section
                   aria-label={gt("Workspace")}
                   data-thread-details-card
@@ -334,48 +337,65 @@ export function ThreadDetailsPanel({ ref, ...props }: ThreadDetailsPanelProps) {
                         ) : null}
                       </div>
                     ) : null}
-                    <div ref={setPrRowsContainer} />
+                    <div
+                      ref={setPrRowsContainer}
+                      data-thread-details-unit="pullRequests"
+                      hidden={cut.has("pullRequests")}
+                    />
                     {show.pullRequests ? (
-                      <ThreadDetailsThreadPrRows
-                        threadRef={activeThreadRef}
-                        project={project}
-                        composerTarget={props.composerDraftTarget}
-                      />
+                      <div data-thread-details-unit="pullRequests" hidden={cut.has("pullRequests")}>
+                        <ThreadDetailsThreadPrRows
+                          threadRef={activeThreadRef}
+                          project={project}
+                          composerTarget={props.composerDraftTarget}
+                        />
+                      </div>
                     ) : null}
                     {show.repositories ? (
-                      <ThreadRepositorySections
-                        environmentId={props.environmentId}
-                        threadId={props.threadId}
-                        projectId={props.projectId}
-                        isServerThread={props.isServerThread}
-                        threadCwd={props.gitCwd}
-                        taskFolder={taskFolder}
-                        reachesTracked={
-                          props.worktreePath === null ? tracksFolders : taskFolder !== null
-                        }
-                        onTaskFolderChange={taskFolderQuery.refresh}
-                        explainsEmpty={!folderIsRepo}
-                        showActions={visible.gitActions}
-                      />
+                      <div data-thread-details-unit="repositories" hidden={cut.has("repositories")}>
+                        <ThreadRepositorySections
+                          environmentId={props.environmentId}
+                          threadId={props.threadId}
+                          projectId={props.projectId}
+                          isServerThread={props.isServerThread}
+                          threadCwd={props.gitCwd}
+                          taskFolder={taskFolder}
+                          reachesTracked={
+                            props.worktreePath === null ? tracksFolders : taskFolder !== null
+                          }
+                          onTaskFolderChange={taskFolderQuery.refresh}
+                          explainsEmpty={!folderIsRepo}
+                          showActions={visible.gitActions}
+                        />
+                      </div>
                     ) : null}
                     {show.scripts && props.activeProjectScripts ? (
-                      <ProjectScriptsControl
-                        environmentId={props.environmentId}
-                        displayMode="panel"
-                        scripts={props.activeProjectScripts}
-                        fileScripts={fileScripts}
-                        preferredScriptId={props.preferredScriptId}
-                        threadId={props.threadId}
-                        onRunScript={props.onRunProjectScript}
-                        onAddScript={props.onAddProjectScript}
-                        onUpdateScript={props.onUpdateProjectScript}
-                        onDeleteScript={props.onDeleteProjectScript}
-                      />
+                      <div data-thread-details-unit="scripts" hidden={cut.has("scripts")}>
+                        <ProjectScriptsControl
+                          environmentId={props.environmentId}
+                          displayMode="panel"
+                          scripts={props.activeProjectScripts}
+                          fileScripts={t3File.scripts}
+                          onActionsMenuOpen={t3File.refresh}
+                          preferredScriptId={props.preferredScriptId}
+                          threadId={props.threadId}
+                          onRunScript={props.onRunProjectScript}
+                          onAddScript={props.onAddProjectScript}
+                          onUpdateScript={props.onUpdateProjectScript}
+                          onDeleteScript={props.onDeleteProjectScript}
+                        />
+                      </div>
                     ) : null}
                   </div>
-                  {visible.usage || visible.context ? (
-                    <div className="flex flex-col gap-1.5 px-0.5 pt-1.5 pb-0.5">
-                      {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
+                  {visible.usage || visible.context || visible.machineLoad ? (
+                    <div
+                      className="flex flex-col gap-1.5 px-0.5 pt-1.5 pb-0.5"
+                      data-thread-details-unit="usage"
+                      hidden={cut.has("usage")}
+                    >
+                      {visible.usage ? (
+                        <ThreadDetailsUsage {...props.usage} environmentId={props.environmentId} />
+                      ) : null}
                       {visible.context ? (
                         <div
                           className={visible.usage ? "border-t border-divider pt-1.5" : undefined}
@@ -387,29 +407,54 @@ export function ThreadDetailsPanel({ ref, ...props }: ThreadDetailsPanelProps) {
                           />
                         </div>
                       ) : null}
+                      {visible.machineLoad ? (
+                        <div
+                          className={
+                            visible.usage || visible.context
+                              ? "border-t border-divider pt-1.5"
+                              : undefined
+                          }
+                        >
+                          <ThreadDetailsMachineLoad environmentId={props.environmentId} />
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
+                  {reveal}
                 </section>
               ) : null}
 
-              {density === "full" && !props.draftId && visible.servers ? (
-                <ThreadServersPanel environmentId={props.environmentId} threadId={props.threadId} />
-              ) : null}
-              {density === "full" && !props.draftId && visible.automations ? (
-                <ThreadAutomationsPanel
-                  environmentId={props.environmentId}
-                  threadId={props.threadId}
-                />
-              ) : null}
+              {/* Cut as one: the reveal row lives in the workspace tray, so no card may outlast a cut. */}
+              <div
+                className="contents"
+                data-thread-details-unit={workspaceShown ? "cards" : undefined}
+                hidden={workspaceShown && cut.has("cards")}
+              >
+                {!props.draftId && visible.servers ? (
+                  <ThreadServersPanel
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                  />
+                ) : null}
+                {!props.draftId && visible.automations ? (
+                  <ThreadAutomationsPanel
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                  />
+                ) : null}
 
-              {density === "full" && !props.draftId && (visible.lineage || visible.sideChats) ? (
-                <ThreadRelationshipsPanel
-                  environmentId={props.environmentId}
-                  threadId={props.threadId}
-                  showLineage={visible.lineage}
-                  showSideChats={visible.sideChats}
-                />
-              ) : null}
+                {!props.draftId && (visible.lineage || visible.sideChats) ? (
+                  <ThreadRelationshipsPanel
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    showLineage={visible.lineage}
+                    showSideChats={visible.sideChats}
+                  />
+                ) : null}
+                {visible.tasks && props.taskList ? (
+                  <ThreadDetailsTasks plan={props.taskList} compact={false} />
+                ) : null}
+              </div>
 
               {/* Shown only when no section above has content, so an emptied card can be refilled. */}
               <div className="p-1 group-has-[section]/details-items:hidden">

@@ -5,7 +5,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   canCloseLayoutTab,
   closeLayoutTab,
+  closeLayoutTabs,
   closedLayoutTabIds,
+  createLayoutLauncherContent,
   moveLayoutTabToNewWorkspace,
   createLayoutState,
   decodePersistedLayoutState,
@@ -15,6 +17,7 @@ import {
   isBlankLayoutWorkspace,
   layoutChatSwaps,
   moveLayoutTab,
+  moveLayoutTabs,
   moveLayoutTabToWorkspace,
   openLayoutGhostChat,
   openLayoutKeptTab,
@@ -656,6 +659,26 @@ describe("replaceLayoutTabContent", () => {
   });
 });
 
+describe("selectLayoutPaneSlots", () => {
+  it("keeps a full-width column on screen when the strip narrows after it was arranged", () => {
+    // Arranged with the sidebar closed, then the sidebar opens and the strip narrows.
+    const state: LayoutState = {
+      focusedWorkspaceId: "workspace",
+      workspaces: [
+        {
+          id: "workspace",
+          name: null,
+          focusedPaneId: null,
+          cameraWidth: 1300,
+          columns: [column("chat", 1), column("terminal", 0.5)],
+        },
+      ],
+    };
+    expect(drawnRightEdges(state, 1300)).toEqual([1300, 1950]);
+    expect(drawnRightEdges(state, 1000)).toEqual([1000, 1500]);
+  });
+});
+
 describe("resizeLayoutColumnEdge", () => {
   it("keeps the dragged edge under the pointer when the strip was arranged wider than the window", () => {
     const viewportWidth = 1000;
@@ -737,6 +760,8 @@ describe("selectLayoutStripSize", () => {
       { cameraWidth: 1200, widths: [0.5, 0.55] },
       { cameraWidth: 1400, widths: [0.4, 0.4] },
       { cameraWidth: 900, widths: [1] },
+      { cameraWidth: 1600, widths: [1, 0.5] },
+      { cameraWidth: 1700, widths: [0.5, 0.5, 0.5] },
     ];
     const modes: LayoutWhenNoRoom[] = ["shrink-then-scroll", "always-scroll", "always-shrink"];
     for (const { cameraWidth, widths } of workspaces) {
@@ -748,10 +773,13 @@ describe("selectLayoutStripSize", () => {
         columns: widths.map((width, index) => column(`c${index}`, width)),
       };
       for (const whenNoRoom of modes) {
-        const { share, minPx } = selectLayoutStripSize(workspace, whenNoRoom);
+        const { share, minPx, maxShare } = selectLayoutStripSize(workspace, whenNoRoom);
         for (let width = 700; width <= 2200; width += 25) {
           const { stripWidth } = selectLayoutPaneSlots(workspace, { width, whenNoRoom });
-          expect(Math.max(share * width, minPx)).toBeCloseTo(stripWidth * width, 6);
+          expect(Math.min(maxShare * width, Math.max(share * width, minPx))).toBeCloseTo(
+            stripWidth * width,
+            6,
+          );
         }
       }
     }
@@ -887,6 +915,90 @@ describe("moveLayoutTab", () => {
       ["chat-pane", expect.closeTo(0.55)],
       ["other-pane", expect.closeTo(0.45)],
     ]);
+  });
+
+  it("moves a multi-selected group together across reorder, pane move, and split", () => {
+    const a: LayoutTabContent = { kind: "issues" };
+    const b: LayoutTabContent = { kind: "pull-requests" };
+    const c: LayoutTabContent = { kind: "workflows" };
+    let layout = openLayoutTab(createLayoutState(), chat);
+    layout = openLayoutTab(layout, a, { placement: "active-pane", position: "end" });
+    layout = openLayoutTab(layout, b, { placement: "active-pane", position: "end" });
+    layout = openLayoutTab(layout, c, { placement: "active-pane", position: "end" });
+    const pane = layout.workspaces[0]!.columns[0]!.panes[0]!;
+    const [t0, t1, t2, t3] = pane.tabs;
+    layout = focusLayoutTab(layout, t0!.id);
+
+    const reordered = moveLayoutTabs(layout, [t0!.id, t2!.id], {
+      kind: "pane",
+      paneId: pane.id,
+      index: 2,
+    });
+    expect(reordered.workspaces[0]!.columns[0]!.panes[0]!.tabs.map((tab) => tab.id)).toEqual([
+      t1!.id,
+      t3!.id,
+      t0!.id,
+      t2!.id,
+    ]);
+    expect(selectFocusedTab(reordered)?.id).toBe(t0!.id);
+
+    const split = moveLayoutTabs(reordered, [t0!.id, t2!.id], {
+      kind: "split",
+      paneId: pane.id,
+      side: "right",
+    });
+    expect(split.workspaces[0]!.columns).toHaveLength(2);
+    expect(split.workspaces[0]!.columns[0]!.panes[0]!.tabs.map((tab) => tab.id)).toEqual([
+      t1!.id,
+      t3!.id,
+    ]);
+    expect(split.workspaces[0]!.columns[1]!.panes[0]!.tabs.map((tab) => tab.id)).toEqual([
+      t0!.id,
+      t2!.id,
+    ]);
+    expect(selectFocusedTab(split)?.id).toBe(t0!.id);
+  });
+});
+
+describe("closeLayoutTabs", () => {
+  it("closes selected tabs atomically and keeps the fallback active slot", () => {
+    const a: LayoutTabContent = { kind: "issues" };
+    const b: LayoutTabContent = { kind: "pull-requests" };
+    const c: LayoutTabContent = { kind: "workflows" };
+    let layout = openLayoutTab(createLayoutState(), chat);
+    layout = openLayoutTab(layout, a, { placement: "active-pane", position: "end" });
+    layout = openLayoutTab(layout, b, { placement: "active-pane", position: "end" });
+    layout = openLayoutTab(layout, c, { placement: "active-pane", position: "end" });
+    const [t0, t1, t2, t3] = layout.workspaces[0]!.columns[0]!.panes[0]!.tabs;
+    layout = focusLayoutTab(layout, t2!.id);
+
+    const after = closeLayoutTabs(layout, [t1!.id, t2!.id]);
+    expect(after.workspaces[0]!.columns[0]!.panes[0]!.tabs.map((tab) => tab.id)).toEqual([
+      t0!.id,
+      t3!.id,
+    ]);
+    expect(selectFocusedTab(after)?.id).toBe(t3!.id);
+
+    const blank = closeLayoutTabs(after, [t0!.id, t3!.id]);
+    expect(blank.workspaces[0]!.columns[0]!.panes[0]!.tabs).toHaveLength(1);
+    expect(blank.workspaces[0]!.columns[0]!.panes[0]!.tabs[0]!.content.kind).toBe("launcher");
+  });
+
+  it("collapses multiple blank launchers in the lone workspace down to one when all close", () => {
+    let layout = createLayoutState();
+    layout = openLayoutTab(layout, createLayoutLauncherContent(null), {
+      placement: "active-pane",
+      position: "end",
+    });
+    const tabs = layout.workspaces[0]!.columns[0]!.panes[0]!.tabs;
+    expect(tabs).toHaveLength(2);
+
+    const after = closeLayoutTabs(
+      layout,
+      tabs.map((tab) => tab.id),
+    );
+    expect(after.workspaces[0]!.columns[0]!.panes[0]!.tabs).toHaveLength(1);
+    expect(after.workspaces[0]!.columns[0]!.panes[0]!.tabs[0]!.content.kind).toBe("launcher");
   });
 });
 

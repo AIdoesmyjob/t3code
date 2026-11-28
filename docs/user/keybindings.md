@@ -64,7 +64,9 @@ Join modifiers and keys with `+` (`mod`, `cmd`/`meta`, `ctrl`/`control`, `alt`/`
 
 ### When conditions
 
-Available context keys: `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, `rightPanelOpen`, `modelPickerOpen`, `usagePageOpen`, `composerFocus`, `draftThreadRoute`, `turnRunning`, `composerEmpty`, `editableFocus`, `isWeb`, `isDesktop`. Unknown keys evaluate to `false`.
+Available context keys: `terminalFocus`, `terminalOpen`, `previewFocus`, `previewOpen`, `rightPanelOpen`, `modelPickerOpen`, `usagePageOpen`, `composerFocus`, `draftThreadRoute`, `turnRunning`, `assistantSelection`, `composerEmpty`, `editableFocus`, `isWeb`, `isDesktop`, `isMac`. Unknown keys evaluate to `false`.
+
+In a thread, `rightPanelOpen` is true while a side pane is open (`mod+t` opens a new tab in the focused pane), `assistantSelection` is true while a citable passage of an assistant response is selected, and `isMac` is true on macOS.
 
 Combine with `!`, `&&`, `||`, and parentheses:
 
@@ -83,13 +85,13 @@ The last matching rule in `keybindings.json` wins, even across different command
 - `thread.stop`: Interrupts the running turn (unbound by default).
 - `thread.regenerateTitle`: Regenerates the focused thread's title (unbound by default).
 - `thread.undo` (`mod+z`): Undoes recent sidebar actions (unpin, settle, snooze, archive, discard draft) within 5 seconds, including consecutive actions of the same kind.
-- `navigation.back` (`mod+[`) / `navigation.forward` (`mod+]`): Moves through visited pages.
+- `navigation.back` (`mod+[`) / `navigation.forward` (`mod+]`): Moves through visited pages, like the back and forward buttons next to the sidebar toggle (stops at the first page opened in T3 Code, so in a browser they never leave the app).
 - `chat.new` / `chat.newLocal` / `chat.newWithoutProject` (`mod+alt+n`): Start new threads using your [new-thread defaults](./thread-sidebar.md#start-a-thread) or [without a project](./thread-sidebar.md#start-without-a-project).
 
 ## Reserved and platform shortcuts
 
-- `mod+w` (desktop): Closes the focused terminal or active right-panel tab without closing the window. On web, browsers intercept `mod+w`—rebind `rightPanel.close` and `terminal.close` (e.g. `alt+w`).
-- `mod+shift+t`: Reopens the last closed panel tab (files, diffs, PRs, browsers, devices) in order. Browser tabs reopen as fresh sessions. Rebind on web if your browser intercepts it.
+- `mod+w` (desktop) closes the focused terminal, the selected range of side-pane tabs, the active side-pane tab, or the focused tab; it never closes the window. On web, browsers intercept `mod+t`, `mod+n`, and `mod+w`; use `+`, the tab menu, or rebind `tab.new`, `tab.close`, and `terminal.close` (`mod+alt+w` also closes a tab). See [Tabs, panes and workspaces](./layout.md) for layout shortcuts.
+- `mod+shift+t`: Reopens the last closed tab across the app (files, diffs, PRs, browsers, devices) in order. Browser tabs reopen as fresh sessions, and incognito tabs can reopen until you reload or quit. Rebind on web if your browser intercepts it.
 - Keep `!terminalFocus` when remapping shortcuts that shouldn't intercept terminal input. `sidebar.toggle` ignores `Ctrl+B` inside terminals so `tmux` keeps its prefix (`Cmd+B` still works on macOS).
 
 ## Desktop quit shortcut
