@@ -55,6 +55,9 @@ const extension: OpenVsxThemeExtension = {
   license: "MIT",
 };
 
+const shownDownloadCount = () =>
+  document.querySelector("[data-slot=tooltip-popup] span > span")?.textContent;
+
 describe("ThemeImportDialog", () => {
   // StrictMode replays ref attach/detach on mount, which must not end the session.
   it("searches Open VSX under StrictMode", async () => {
@@ -121,16 +124,12 @@ describe("ThemeImportDialog", () => {
       />,
     );
 
-    // The entry button's name is translated, so it is found by its search icon.
-    const openSearch = [...document.querySelectorAll("button")].find((button) =>
-      button.querySelector(".lucide-search"),
-    )!;
-    await userEvent.click(openSearch);
+    await userEvent.click(page.getByRole("button", { name: "Search community themes" }));
     await userEvent.fill(page.getByRole("searchbox"), "night");
 
     await userEvent.hover(page.getByRole("searchbox"));
     await userEvent.hover(page.getByText("acme", { exact: true }));
-    await expect.element(page.getByRole("tooltip")).toHaveTextContent("1 download");
+    await vi.waitFor(() => expect(shownDownloadCount()).toBe("1 download"));
   });
 
   it("reformats the shown download count when the app language changes", async () => {
@@ -167,13 +166,14 @@ describe("ThemeImportDialog", () => {
           />
         </I18nProvider>,
       );
+      await userEvent.click(page.getByRole("button", { name: "Search community themes" }));
       await userEvent.fill(page.getByRole("searchbox"), "night");
       await userEvent.hover(page.getByRole("searchbox"));
-    await userEvent.hover(page.getByText("acme", { exact: true }));
-      await expect.element(page.getByRole("tooltip")).toHaveTextContent("1.2M downloads");
+      await userEvent.hover(page.getByText("acme", { exact: true }));
+      await vi.waitFor(() => expect(shownDownloadCount()).toBe("1.2M downloads"));
 
       await setLanguage("ru");
-      await expect.element(page.getByRole("tooltip")).toHaveTextContent(/1,2\s+млн/);
+      await vi.waitFor(() => expect(shownDownloadCount()).toMatch(/^Скачиваний: 1,2\s+млн$/));
     } finally {
       await setLanguage("en");
       __resetClientSettingsPersistenceForTests();

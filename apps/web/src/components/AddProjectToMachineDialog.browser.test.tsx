@@ -6,11 +6,13 @@ import { page, userEvent } from "vite-plus/test/browser";
 import { act, render } from "../../test/render";
 
 const clone = vi.hoisted(() => vi.fn());
+const copyFolder = vi.hoisted(() => vi.fn());
 const snapshots = vi.hoisted(() => vi.fn<() => ReadonlyArray<ProjectCloneSnapshot>>());
 
 vi.mock(import("../lib/addProjectToMachine"), async (original) => ({
   ...(await original()),
   addProjectToMachine: clone,
+  copyLocalProjectToMachine: copyFolder,
 }));
 vi.mock(import("../state/projectClones"), async (original) => ({
   ...(await original()),
@@ -52,6 +54,7 @@ vi.mock(import("../state/entities"), async (original) => {
 });
 vi.mock(import("../state/environments"), async (original) => ({
   ...(await original()),
+  usePrimaryEnvironmentId: () => EnvironmentId.make("environment-1"),
   useEnvironments: (() => ({
     environments: [
       { environmentId: EnvironmentId.make("environment-2") },
@@ -117,7 +120,7 @@ const PROJECT = {
   id: projectRef.projectId,
   title: "Repo",
   workspaceRoot: "/repo",
-  repositoryIdentity: null,
+  repositoryIdentity: { locator: { remoteUrl: "https://example.com/repo.git" } },
 };
 
 function CloneDialogWithToasts() {
@@ -176,6 +179,40 @@ describe("AddProjectToMachineDialog", () => {
     reply.resolve(projectId);
     await expect.element(progress).toBeVisible();
     await expect.element(page.getByText(/Clone Next repo/)).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect
+      .element(page.getByRole("dialog", { name: "Add to another machine" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("keeps the replacement open after a dismissed local folder copy finishes", async () => {
+    project.setup({ ...PROJECT, repositoryIdentity: null });
+    const reply = Promise.withResolvers<ProjectId>();
+    copyFolder.mockReturnValueOnce(reply.promise);
+    await using _screen = await render(<AddProjectToMachineDialogHost />);
+    await act(() => openAddProjectToMachine({ projectRef, targetEnvironmentId: null }));
+    await page.getByRole("textbox", { name: /^Folder on/ }).fill("/copied");
+    await userEvent.keyboard("{Enter}");
+    expect(copyFolder).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: { environmentId, cwd: "/repo" },
+        target: { environmentId: "environment-2", label: "Remote machine" },
+      }),
+    );
+    await userEvent.keyboard("{Escape}");
+    await act(() => {
+      project.set({ ...PROJECT, id: nextProjectRef.projectId, title: "Next repo" });
+      openAddProjectToMachine({ projectRef: nextProjectRef, targetEnvironmentId: null });
+    });
+    await act(async () => {
+      reply.resolve(ProjectId.make("copied"));
+      await reply.promise;
+    });
+    await expect.element(page.getByText(/Clone Next repo/)).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect
+      .element(page.getByRole("dialog", { name: "Add to another machine" }))
+      .not.toBeInTheDocument();
   });
 
   it("closes when its project goes away", async () => {

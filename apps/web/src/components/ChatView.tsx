@@ -4297,6 +4297,8 @@ export default function ChatView(props: ChatViewProps) {
                               setThreadError={setThreadError}
                               onExpandImage={onExpandTimelineImageStable}
                               onFileOpen={openFileAttachmentStable}
+                              canMoveEditingQueuedMessageToStash={queuedRunEdit.canMoveEditToStash}
+                              onMoveEditingQueuedMessageToStash={queuedRunEdit.removeEditedRun}
                               editingQueuedAttachments={queuedRunEdit.editingAttachments}
                               removedEditingQueuedAttachments={
                                 queuedRunEdit.removedEditingAttachments
@@ -4371,10 +4373,6 @@ export default function ChatView(props: ChatViewProps) {
                                     className="ms-auto flex min-w-0 flex-1 justify-end"
                                   />
                                 }
-                                canMoveEditingQueuedMessageToStash={
-                                  queuedRunEdit.canMoveEditToStash
-                                }
-                                onMoveEditingQueuedMessageToStash={queuedRunEdit.removeEditedRun}
                               />
                             </div>
                           )}

@@ -1428,7 +1428,11 @@ const make = Effect.gen(function* () {
         requestAuth(tab, event.requestId, event.authChallenge),
       );
     // Desktop tabs keep the desktop shell's own handling of HTTP auth.
-    await installPdfDocumentNavigation(cdp, { handleAuthRequests: !desktop }, desktop ? undefined : localAssets);
+    await installPdfDocumentNavigation(
+      cdp,
+      { handleAuthRequests: !desktop },
+      desktop ? undefined : localAssets,
+    );
     // The desktop's page is already a normal browser. A popup's first request
     // precedes this override, so its Sec-CH-UA brands still name HeadlessChrome.
     if (!desktop) await presentAsChrome(cdp, host);

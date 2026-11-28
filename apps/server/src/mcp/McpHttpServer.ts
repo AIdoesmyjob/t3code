@@ -1653,12 +1653,14 @@ const layerToolExposure = Layer.effect(
     const server = yield* McpServer.McpServer;
     return McpToolExposure.make(
       () =>
-        server.tools.filter(({ tool }) => !tool.name.startsWith(SKOFO_COMMANDER_TOOL_PREFIX)).map(({ tool, annotations }) => ({
-          name: tool.name,
-          description: tool.description ?? "",
-          inputSchema: tool.inputSchema,
-          isEnabled: () => isToolRegistrationEnabled(annotations),
-        })),
+        server.tools
+          .filter(({ tool }) => !tool.name.startsWith(SKOFO_COMMANDER_TOOL_PREFIX))
+          .map(({ tool, annotations }) => ({
+            name: tool.name,
+            description: tool.description ?? "",
+            inputSchema: tool.inputSchema,
+            isEnabled: () => isToolRegistrationEnabled(annotations),
+          })),
       () => server.notifications["notifications/tools/list_changed"]({}),
     );
   }),

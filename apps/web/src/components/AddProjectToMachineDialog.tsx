@@ -249,8 +249,10 @@ function AddProjectToMachineDialog({ request }: { request: AddProjectToMachineRe
           title: project.title,
           destinationPath: destinationPath.trim(),
         });
-        close();
-        openClonedProject(scopeProjectRef(target.environmentId, projectId));
+        if (useRequest.getState().request === request) {
+          close();
+          openClonedProject(scopeProjectRef(target.environmentId, projectId));
+        }
       } catch (cause) {
         // oxlint-disable-next-line t3code/no-untranslated-copy -- Skofo fork copy, English only
         setError(cause instanceof Error ? cause.message : "Could not copy the project.");

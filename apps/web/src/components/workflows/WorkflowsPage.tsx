@@ -1,3 +1,4 @@
+import { isElectron } from "~/env";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   workflowReferenceIssue,

@@ -1636,6 +1636,7 @@ async function renderRunningThread(name: string) {
   await router.load();
   const app = await render(<AppRoot router={router} />, {
     // AppRoot brings its own router.
+    container: appContainer(),
     router: false,
   });
   await expect.element(page.getByText(`Answer 0 for ${thread.id}.`)).toBeVisible();
@@ -1652,6 +1653,7 @@ async function renderRunningThread(name: string) {
 }
 
 it("/clear after an unresolved context reference shows plain send during a running turn", async () => {
+  await using _viewport = await appViewport();
   await using view = await renderRunningThread("clear-dangling-reference");
   await userEvent.click(view.editor);
   const clipboardData = new DataTransfer();
@@ -1668,6 +1670,7 @@ it("/clear after an unresolved context reference shows plain send during a runni
 });
 
 it("/clear with a still-compressing image offers to steer or queue during a running turn", async () => {
+  await using _viewport = await appViewport();
   await using view = await renderRunningThread("clear-compressing-image");
   const compressed = Promise.withResolvers<void>();
   compression.gate = compressed.promise;

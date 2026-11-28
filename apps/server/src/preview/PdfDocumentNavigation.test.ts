@@ -160,7 +160,9 @@ describe("local asset routing", () => {
       "<title>Quote.pdf</title>",
     );
     expect(test.send).toHaveBeenCalledWith("Fetch.enable", {
+      handleAuthRequests: true,
       patterns: [
+        { urlPattern: "*", resourceType: "Document", requestStage: "Request" },
         { urlPattern: "*/api/assets/*", requestStage: "Request" },
         { urlPattern: "*/api/assets/*", resourceType: "Document", requestStage: "Response" },
       ],
@@ -219,7 +221,11 @@ describe("local asset routing", () => {
     expect(result.method).toBe("Fetch.fulfillRequest");
     expect(result.params.responseCode).toBe(200);
     expect(test.send).toHaveBeenCalledWith("Fetch.enable", {
-      patterns: [{ urlPattern: "*/api/assets/*", requestStage: "Request" }],
+      handleAuthRequests: true,
+      patterns: [
+        { urlPattern: "*", resourceType: "Document", requestStage: "Request" },
+        { urlPattern: "*/api/assets/*", requestStage: "Request" },
+      ],
     });
   });
 });

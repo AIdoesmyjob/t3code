@@ -86,7 +86,7 @@ describe("WorkflowPane", () => {
     try {
       await using screen = await render(pane(undefined, true));
       const tablist = screen.getByRole("tablist").element();
-      const header = tablist.parentElement;
+      const header = tablist.closest("header");
       expect(header).not.toBeNull();
       expect(header!.classList.contains("drag-region")).toBe(true);
       expect(tablist.classList.contains("[-webkit-app-region:no-drag]")).toBe(true);

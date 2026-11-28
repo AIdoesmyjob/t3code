@@ -251,7 +251,9 @@ export async function installPdfDocumentNavigation(
   await cdp.send("Fetch.enable", {
     handleAuthRequests,
     patterns: [
-      ...(handleAuthRequests ? [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" } as const] : []),
+      ...(handleAuthRequests
+        ? [{ urlPattern: "*", resourceType: "Document", requestStage: "Request" } as const]
+        : []),
       ...(localAssets === undefined
         ? []
         : [{ urlPattern: "*/api/assets/*", requestStage: "Request" as const }]),
