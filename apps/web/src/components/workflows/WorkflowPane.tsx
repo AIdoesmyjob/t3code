@@ -36,11 +36,13 @@ export default function WorkflowPane({
   runId,
   state,
   onChange,
+  electron = false,
 }: {
   readonly environmentId: EnvironmentId;
   readonly runId: string | null;
   readonly state: WorkflowPaneState;
   readonly onChange: (next: WorkflowPaneState) => void;
+  readonly electron?: boolean;
 }) {
   const gt = useGT();
   const detail = useEnvironmentQuery(
@@ -84,11 +86,20 @@ export default function WorkflowPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <PanelFrame.Toolbar density="compact" className="h-(--workspace-topbar-height)">
+      <PanelFrame.Toolbar
+        density="compact"
+        className={cn(
+          "h-(--workspace-topbar-height)",
+          electron && "drag-region wco:pr-(--workspace-native-controls-inset)",
+        )}
+      >
         <div
           role="tablist"
           aria-label={gt("Open beside the run")}
-          className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
+          className={cn(
+            "flex min-w-0 flex-1 gap-1 overflow-x-auto",
+            electron && "[-webkit-app-region:no-drag]",
+          )}
         >
           {tabs.map((tab, index) => (
             <div
