@@ -1604,6 +1604,7 @@ function FilePreviewPanelContent({
     (!isMarkdown || markdownRenderable);
   const showsRawText =
     previewPath !== null &&
+    !isMedia &&
     file.data !== null &&
     !(isMarkdown && renderMarkdown) &&
     !renderMermaid &&
