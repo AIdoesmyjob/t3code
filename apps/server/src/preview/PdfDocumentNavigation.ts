@@ -142,7 +142,10 @@ export async function installPdfDocumentNavigation(
   {
     handleAuthRequests,
     localAssets,
-  }: { readonly handleAuthRequests: boolean; readonly localAssets?: LocalAssetRouting },
+  }: {
+    readonly handleAuthRequests: boolean;
+    readonly localAssets?: LocalAssetRouting | undefined;
+  },
 ) {
   const nativeViewer = await cdp.send("Runtime.evaluate", {
     expression: "navigator.pdfViewerEnabled",

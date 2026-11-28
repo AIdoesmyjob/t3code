@@ -406,7 +406,6 @@ export interface ChatComposerHandle {
     clipboardData: DataTransfer,
     options: { bypassAutoAttachment: boolean },
   ) => boolean;
-  submitPromptText: (text: string) => boolean;
   citeAssistantText: (
     citation: AssistantCitation,
     sourceAnchor: AssistantCitationSourceAnchor,
@@ -2650,7 +2649,7 @@ export function ChatComposer(props: ChatComposerProps) {
   useLayoutEffect(() => {
     submitComposerRef.current = (mode, intent, options) =>
       submitComposerStable(undefined, mode, intent, options);
-  }, [submitComposerStable]);
+  }, [submitComposerRef, submitComposerStable]);
   useDictationSubmissionShortcut({
     enabled: voiceInputActive && !speechInput.preparing,
     formRef: composerFormRef,
@@ -3621,21 +3620,6 @@ export function ChatComposer(props: ChatComposerProps) {
         countPreparingComposerImages(attachmentTargetKey) > 0 ||
         pendingDraftWork.has(attachmentTargetKey),
       insertTextAtEnd: insertComposerTextAtEndStable,
-      submitPromptText: (text: string) => {
-        const clean = text.trim();
-        if (!clean || submissionBlocked) return false;
-        const snapshot = readComposerSnapshot();
-        const applied = applyPromptReplacement(0, snapshot.value.length, clean, {
-          expectedText: snapshot.value,
-          focusEditorAfterReplace: false,
-        });
-        if (!applied) return false;
-        promptRef.current = clean;
-        window.setTimeout(() => {
-          submitComposerRef.current();
-        }, 0);
-        return true;
-      },
       pasteTextAtEnd: (clipboardData, options) => {
         if (!canInsertComposerText) return false;
         const shortcutArmed = consumePasteAsTextShortcut(pasteAsTextShortcutUntilRef);

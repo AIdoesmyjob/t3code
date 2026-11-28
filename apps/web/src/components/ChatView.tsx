@@ -4307,6 +4307,8 @@ export default function ChatView(props: ChatViewProps) {
                               onRestoreEditingQueuedAttachment={
                                 queuedRunEdit.restoreEditingAttachment
                               }
+                              canMoveEditingQueuedMessageToStash={queuedRunEdit.canMoveEditToStash}
+                              onMoveEditingQueuedMessageToStash={queuedRunEdit.removeEditedRun}
                             />
                           )}
                         </div>
@@ -4371,10 +4373,6 @@ export default function ChatView(props: ChatViewProps) {
                                     className="ms-auto flex min-w-0 flex-1 justify-end"
                                   />
                                 }
-                                canMoveEditingQueuedMessageToStash={
-                                  queuedRunEdit.canMoveEditToStash
-                                }
-                                onMoveEditingQueuedMessageToStash={queuedRunEdit.removeEditedRun}
                               />
                             </div>
                           )}

@@ -2815,6 +2815,7 @@ function renderFeedEntry(
               iconColor={iconSubtleColor}
               buttonSize={props.replyActionSize.button}
               iconSize={props.replyActionSize.icon}
+            />
             <AssistantSpeakButton
               environmentId={props.environmentId}
               iconColor={iconSubtleColor}

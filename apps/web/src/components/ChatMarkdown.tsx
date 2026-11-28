@@ -2215,6 +2215,7 @@ function ChatMarkdown({
   ...props
 }: ChatMarkdownProps) {
   const { isStreaming, streamingId } = props;
+  const text = stripSpokenTagsForDisplay(rawText, { isStreaming: props.isStreaming === true });
   const [textAtMount] = useState(text);
   const [remounted] = useState(
     () => streamingId !== undefined && shownStreamingIds.has(streamingId),
@@ -2223,7 +2224,6 @@ function ChatMarkdown({
   useEffect(() => {
     if (isStreaming && streamingId !== undefined) shownStreamingIds.add(streamingId);
   }, [isStreaming, streamingId]);
-  const text = stripSpokenTagsForDisplay(rawText, { isStreaming: props.isStreaming === true });
   // Streaming re-renders only the last block; offsets for task edits, and extensions that read
   // the whole message, need the whole text.
   const streamingBlocks =
